@@ -7,6 +7,7 @@ import { installPi, uninstallPi } from "./install-pi.js";
 import { enableEmbeddings, disableEmbeddings, statusEmbeddings } from "./embeddings.js";
 import { ensureLoggedIn, isLoggedIn, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
+import { runSkilifyCommand } from "../commands/skilify.js";
 import { detectPlatforms, allPlatformIds, log, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
 
@@ -193,6 +194,11 @@ async function main(): Promise<void> {
 
   if (cmd === "login") { await ensureLoggedIn(); return; }
   if (cmd === "status") { runStatus(); return; }
+
+  if (cmd === "skilify") {
+    runSkilifyCommand(args.slice(1));
+    return;
+  }
 
   if (cmd === "embeddings") {
     const sub = args[1];
