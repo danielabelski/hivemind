@@ -849,6 +849,8 @@ function findAgentBin(agent) {
       return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
     case "hermes":
       return which("hermes") ?? join7(homedir5(), ".local", "bin", "hermes");
+    case "pi":
+      return which("pi") ?? join7(homedir5(), ".local", "bin", "pi");
   }
 }
 
@@ -889,6 +891,8 @@ function spawnSkilifyWorker(opts) {
     cursorModel: process.env.HIVEMIND_CURSOR_MODEL,
     hermesProvider: process.env.HIVEMIND_HERMES_PROVIDER,
     hermesModel: process.env.HIVEMIND_HERMES_MODEL,
+    piProvider: process.env.HIVEMIND_PI_PROVIDER,
+    piModel: process.env.HIVEMIND_PI_MODEL,
     skilifyLog: SKILIFY_LOG,
     currentSessionId
   }), { mode: 384 });

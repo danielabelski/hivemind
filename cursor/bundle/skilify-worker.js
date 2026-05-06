@@ -320,6 +320,8 @@ function findAgentBin(agent) {
       return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
     case "hermes":
       return which("hermes") ?? join3(homedir3(), ".local", "bin", "hermes");
+    case "pi":
+      return which("pi") ?? join3(homedir3(), ".local", "bin", "pi");
   }
 }
 function buildArgs(agent, prompt, opts) {
@@ -360,6 +362,15 @@ function buildArgs(agent, prompt, opts) {
         opts.hermesModel ?? process.env.HIVEMIND_HERMES_MODEL ?? "anthropic/claude-haiku-4-5",
         "--yolo",
         "--ignore-user-config"
+      ];
+    case "pi":
+      return [
+        "--print",
+        "--provider",
+        opts.piProvider ?? process.env.HIVEMIND_PI_PROVIDER ?? "google",
+        "--model",
+        opts.piModel ?? process.env.HIVEMIND_PI_MODEL ?? "gemini-2.5-flash",
+        prompt
       ];
   }
 }
@@ -753,6 +764,8 @@ async function main() {
       cursorModel: cfg.cursorModel,
       hermesProvider: cfg.hermesProvider,
       hermesModel: cfg.hermesModel,
+      piProvider: cfg.piProvider,
+      piModel: cfg.piModel,
       timeoutMs: 12e4
     });
     try {
