@@ -1,0 +1,94 @@
+/**
+ * Spawn a detached skilify worker. Mirror of spawn-wiki-worker.ts.
+ *
+ * The hook calls this when the per-project Stop counter crosses the
+ * threshold. It writes a config JSON to tmpdir, spawns the worker,
+ * and returns immediately. All heavy work (Deeplake fetch, model gate,
+ * skill write) happens in the detached child.
+ */
+
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import type { Config } from "../config.js";
+import { utcTimestamp } from "../utils/debug.js";
+import { findAgentBin, type Agent } from "./gate-runner.js";
+
+const HOME = homedir();
+export const SKILIFY_LOG = join(HOME, ".claude", "hooks", "skilify.log");
+
+export function skilifyLog(msg: string): void {
+  try {
+    mkdirSync(dirname(SKILIFY_LOG), { recursive: true });
+    appendFileSync(SKILIFY_LOG, `[${utcTimestamp()}] ${msg}\n`);
+  } catch { /* ignore */ }
+}
+
+// Re-export from scope-config.ts so callers don't need a second import path.
+export type { Scope, InstallLocation, ScopeConfig } from "./scope-config.js";
+import type { ScopeConfig } from "./scope-config.js";
+
+export interface SkilifySpawnOptions {
+  config: Config;
+  cwd: string;
+  projectKey: string;
+  project: string;
+  bundleDir: string;
+  agent: string;
+  scopeConfig: ScopeConfig;
+  /** session_id of the live session that triggered the spawn — excluded from mining */
+  currentSessionId?: string;
+  reason: string;
+}
+
+export function spawnSkilifyWorker(opts: SkilifySpawnOptions): void {
+  const { config, cwd, projectKey, project, bundleDir, agent, scopeConfig, currentSessionId, reason } = opts;
+
+  const tmpDir = join(tmpdir(), `deeplake-skilify-${projectKey}-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+
+  // Resolve the gate CLI for this agent up front (faster cold-start in the
+  // worker, fail-fast if the binary doesn't exist on this machine).
+  const gateBin = findAgentBin(agent as Agent);
+
+  const configFile = join(tmpDir, "config.json");
+  writeFileSync(configFile, JSON.stringify({
+    apiUrl: config.apiUrl,
+    token: config.token,
+    orgId: config.orgId,
+    workspaceId: config.workspaceId,
+    sessionsTable: config.sessionsTableName,
+    skillsTable: config.skillsTableName,
+    userName: config.userName,
+    cwd,
+    projectKey,
+    project,
+    agent,
+    scope: scopeConfig.scope,
+    team: scopeConfig.team,
+    install: scopeConfig.install,
+    tmpDir,
+    gateBin,
+    cursorModel: process.env.HIVEMIND_CURSOR_MODEL,
+    hermesProvider: process.env.HIVEMIND_HERMES_PROVIDER,
+    hermesModel: process.env.HIVEMIND_HERMES_MODEL,
+    skilifyLog: SKILIFY_LOG,
+    currentSessionId,
+  }));
+
+  skilifyLog(`${reason}: spawning skilify worker for project=${project} key=${projectKey}`);
+
+  const workerPath = join(bundleDir, "skilify-worker.js");
+  spawn("nohup", ["node", workerPath, configFile], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"],
+  }).unref();
+
+  skilifyLog(`${reason}: spawned skilify worker for ${projectKey}`);
+}
+
+export function bundleDirFromImportMeta(importMetaUrl: string): string {
+  return dirname(fileURLToPath(importMetaUrl));
+}
