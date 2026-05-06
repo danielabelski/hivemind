@@ -180,10 +180,94 @@ describe("runAuthCommand — org list / switch", () => {
     expect(listWorkspacesMock).toHaveBeenCalledWith("tok", "https://api.example", "o2");
   });
 
-  it("'org switch' does not reset the workspace when it still exists in the new org (matched by name)", async () => {
+  it("'org switch' normalizes a name-only carry-over to the canonical workspace id (so subsequent commands target a stable id, not a renameable name)", async () => {
+    // Stored workspaceId is "shared" — that's a NAME in the new org, not an id.
+    // The fix must persist the canonical id "ws-shared" so a future rename of
+    // the workspace doesn't silently invalidate this user's credentials.
     loadCredentialsMock.mockReturnValue({ ...validCreds, workspaceId: "shared" });
     listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
     listWorkspacesMock.mockResolvedValue([{ id: "ws-shared", name: "shared" }]);
+    await run(["org", "switch", "wayne"]);
+    expect(switchWorkspaceMock).toHaveBeenCalledWith("ws-shared");
+    expect(switchWorkspaceMock).toHaveBeenCalledTimes(1);
+    const text = consoleText();
+    expect(text).toContain("resolved to id 'ws-shared'");
+    // Must NOT print the reset-to-default warning — this is a normalization,
+    // not a reset to the sentinel.
+    expect(text).not.toContain("Reset workspace");
+  });
+
+  it("'org switch' leaves credentials untouched when the carried-over id already matches a workspace by id (no normalization needed)", async () => {
+    loadCredentialsMock.mockReturnValue({ ...validCreds, workspaceId: "ws-shared" });
+    listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
+    listWorkspacesMock.mockResolvedValue([{ id: "ws-shared", name: "shared" }]);
+    await run(["org", "switch", "wayne"]);
+    expect(switchWorkspaceMock).not.toHaveBeenCalled();
+    const text = consoleText();
+    expect(text).not.toContain("Reset workspace");
+    expect(text).not.toContain("resolved to id");
+  });
+
+  it("'org switch' aborts atomically when listWorkspaces fails — switchOrg is never called and credentials remain on the old org", async () => {
+    // Atomicity: the workspace fetch happens BEFORE switchOrg so a network
+    // failure can't leave credentials half-committed (org switched but
+    // workspace not validated). Re-running the command then succeeds cleanly.
+    loadCredentialsMock.mockReturnValue({ ...validCreds, workspaceId: "k7" });
+    listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
+    listWorkspacesMock.mockRejectedValue(new Error("network down"));
+    await expect(run(["org", "switch", "wayne"])).rejects.toThrow("network down");
+    expect(switchOrgMock).not.toHaveBeenCalled();
+    expect(switchWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it("'org switch' does not log a reset warning when the carry-over is already the 'default' sentinel and the new org has no 'default' workspace", async () => {
+    // Avoid a misleading "Workspace 'default' is not in org … Reset workspace
+    // to 'default'." message — there's nothing to reset.
+    loadCredentialsMock.mockReturnValue({ ...validCreds, workspaceId: "default" });
+    listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
+    listWorkspacesMock.mockResolvedValue([{ id: "ws-1", name: "alpha" }]);
+    await run(["org", "switch", "wayne"]);
+    expect(switchWorkspaceMock).not.toHaveBeenCalled();
+    expect(consoleText()).not.toContain("Reset workspace");
+  });
+
+  it("'org switch' falls back to the 'default' sentinel when credentials have no workspaceId field at all", async () => {
+    // Coverage: the `?? "default"` branch (workspaceId field missing entirely
+    // — possible on legacy or partially-initialized creds).
+    const credsNoWs = { ...validCreds } as Record<string, unknown>;
+    delete credsNoWs.workspaceId;
+    loadCredentialsMock.mockReturnValue(credsNoWs);
+    listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
+    listWorkspacesMock.mockResolvedValue([{ id: "ws-1", name: "alpha" }]);
+    await run(["org", "switch", "wayne"]);
+    // No reset warning (sentinel + no match → silent), no normalization log.
+    expect(switchWorkspaceMock).not.toHaveBeenCalled();
+    const text = consoleText();
+    expect(text).not.toContain("Reset workspace");
+    expect(text).not.toContain("resolved to id");
+  });
+
+  it("'org switch' resets but suppresses the 'Available workspaces' line when the new org has zero workspaces", async () => {
+    // Coverage: the `wsList.length > 0` else branch.
+    loadCredentialsMock.mockReturnValue({ ...validCreds, workspaceId: "k7" });
+    listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
+    listWorkspacesMock.mockResolvedValue([]);
+    await run(["org", "switch", "wayne"]);
+    expect(switchWorkspaceMock).toHaveBeenCalledWith("default");
+    const text = consoleText();
+    expect(text).toContain("Reset workspace to 'default'");
+    expect(text).not.toContain("Available workspaces:");
+  });
+
+  it("'org switch' does not crash when a workspace in the list has no `name` field (matches purely by id)", async () => {
+    // Defensive: API responses may omit `name` for system/internal workspaces.
+    // The find predicate must guard against `w.name.toLowerCase()` blowing up.
+    loadCredentialsMock.mockReturnValue({ ...validCreds, workspaceId: "ws-named-only" });
+    listOrgsMock.mockResolvedValue([{ id: "o2", name: "wayne" }]);
+    listWorkspacesMock.mockResolvedValue([
+      { id: "ws-no-name", name: undefined as unknown as string },
+      { id: "ws-named-only", name: "named" },
+    ]);
     await run(["org", "switch", "wayne"]);
     expect(switchWorkspaceMock).not.toHaveBeenCalled();
     expect(consoleText()).not.toContain("Reset workspace");
@@ -271,12 +355,27 @@ describe("runAuthCommand — workspaces / workspace", () => {
     expect(consoleText()).toContain("Available workspaces: seven");
   });
 
-  it("'workspace switch' on an unknown target exits 1 and never switches", async () => {
-    listWorkspacesMock.mockResolvedValue([{ id: "ws-7", name: "seven" }]);
+  it("'workspace switch <unknown>' suppresses the 'Available workspaces' line when the org has zero workspaces", async () => {
+    // Coverage for the `wsList.length > 0` else branch in the workspace switch
+    // handler (mirrors the same branch in `org switch`).
+    listWorkspacesMock.mockResolvedValue([]);
     await run(["workspace", "switch", "k7"]);
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(switchWorkspaceMock).not.toHaveBeenCalled();
-    expect(consoleText()).toContain("Workspace not found: k7");
+    const text = consoleText();
+    expect(text).toContain("Workspace not found: k7");
+    expect(text).not.toContain("Available workspaces:");
+  });
+
+  it("'workspace switch' does not crash when a workspace in the list has no `name` field", async () => {
+    // Defensive: same name-undefined guard as in the `org switch` carry-over
+    // resolver. The find predicate must not invoke `w.name.toLowerCase()` on
+    // an undefined name.
+    listWorkspacesMock.mockResolvedValue([
+      { id: "ws-no-name", name: undefined as unknown as string },
+      { id: "ws-7", name: "seven" },
+    ]);
+    await run(["workspace", "switch", "ws-no-name"]);
+    expect(switchWorkspaceMock).toHaveBeenCalledWith("ws-no-name");
   });
 
   it("'workspace switch' without a target exits 1 with subcommand-specific usage", async () => {

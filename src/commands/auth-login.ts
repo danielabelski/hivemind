@@ -66,21 +66,40 @@ export async function runAuthCommand(args: string[]): Promise<void> {
         const orgs = await listOrgs(creds.token, apiUrl);
         const match = orgs.find(o => o.id === target || o.name.toLowerCase() === target.toLowerCase());
         if (!match) { console.log(`Org not found: ${target}`); process.exit(1); }
+
+        // Resolve the carry-over BEFORE mutating credentials. If listWorkspaces
+        // fails (network blip, 5xx) the exception bubbles up unchanged and the
+        // org switch never happens — re-running the command then succeeds
+        // cleanly instead of leaving credentials half-committed.
+        const prevWs = creds.workspaceId ?? "default";
+        const lcPrev = prevWs.toLowerCase();
+        const wsList = await listWorkspaces(creds.token, apiUrl, match.id);
+        // Resolve to the matched workspace OBJECT, not a boolean: `workspaceId`
+        // is supposed to be a canonical id but legacy creds (and the post-login
+        // `"default"` sentinel) can hold a name. We need the matched object so
+        // we can normalize a name-only match to the canonical id.
+        const matchedWs = wsList.find(w => w.id === prevWs || (w.name && w.name.toLowerCase() === lcPrev));
+
         await switchOrg(match.id, match.name);
         console.log(`Switched to org: ${match.name}`);
 
-        // Carry-over guard: the previous workspaceId may not exist in the new
-        // org. If it doesn't, reset to "default" so subsequent commands don't
-        // silently target a non-existent workspace.
-        const prevWs = creds.workspaceId ?? "default";
-        const wsList = await listWorkspaces(creds.token, apiUrl, match.id);
-        const stillThere = wsList.some(w => w.id === prevWs || w.name.toLowerCase() === prevWs.toLowerCase());
-        if (!stillThere) {
-          await switchWorkspace("default");
-          console.log(`Workspace '${prevWs}' is not in org '${match.name}'. Reset workspace to 'default'.`);
-          if (wsList.length > 0) {
-            console.log(`Available workspaces: ${wsList.map(w => w.name || w.id).join(", ")}`);
+        if (!matchedWs) {
+          // Suppress the reset-and-warn when prevWs is already the "default"
+          // sentinel and the new org has no workspace named/idd "default" —
+          // there's nothing to reset and the warning would be misleading.
+          if (prevWs !== "default") {
+            await switchWorkspace("default");
+            console.log(`Workspace '${prevWs}' is not in org '${match.name}'. Reset workspace to 'default'.`);
+            if (wsList.length > 0) {
+              console.log(`Available workspaces: ${wsList.map(w => w.name || w.id).join(", ")}`);
+            }
           }
+        } else if (matchedWs.id !== prevWs) {
+          // The carried-over value matched only by display name. Persist the
+          // canonical id so subsequent commands target the workspace
+          // deterministically (an id is stable across renames; a name is not).
+          await switchWorkspace(matchedWs.id);
+          console.log(`Workspace name '${prevWs}' resolved to id '${matchedWs.id}' in org '${match.name}'.`);
         }
       } else {
         console.log("Usage: org list | org switch <name-or-id>");
@@ -109,7 +128,8 @@ export async function runAuthCommand(args: string[]): Promise<void> {
         const target = args[2];
         if (!target) { console.log("Usage: workspace switch <name-or-id>"); process.exit(1); }
         const wsList = await listWorkspaces(creds.token, apiUrl, creds.orgId);
-        const match = wsList.find(w => w.id === target || w.name.toLowerCase() === target.toLowerCase());
+        const lcTarget = target.toLowerCase();
+        const match = wsList.find(w => w.id === target || (w.name && w.name.toLowerCase() === lcTarget));
         if (!match) {
           console.log(`Workspace not found: ${target}`);
           if (wsList.length > 0) {
