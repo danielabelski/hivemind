@@ -528,18 +528,32 @@ function wlog(msg) {
 function esc2(s) {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+var QUERY_TIMEOUT_MS = 3e4;
 async function query(sql, retries = 4) {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": cfg.orgId,
-        ...deeplakeClientHeader()
-      },
-      body: JSON.stringify({ query: sql })
-    });
+    let r;
+    try {
+      r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          "Content-Type": "application/json",
+          "X-Activeloop-Org-Id": cfg.orgId,
+          ...deeplakeClientHeader()
+        },
+        signal: AbortSignal.timeout(QUERY_TIMEOUT_MS),
+        body: JSON.stringify({ query: sql })
+      });
+    } catch (e) {
+      if (attempt < retries) {
+        const base = Math.min(3e4, 2e3 * Math.pow(2, attempt));
+        const delay = base + Math.floor(Math.random() * 1e3);
+        wlog(`fetch failed (${e?.name ?? e?.code ?? e?.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw e;
+    }
     if (r.ok) {
       const j = await r.json();
       if (!j.columns || !j.rows)
