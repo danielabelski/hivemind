@@ -505,4 +505,45 @@ export class DeeplakeApi {
     await this.ensureColumn(name, "agent", "TEXT NOT NULL DEFAULT ''");
     await this.ensureLookupIndex(name, "path_creation_date", `("path", "creation_date")`);
   }
+
+  /**
+   * Create the skills table.
+   *
+   * One row per skill version. Workers INSERT a fresh row on every KEEP /
+   * MERGE rather than UPDATE-ing in place, so the full version history is
+   * recoverable. Uniqueness in the *current* state is by (project_key, name)
+   * — newer rows shadow older ones at read time (ORDER BY version DESC).
+   * This sidesteps the Deeplake UPDATE-coalescing quirk that bit the wiki
+   * worker.
+   */
+  async ensureSkillsTable(name: string): Promise<void> {
+    const tables = await this.listTables();
+    if (!tables.includes(name)) {
+      log(`table "${name}" not found, creating`);
+      await this.createTableWithRetry(
+        `CREATE TABLE IF NOT EXISTS "${name}" (` +
+          `id TEXT NOT NULL DEFAULT '', ` +
+          `name TEXT NOT NULL DEFAULT '', ` +
+          `project TEXT NOT NULL DEFAULT '', ` +
+          `project_key TEXT NOT NULL DEFAULT '', ` +
+          `local_path TEXT NOT NULL DEFAULT '', ` +
+          `install TEXT NOT NULL DEFAULT 'project', ` +
+          `source_sessions TEXT NOT NULL DEFAULT '[]', ` +
+          `source_agent TEXT NOT NULL DEFAULT '', ` +
+          `scope TEXT NOT NULL DEFAULT 'me', ` +
+          `author TEXT NOT NULL DEFAULT '', ` +
+          `description TEXT NOT NULL DEFAULT '', ` +
+          `trigger_text TEXT NOT NULL DEFAULT '', ` +
+          `body TEXT NOT NULL DEFAULT '', ` +
+          `version BIGINT NOT NULL DEFAULT 1, ` +
+          `created_at TEXT NOT NULL DEFAULT '', ` +
+          `updated_at TEXT NOT NULL DEFAULT ''` +
+        `) USING deeplake`,
+        name,
+      );
+      log(`table "${name}" created`);
+      if (!tables.includes(name)) this._tablesCache = [...tables, name];
+    }
+    await this.ensureLookupIndex(name, "project_key_name", `("project_key", "name")`);
+  }
 }
