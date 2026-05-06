@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -344,13 +344,17 @@ describe("bundle/session-notifications.js (built artifact)", () => {
   const __dir = dirname(fileURLToPath(import.meta.url));
   const bundlePath = join(__dir, "..", "bundle", "session-notifications.js");
 
-  function runBundle(extraEnv: Record<string, string>, input = "{}"): string {
-    return execFileSync("node", [bundlePath], {
+  // spawnSync (vs execFileSync) so we can capture stdout + stderr separately
+  // to verify the dual-channel emit: user-visible stderr banner + model-
+  // visible additionalContext JSON on stdout. Both must carry the same text.
+  function runBundle(extraEnv: Record<string, string>, input = "{}"): { stdout: string; stderr: string } {
+    const r = spawnSync("node", [bundlePath], {
       input,
       encoding: "utf-8",
       timeout: 5_000,
       env: { ...process.env, HOME: extraEnv.HOME, HIVEMIND_CAPTURE: "false", ...extraEnv },
     });
+    return { stdout: (r.stdout ?? "").toString(), stderr: (r.stderr ?? "").toString() };
   }
 
   it("the bundle exists (esbuild config picked up the new entry)", () => {
@@ -374,9 +378,12 @@ describe("bundle/session-notifications.js (built artifact)", () => {
         }),
         { mode: 0o600 },
       );
-      const raw = runBundle({ HOME: sandbox });
-      expect(raw.length).toBeGreaterThan(0);
-      const parsed = JSON.parse(raw);
+      const { stdout } = runBundle({ HOME: sandbox });
+
+      expect(stdout.length).toBeGreaterThan(0);
+      const parsed = JSON.parse(stdout);
+
+      // Model-visible channel: nested additionalContext.
       expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
       const ctx = parsed.hookSpecificOutput.additionalContext;
       expect(ctx).toContain("ada");
@@ -384,6 +391,41 @@ describe("bundle/session-notifications.js (built artifact)", () => {
       // Anti-pattern guard at the bundle level.
       expect(ctx).not.toContain("DEEPLAKE MEMORY");
       expect(ctx).not.toContain("HIVEMIND");
+
+      // User-visible channel: top-level systemMessage. Empirically validated
+      // against Claude Code 2.1.131 — surfaces as
+      // "SessionStart:startup says: <systemMessage>" in the terminal. MUST
+      // be at the top level, not nested inside hookSpecificOutput, otherwise
+      // the harness silently drops it.
+      expect(parsed.systemMessage).toBeDefined();
+      expect(parsed.systemMessage).toContain("ada");
+      expect(parsed.systemMessage).toContain("acme");
+      // Regression guard against re-nesting it under hookSpecificOutput.
+      expect(parsed.hookSpecificOutput.systemMessage).toBeUndefined();
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("dual-channel emit: top-level systemMessage and additionalContext carry the SAME text", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "hivemind-notif-bundle-"));
+    try {
+      mkdirSync(join(sandbox, ".deeplake"), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(sandbox, ".deeplake", "credentials.json"),
+        JSON.stringify({
+          token: "tok",
+          orgId: "o",
+          orgName: "acme",
+          userName: "ada",
+          workspaceId: "ws",
+          savedAt: "2026-05-06T02:00:00Z",
+        }),
+        { mode: 0o600 },
+      );
+      const { stdout } = runBundle({ HOME: sandbox });
+      const parsed = JSON.parse(stdout);
+      expect(parsed.systemMessage).toBe(parsed.hookSpecificOutput.additionalContext);
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -407,10 +449,10 @@ describe("bundle/session-notifications.js (built artifact)", () => {
       );
 
       const first = runBundle({ HOME: sandbox });
-      expect(first.length).toBeGreaterThan(0);
+      expect(first.stdout.length).toBeGreaterThan(0);
 
       const second = runBundle({ HOME: sandbox });
-      expect(second).toBe("");
+      expect(second.stdout).toBe("");
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -419,8 +461,8 @@ describe("bundle/session-notifications.js (built artifact)", () => {
   it("emits nothing for a logged-out user (no credentials)", () => {
     const sandbox = mkdtempSync(join(tmpdir(), "hivemind-notif-bundle-"));
     try {
-      const raw = runBundle({ HOME: sandbox });
-      expect(raw).toBe("");
+      const { stdout } = runBundle({ HOME: sandbox });
+      expect(stdout).toBe("");
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

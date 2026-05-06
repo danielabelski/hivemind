@@ -6,18 +6,28 @@ Source of truth for what each per-agent adapter in `src/notifications/delivery/`
 
 | Agent | Multi-hook → distinct context blocks? | Stderr → user? | v1 delivery |
 |---|---|---|---|
-| **Claude Code** | ✅ YES — separate `<system-reminder>` per command | ✅ YES — verbatim | **REAL**: separate hook command + own additionalContext block |
+| **Claude Code** | ✅ YES — additionalContext from each hook is delivered (collected into an array) | ❌ stderr captured but NOT rendered as of CC 2.1.131 — use `systemMessage` instead | **REAL**: dual-channel JSON — top-level `systemMessage` (user-visible: renders as `SessionStart:startup says: <text>`) + nested `hookSpecificOutput.additionalContext` (model-visible). |
 | **Codex** | ❌ NO — flattened `Vec<String>`, joined with `\n\n` downstream | ❌ NO — discarded | **STUB**: no-op + TODO (defer inline-append) |
 | **Hermes** | ❌ NO — `on_session_start` return value DISCARDED entirely | ❌ NO — captured to `logger.debug` only | **STUB**: no-op + TODO (defer to `pre_llm_call` + dedup) |
 | **Cursor** | ⚠️ Unknown (closed-source GUI; docs imply concat) | ⚠️ Unknown | **STUB**: no-op + TODO |
 
 ## Findings (source-level)
 
-### Claude Code — verified empirical + via existing autoupdate code path
+### Claude Code — verified empirically against 2.1.131 with multi-channel probe
 
-- This very session shows **two distinct DEEPLAKE MEMORY system-reminder blocks** coming from two separately-installed hivemind hooks (0.6.x plugin path + 0.7.x cached path). Each registered hook command produces its own visible `<system-reminder>`.
-- Stderr surfaces verbatim: existing `src/hooks/session-start.ts` lines 182, 187, 192 ship `process.stderr.write()` calls for auto-update banners — proven in production.
-- **Channel:** register a SECOND SessionStart hook command in `claude-code/hooks/hooks.json` that emits its own `JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "..." } })`. Harness keeps it as a separate block.
+A standalone shell-script probe was wired in as a 2nd SessionStart hook command alongside the existing memory hook. The probe emitted distinct markers via every plausible channel; the user opened a fresh `claude` and reported what surfaced. The session JSONL was inspected to see exactly how the harness recorded each.
+
+Findings:
+- ✅ **Top-level `systemMessage` → user-visible verbatim.** Renders in the terminal at session start as `SessionStart:startup says: <text>`. MUST be at the top level of the JSON; nesting it inside `hookSpecificOutput` causes the harness to silently drop it.
+- ✅ **Nested `hookSpecificOutput.additionalContext` → model-visible.** Multiple hooks' additionalContext arrive as an array on a single `hook_additional_context` attachment — both the existing memory hook's content AND our notification hook's content are present.
+- ❌ **`process.stderr.write` → captured but not rendered.** As of Claude Code 2.1.0 ("ultrathink update"), SessionStart hook stderr is recorded into the session JSONL's `attachment.stderr` field but no longer printed to the user's terminal. Don't rely on it.
+- ❌ **Top-level `additionalContext` (not nested) → ignored.** The docs and our test confirm only the nested form is honored.
+
+Empirical evidence preserved in the session JSONL captured by the probe — see also CC docs ([Hooks reference](https://code.claude.com/docs/en/hooks)) and bug reports [#9591](https://github.com/anthropics/claude-code/issues/9591) (post-2.1.0 silenced stderr) and [#15344](https://github.com/anthropics/claude-code/issues/15344) (systemMessage behavior in CLI vs VS Code).
+
+**Channel (v1):** single SessionStart hook command emits one JSON object with `systemMessage` at top level + `hookSpecificOutput.additionalContext` nested. Same text in both. User reads, model reasons.
+
+**Caveat:** the VS Code extension does not render `systemMessage` (issue #15344). Terminal CLI users get the full UX; IDE users get model-only delivery.
 
 ### Codex — verified upstream source (`openai/codex@main`)
 
@@ -45,7 +55,9 @@ Source of truth for what each per-agent adapter in `src/notifications/delivery/`
 
 The only agent that can deliver a notification as a *separate* context block (per the user's "but not DEEPLAKE MEMORY, HIVEMIND" requirement) is **Claude Code**. v1 ships:
 
-- Real Claude Code adapter — second hook command, own `additionalContext`.
+- Real Claude Code adapter — second hook command. Dual-channel emit:
+  - **stderr** — rendered text printed verbatim (user-visible above the system-reminder, same path as the existing autoupdate banner). Required because notifications are user-facing announcements; the model is not allowed to silently swallow them.
+  - **stdout JSON** — same text in `additionalContext`. The model receives it so it can reason on follow-up turns (e.g. "you have a balance reminder, avoid expensive ops?").
 - No-op stubs for Codex, Cursor, Hermes — framework is wired, but `emit()` does nothing for those agents. Each stub file documents the constraint that blocks real delivery and the deferred design (inline-append for Codex/Cursor; `pre_llm_call`+dedup for Hermes).
 
 ## Probes

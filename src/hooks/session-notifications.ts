@@ -4,9 +4,7 @@
  * Claude Code SessionStart hook entry point — notifications channel.
  *
  * Wired as a SECOND SessionStart hook command in claude-code/hooks/hooks.json,
- * alongside the existing memory/hivemind hook (session-start.js). The Claude
- * Code harness emits each command's stdout as its own <system-reminder>, so
- * notifications appear visually distinct from the memory/hivemind block.
+ * alongside the existing memory/hivemind hook (session-start.js).
  *
  * Bundle target: bundle/session-notifications.js. See esbuild.config.mjs.
  *

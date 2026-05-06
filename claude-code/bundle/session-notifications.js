@@ -176,7 +176,8 @@ function emitClaudeCode(rendered) {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
       additionalContext: rendered
-    }
+    },
+    systemMessage: rendered
   }));
 }
 
