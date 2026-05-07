@@ -267,6 +267,26 @@ export default defineConfig({
         "src/skilify/state.ts":             { statements: 80, branches: 70, functions: 90, lines: 80 },
         "src/skilify/triggers.ts":          { statements: 80, branches: 70, functions: 90, lines: 80 },
         "src/commands/skilify.ts":          { statements: 80, branches: 70, functions: 80, lines: 80 },
+        // PR #96 — feat/notifications-framework. Centralized push-notification
+        // framework + Claude Code dual-channel adapter (systemMessage + addCtx).
+        // Most files at 100% via notifications.test.ts and notifications-coverage.test.ts.
+        // session-notifications.ts is the SessionStart hook entry point — main()
+        // is hard to unit-test directly because vi.spyOn(process.stdout) doesn't
+        // intercept writes that happen during dynamic-import resolution. Bundle
+        // smoke tests in notifications.test.ts cover the happy path through the
+        // built artifact; the entry-point thresholds are calibrated to what we
+        // can reliably measure without a subprocess spawn.
+        "src/hooks/session-notifications.ts":     { statements: 60, branches: 50, functions: 50, lines: 90 },
+        "src/notifications/types.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/notifications/format.ts":            { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/notifications/index.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/notifications/queue.ts":             { statements: 90, branches: 70, functions: 90, lines: 90 },
+        "src/notifications/state.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/notifications/rules/registry.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/notifications/rules/welcome.ts":     { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/notifications/sources/backend.ts":   { statements: 90, branches: 90, functions: 80, lines: 90 },
+        "src/notifications/delivery/index.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/notifications/delivery/claude-code.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
       },
     },
   },
