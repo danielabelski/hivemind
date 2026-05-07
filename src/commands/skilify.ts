@@ -241,6 +241,12 @@ async function pullSkills(args: string[]): Promise<void> {
     const tag = e.action === "wrote" ? "✓ wrote" : e.action === "dryrun" ? "→ would write" : "· skipped";
     const ver = e.localVersion === null ? `v${e.remoteVersion} (new)` : `v${e.localVersion} → v${e.remoteVersion}`;
     console.log(`  ${tag.padEnd(15)} ${e.name.padEnd(40)} ${ver.padEnd(20)} (${e.author}/${e.sourceAgent})`);
+    if (e.manifestError) {
+      // Skill is on disk but absent from pulled.json — `unpull` won't
+      // be able to remove it. Loud warning so the user knows to either
+      // delete it manually or repull (which retries the manifest write).
+      console.warn(`    ⚠ manifest not updated: ${e.manifestError} — \`unpull\` will not see this entry until a successful repull.`);
+    }
   }
   console.log(`Result: ${summary.wrote} written, ${summary.dryrun} dry-run, ${summary.skipped} skipped.`);
 }

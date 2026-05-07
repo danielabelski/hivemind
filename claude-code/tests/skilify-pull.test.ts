@@ -500,4 +500,29 @@ describe("runPull", () => {
     // No dangerous paths created
     expect(existsSync(join(projectSkillsRoot, "..", "escape"))).toBe(false);
   });
+
+  it("skips rows with empty author rather than clobbering the locally-mined slot", async () => {
+    // Empty author would degrade the dirName to <root>/<name>/ — exactly the
+    // path locally-mined skills live in. Pulling that would silently overwrite
+    // the user's own work, breaking the cross-author coexistence guarantee.
+    const rows = [
+      sampleRow({ name: "deploy", project_key: "pk-empty", author: "" }),
+      sampleRow({ name: "deploy", project_key: "pk-valid", author: "alice" }),
+    ];
+    const { fn } = makeMockQuery(rows);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+    expect(summary.wrote).toBe(1);
+    expect(summary.skipped).toBe(1);
+    // The empty-author row must NOT have produced <root>/deploy/SKILL.md
+    expect(existsSync(join(projectSkillsRoot, "deploy", "SKILL.md"))).toBe(false);
+    // The valid row landed at the suffixed path
+    expect(existsSync(join(projectSkillsRoot, "deploy--alice", "SKILL.md"))).toBe(true);
+    // The skipped entry carries a useful destination string for the dispatcher
+    const skipped = summary.entries.find(e => e.action === "skipped");
+    expect(skipped?.destination).toMatch(/empty author/i);
+    expect(skipped?.author).toBe("");
+  });
 });

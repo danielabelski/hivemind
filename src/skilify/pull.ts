@@ -70,6 +70,14 @@ export interface PullResultEntry {
   destination: string;
   author: string;
   sourceAgent: string;
+  /**
+   * Set when the SKILL.md was written successfully but the manifest
+   * recording failed afterwards — surface the underlying message so the
+   * caller can warn loudly. The skill exists on disk but `unpull` will
+   * not be able to remove it via the manifest path, so the user must
+   * either delete the dir manually or repull.
+   */
+  manifestError?: string;
 }
 
 export interface PullSummary {
@@ -301,20 +309,33 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     // row clobbers the earlier one (with `.bak` of the prior SKILL.md).
     // Acceptable trade-off — the row stays in Deeplake and is recoverable
     // via re-pull from the project that authored it.
-    let dirName = name;
-    if (author) {
-      try {
-        assertValidAuthor(author);
-        dirName = `${name}--${author}`;
-      } catch (e: any) {
-        summary.entries.push({
-          name, remoteVersion: Number(row.version ?? 1), localVersion: null,
-          action: "skipped", destination: `(invalid author '${author}' — skipped)`,
-          author, sourceAgent: String(row.source_agent ?? ""),
-        });
-        summary.skipped++;
-        continue;
-      }
+    //
+    // Empty `author` would degrade the path to `<root>/<name>/` (the
+    // locally-mined slot) and silently clobber the user's own skill of
+    // the same name, breaking the coexistence guarantee above. Skip the
+    // row instead — Deeplake should always populate `author`, and
+    // ignoring an empty one is safer than guessing a placeholder.
+    if (!author) {
+      summary.entries.push({
+        name, remoteVersion: Number(row.version ?? 1), localVersion: null,
+        action: "skipped", destination: "(empty author — skipped)",
+        author: "", sourceAgent: String(row.source_agent ?? ""),
+      });
+      summary.skipped++;
+      continue;
+    }
+    let dirName: string;
+    try {
+      assertValidAuthor(author);
+      dirName = `${name}--${author}`;
+    } catch (e: any) {
+      summary.entries.push({
+        name, remoteVersion: Number(row.version ?? 1), localVersion: null,
+        action: "skipped", destination: `(invalid author '${author}' — skipped)`,
+        author, sourceAgent: String(row.source_agent ?? ""),
+      });
+      summary.skipped++;
+      continue;
     }
     const skillDir = join(root, dirName);
     const skillFile = join(skillDir, "SKILL.md");
@@ -326,6 +347,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
       dryRun: opts.dryRun ?? false,
     });
 
+    let manifestError: string | undefined;
     if (action === "wrote") {
       mkdirSync(skillDir, { recursive: true });
       // Backup any existing file before overwriting (only if it was non-null
@@ -348,8 +370,11 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
           pulledAt: new Date().toISOString(),
         });
       } catch (e: any) {
-        // Manifest write failure is non-fatal; the skill is still on disk
-        // and the user can clean it up manually if they need to.
+        // Skill is on disk but the manifest didn't record it — surface
+        // this in the entry so the dispatcher can warn. `unpull` will
+        // not be able to clean this entry via the manifest path until
+        // a successful re-pull populates it.
+        manifestError = e?.message ?? String(e);
       }
     }
 
@@ -361,6 +386,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
       destination: skillFile,
       author: String(row.author ?? ""),
       sourceAgent: String(row.source_agent ?? ""),
+      manifestError,
     });
 
     if (action === "wrote") summary.wrote++;
