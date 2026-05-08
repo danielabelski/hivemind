@@ -509,6 +509,23 @@ row wins, and the prior `SKILL.md` is preserved as `SKILL.md.bak`. The
 underlying row stays in the Deeplake `skills` table, so re-pulling from
 the other project recovers it.
 
+### Auto-pull at SessionStart
+
+Every supported agent (Claude Code, Codex, Cursor, Hermes, pi) auto-runs
+the equivalent of `hivemind skilify pull --all-users --to global` at the
+start of each session, so teammate-mined skills become available without
+anyone having to remember to run pull manually. The pull is throttled —
+by default it only fires when the previous run was more than 30 minutes
+ago — and bounded by a 5-second timeout so a slow Deeplake never blocks
+SessionStart. All failures (network, missing table, auth) are swallowed
+silently and the session starts regardless. The last-run timestamp is
+persisted at `~/.deeplake/state/skilify/autopull-last-run.json`.
+
+| Env var                            | Default | Effect                                                   |
+|------------------------------------|---------|----------------------------------------------------------|
+| `HIVEMIND_AUTOPULL_INTERVAL_MIN`   | `30`    | Minutes between auto-pulls. `0` runs every session, `-1` disables. |
+| `HIVEMIND_AUTOPULL_DISABLED`       | unset   | Set to `1` to disable auto-pull entirely.                |
+
 ### Configuration
 
 | Env var                              | Default | Effect                                                  |

@@ -28,6 +28,7 @@ import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoUpdate } from "../shared/autoupdate.js";
+import { maybeAutoPull } from "../../skilify/auto-pull.js";
 const log = (msg: string) => _log("cursor-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -167,6 +168,12 @@ async function main(): Promise<void> {
       log(`placeholder failed: ${e.message}`);
     }
   }
+
+  // Auto-pull skills from all org users (5s timeout, throttled to 30min).
+  // See src/skilify/auto-pull.ts for the full opt-out story. maybeAutoPull
+  // never rejects — all errors are swallowed inside.
+  const pullResult = await maybeAutoPull();
+  log(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
 
   let versionNotice = "";
   const current = getInstalledVersion(__bundleDir, ".claude-plugin");
