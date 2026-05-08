@@ -1,15 +1,15 @@
-# Skills (skilify)
+# Skills (skillify)
 
 Hivemind **codifies recurring patterns from your team's recent sessions into reusable skills** that propagate to every agent on your team — automatically. Same architecture as the wiki worker: an async background process that fires on Stop / SessionEnd, mines recent sessions in scope, asks Haiku whether the activity contains something worth keeping, and writes a `SKILL.md` if so.
 
-## When the skilify worker fires
+## When the skillify worker fires
 
 | Trigger          | When it fires                                                                  |
 |------------------|--------------------------------------------------------------------------------|
-| **Stop counter** | Mid-session, after every `HIVEMIND_SKILIFY_EVERY_N_TURNS` (default 20) turns. |
+| **Stop counter** | Mid-session, after every `HIVEMIND_SKILLIFY_EVERY_N_TURNS` (default 20) turns. |
 | **SessionEnd**   | Always at end-of-session, regardless of counter — catches tail-of-session knowledge. |
 
-Per-project counter state lives at `~/.deeplake/state/skilify/<project-key>.json`. Project key is the sha1 of `git config remote.origin.url` (with the absolute path as fallback for non-git dirs).
+Per-project counter state lives at `~/.deeplake/state/skillify/<project-key>.json`. Project key is the sha1 of `git config remote.origin.url` (with the absolute path as fallback for non-git dirs).
 
 ## How a skill is generated
 
@@ -23,23 +23,23 @@ Per-project counter state lives at `~/.deeplake/state/skilify/<project-key>.json
 5. On KEEP/MERGE the skill is written to `<project>/.claude/skills/<name>/SKILL.md` (or `~/.claude/skills/...` if you've set `install` to `global`), with provenance frontmatter (`source_sessions`, `version`, `created_by_agent`, timestamps).
 6. A row is also inserted into the `skills` Deeplake table for org-wide provenance (append-only — never UPDATE, sidesteps the UPDATE-coalescing quirk).
 
-## `/skilify` — managing scope, team, install location
+## `/skillify` — managing scope, team, install location
 
-The `/skilify` slash command (Claude Code, Codex) and the `hivemind skilify` CLI control mining behaviour.
+The `/skillify` slash command (Claude Code, Codex) and the `hivemind skillify` CLI control mining behaviour.
 
 ```bash
-hivemind skilify                            # show current scope, team, install, per-project state
-hivemind skilify scope <me|team|org>        # who counts as "in scope" for mining
-hivemind skilify install <project|global>   # where new skills are written
-hivemind skilify promote <skill-name>       # move a project skill to ~/.claude/skills/
-hivemind skilify team add <username>        # add to the team list (used when scope=team)
-hivemind skilify team remove <username>     # remove from team
-hivemind skilify team list                  # list current team members
+hivemind skillify                            # show current scope, team, install, per-project state
+hivemind skillify scope <me|team|org>        # who counts as "in scope" for mining
+hivemind skillify install <project|global>   # where new skills are written
+hivemind skillify promote <skill-name>       # move a project skill to ~/.claude/skills/
+hivemind skillify team add <username>        # add to the team list (used when scope=team)
+hivemind skillify team remove <username>     # remove from team
+hivemind skillify team list                  # list current team members
 ```
 
 The team list flows into the worker's session-fetch SQL: `scope=me` filters by your own username, `scope=team` filters by `author IN (<team>)`, `scope=org` applies no author filter.
 
-Config persists at `~/.deeplake/state/skilify/config.json` (one global file shared across projects).
+Config persists at `~/.deeplake/state/skillify/config.json` (one global file shared across projects).
 
 ## `pull` / `unpull` — sharing skills across the org
 
@@ -53,27 +53,27 @@ Once a teammate's skills are mined into the Deeplake `skills` table, you can ins
 The `--<author>` suffix keeps cross-author entries with the same name disjoint and lets Claude Code's single-depth skill loader find pulled skills without any symlink trickery. `<root>` is `~/.claude/skills` for `--to global` and `<cwd>/.claude/skills` for `--to project`.
 
 ```bash
-hivemind skilify pull                                # all authors, install globally
-hivemind skilify pull --user alice@example.com       # only this author
-hivemind skilify pull --users a@x.com,b@y.com        # multiple authors (CSV)
-hivemind skilify pull --all-users                    # explicit "no author filter" (default)
-hivemind skilify pull --to project                   # install under <cwd>/.claude/skills
-hivemind skilify pull --dry-run                      # preview, no disk writes
-hivemind skilify pull --force                        # overwrite even when local version >= remote
-hivemind skilify pull <skill-name>                   # pull only that skill (combinable with --user)
+hivemind skillify pull                                # all authors, install globally
+hivemind skillify pull --user alice@example.com       # only this author
+hivemind skillify pull --users a@x.com,b@y.com        # multiple authors (CSV)
+hivemind skillify pull --all-users                    # explicit "no author filter" (default)
+hivemind skillify pull --to project                   # install under <cwd>/.claude/skills
+hivemind skillify pull --dry-run                      # preview, no disk writes
+hivemind skillify pull --force                        # overwrite even when local version >= remote
+hivemind skillify pull <skill-name>                   # pull only that skill (combinable with --user)
 ```
 
-Every successful pull records an entry in `~/.deeplake/state/skilify/pulled.json`. That manifest is the source of truth for `unpull` — anything not in the manifest is **never** touched by default, even if its directory follows the `<name>--<author>` shape (this protects user-authored variant skills like `deploy--blue-green`).
+Every successful pull records an entry in `~/.deeplake/state/skillify/pulled.json`. That manifest is the source of truth for `unpull` — anything not in the manifest is **never** touched by default, even if its directory follows the `<name>--<author>` shape (this protects user-authored variant skills like `deploy--blue-green`).
 
 ```bash
-hivemind skilify unpull                              # remove every pulled entry under the install scope
-hivemind skilify unpull --user alice@example.com     # remove only this author's pulls
-hivemind skilify unpull --users a@x.com,b@y.com      # multiple authors
-hivemind skilify unpull --not-mine                   # remove all pulls except your own
-hivemind skilify unpull --dry-run                    # preview, no disk writes
-hivemind skilify unpull --to project                 # operate on <cwd>/.claude/skills instead of global
-hivemind skilify unpull --all                        # ALSO remove flat-layout (locally-mined) skills — destructive
-hivemind skilify unpull --legacy-cleanup             # ALSO remove pre-`--author`-layout `<projectkey>/` dirs from older skilify versions
+hivemind skillify unpull                              # remove every pulled entry under the install scope
+hivemind skillify unpull --user alice@example.com     # remove only this author's pulls
+hivemind skillify unpull --users a@x.com,b@y.com      # multiple authors
+hivemind skillify unpull --not-mine                   # remove all pulls except your own
+hivemind skillify unpull --dry-run                    # preview, no disk writes
+hivemind skillify unpull --to project                 # operate on <cwd>/.claude/skills instead of global
+hivemind skillify unpull --all                        # ALSO remove flat-layout (locally-mined) skills — destructive
+hivemind skillify unpull --legacy-cleanup             # ALSO remove pre-`--author`-layout `<projectkey>/` dirs from older skillify versions
 ```
 
 Drift handling: if a manifest entry's directory was deleted out-of-band (e.g. `rm -rf` by hand), the next `unpull` reports it as `manifest-orphan` and prunes the entry from the manifest without errors.
@@ -84,16 +84,16 @@ Cross-project caveat: same `(name, author)` from two different projects collides
 
 | Env var                              | Default | Effect                                                  |
 |--------------------------------------|---------|---------------------------------------------------------|
-| `HIVEMIND_SKILIFY_EVERY_N_TURNS`     | `20`    | Stop-counter threshold for mid-session worker fires     |
+| `HIVEMIND_SKILLIFY_EVERY_N_TURNS`     | `20`    | Stop-counter threshold for mid-session worker fires     |
 | `HIVEMIND_SKILLS_TABLE`              | `skills`| Deeplake table name for org-wide provenance             |
-| `HIVEMIND_SKILIFY_WORKER=1`          | unset   | Recursion guard (set automatically inside the worker)   |
+| `HIVEMIND_SKILLIFY_WORKER=1`          | unset   | Recursion guard (set automatically inside the worker)   |
 | `HIVEMIND_CURSOR_MODEL`              | `auto`  | (cursor only) model passed to the cursor-agent gate call |
 | `HIVEMIND_HERMES_PROVIDER`           | `openrouter` | (hermes only) provider passed to the hermes gate call |
 | `HIVEMIND_HERMES_MODEL`              | `anthropic/claude-haiku-4-5` | (hermes only) model passed to hermes |
 
 ## Per-agent gate CLI
 
-The skilify worker calls each agent's own headless CLI for the gate prompt — so a user who only has codex / cursor / hermes installed never needs `claude` in their PATH:
+The skillify worker calls each agent's own headless CLI for the gate prompt — so a user who only has codex / cursor / hermes installed never needs `claude` in their PATH:
 
 | Agent       | Gate command                                                                          |
 |-------------|----------------------------------------------------------------------------------------|
@@ -106,4 +106,4 @@ For hermes via OpenRouter (the default), set `OPENROUTER_API_KEY` in the environ
 
 ## Logs
 
-Worker activity logs to `~/.claude/hooks/skilify.log`. Each line shows which session pool was mined, what the gate decided, and whether a file was written.
+Worker activity logs to `~/.claude/hooks/skillify.log`. Each line shows which session pool was mined, what the gate decided, and whether a file was written.
