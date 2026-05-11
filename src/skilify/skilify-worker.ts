@@ -441,7 +441,7 @@ async function main(): Promise<void> {
      * is a side-channel index. We log and move on.
      */
     async function recordToDeeplake(
-      result: { path: string; version: number },
+      result: { path: string; version: number; createdAt: string; updatedAt: string },
       verdict: Verdict,
     ): Promise<void> {
       try {
@@ -461,8 +461,8 @@ async function main(): Promise<void> {
           trigger: verdict.trigger,
           body: verdict.body!,
           version: result.version,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: result.createdAt,
+          updatedAt: result.updatedAt,
         });
         wlog(`recorded to skills table: name=${verdict.name} v${result.version}`);
       } catch (e: any) {

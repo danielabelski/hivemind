@@ -166,7 +166,7 @@ function writeNewSkill(args) {
 ${args.body.trim()}
 `;
   writeFileSync(path, text);
-  return { path, action: "created", version: 1 };
+  return { path, action: "created", version: 1, createdAt: now, updatedAt: now };
 }
 function mergeSkill(args) {
   assertValidSkillName(args.name);
@@ -195,7 +195,7 @@ function mergeSkill(args) {
 ${args.body.trim()}
 `;
   writeFileSync(path, text);
-  return { path, action: "merged", version: fm.version };
+  return { path, action: "merged", version: fm.version, createdAt: fm.created_at, updatedAt: fm.updated_at };
 }
 function listSkills(skillsRoot) {
   if (!existsSync(skillsRoot))
@@ -826,8 +826,8 @@ async function main() {
           trigger: verdict2.trigger,
           body: verdict2.body,
           version: result.version,
-          createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-          updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+          createdAt: result.createdAt,
+          updatedAt: result.updatedAt
         });
         wlog(`recorded to skills table: name=${verdict2.name} v${result.version}`);
       } catch (e) {
