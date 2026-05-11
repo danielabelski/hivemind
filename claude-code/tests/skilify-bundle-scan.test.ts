@@ -24,7 +24,11 @@ describe("skilify-worker bundle is shipped per agent", () => {
       const text = readFileSync(path, "utf-8");
       // Sanity: bundle should have the skilify log channel and the gate prompt.
       expect(text).toContain("skilify-worker(");
-      expect(text).toContain("EXISTING PROJECT SKILLS");
+      // Gate-prompt heading: was "EXISTING PROJECT SKILLS" before the
+      // project + global merge; new heading mentions both tags so the
+      // bundle scan stays sensitive to the gate prompt actually shipping.
+      expect(text).toContain("EXISTING SKILLS");
+      expect(text).toContain("[project] are MERGE-eligible");
       // Watermark advance is the SKIP hot path.
       expect(text).toContain("advancing watermark");
     });
