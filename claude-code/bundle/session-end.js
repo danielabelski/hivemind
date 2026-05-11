@@ -353,15 +353,30 @@ function statePath(projectKey) {
 function lockPath2(projectKey) {
   return join8(STATE_DIR2, `${projectKey}.lock`);
 }
+function normalizeGitRemoteUrl(url) {
+  let s = url.trim();
+  const hadScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  if (!hadScheme) {
+    const scp = s.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+    if (scp)
+      s = `${scp[1]}/${scp[2]}`;
+  }
+  s = s.replace(/^[^@/]+@/, "");
+  s = s.replace(/\.git\/?$/i, "");
+  s = s.replace(/\/+$/, "");
+  return s.toLowerCase();
+}
 function deriveProjectKey(cwd) {
   const project = basename(cwd) || "unknown";
   let signature = null;
   try {
-    signature = execSync2("git config --get remote.origin.url", {
+    const raw = execSync2("git config --get remote.origin.url", {
       cwd,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"]
-    }).trim() || null;
+    }).trim();
+    signature = raw ? normalizeGitRemoteUrl(raw) : null;
   } catch {
   }
   const input = signature ?? cwd;

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   deriveProjectKey,
+  normalizeGitRemoteUrl,
   bumpStopCounter,
   resetCounter,
   readState,
@@ -58,6 +59,40 @@ describe("deriveProjectKey", () => {
   it("derives project name from the basename of cwd", () => {
     const { project } = deriveProjectKey("/tmp/some-project-name");
     expect(project).toBe("some-project-name");
+  });
+});
+
+describe("normalizeGitRemoteUrl", () => {
+  // Two devs cloning the same repo with different URL styles MUST land on
+  // the same projectKey, otherwise the worker treats them as separate
+  // projects and the dedup gate can't reason across cloners.
+  it("collapses all common git URL forms to one canonical string", () => {
+    const variants = [
+      "git@github.com:activeloopai/hivemind.git",
+      "git@github.com:activeloopai/hivemind",
+      "https://github.com/activeloopai/hivemind.git",
+      "https://github.com/activeloopai/hivemind",
+      "https://github.com/activeloopai/hivemind/",
+      "https://emanuele@github.com/activeloopai/hivemind.git",
+      "https://emanuele:secret@github.com/activeloopai/hivemind.git",
+      "ssh://git@github.com/activeloopai/hivemind.git",
+    ];
+    const canonical = "github.com/activeloopai/hivemind";
+    for (const v of variants) {
+      expect(normalizeGitRemoteUrl(v)).toBe(canonical);
+    }
+  });
+
+  it("preserves case-insensitive equality for mixed-case hosts/paths", () => {
+    expect(normalizeGitRemoteUrl("https://GitHub.com/Org/Repo.git"))
+      .toBe("github.com/org/repo");
+  });
+
+  it("returns input lowercased when not a recognizable git URL (fallback path)", () => {
+    // The fallback in deriveProjectKey hashes the cwd directly; we still
+    // lowercase to avoid case-sensitivity surprises from different
+    // platforms.
+    expect(normalizeGitRemoteUrl("/Users/foo/Some/Path")).toBe("/users/foo/some/path");
   });
 });
 

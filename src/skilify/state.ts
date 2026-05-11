@@ -54,14 +54,51 @@ function lockPath(projectKey: string): string {
   return join(STATE_DIR, `${projectKey}.lock`);
 }
 
+/**
+ * Collapse the many surface forms of a git remote URL down to a canonical
+ * string so different clone styles of the SAME repo produce the same hash.
+ *
+ * Without this, sha1 raw input gives 5 different keys for the same repo:
+ *   git@github.com:org/repo.git
+ *   git@github.com:org/repo
+ *   https://github.com/org/repo.git
+ *   https://github.com/org/repo
+ *   https://user@github.com/org/repo.git
+ *
+ * All collapse to `github.com/org/repo`. Returns the input unchanged when
+ * it doesn't look like a git URL (so the cwd-fallback path keeps absolute
+ * disk paths distinct).
+ */
+export function normalizeGitRemoteUrl(url: string): string {
+  let s = url.trim();
+  // 1. Strip URL scheme (https://, http://, git://, ssh://, …) if present.
+  const hadScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  // 2. SCP-style remote (no scheme prefix): `[user@]host:path` → `host/path`.
+  //    Only applies when the original input had no scheme — otherwise the
+  //    `:` is from `host:port`, not the SCP separator.
+  if (!hadScheme) {
+    const scp = s.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+    if (scp) s = `${scp[1]}/${scp[2]}`;
+  }
+  // 3. Strip embedded credentials (user@ or user:pass@) from the host part.
+  s = s.replace(/^[^@/]+@/, "");
+  // 4. Drop trailing `.git` (with or without trailing slash) and any
+  //    remaining trailing slash.
+  s = s.replace(/\.git\/?$/i, "");
+  s = s.replace(/\/+$/, "");
+  return s.toLowerCase();
+}
+
 /** Stable project identifier — git remote URL hash, fallback to cwd basename hash. */
 export function deriveProjectKey(cwd: string): { key: string; project: string } {
   const project = basename(cwd) || "unknown";
   let signature: string | null = null;
   try {
-    signature = execSync("git config --get remote.origin.url", {
+    const raw = execSync("git config --get remote.origin.url", {
       cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim() || null;
+    }).trim();
+    signature = raw ? normalizeGitRemoteUrl(raw) : null;
   } catch {
     // not a git repo, or no origin
   }
