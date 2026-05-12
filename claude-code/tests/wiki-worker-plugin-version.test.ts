@@ -230,6 +230,126 @@ describe("wiki-worker pluginVersion threading — per agent", () => {
 // / hermes-wiki-worker-source tests. We still parametrize across all three
 // agents so a regression on one variant doesn't slip past.
 
+describe("wiki-worker API retry path — per agent", () => {
+  // The query() helper inside each worker has its own retry loop for
+  // transient API failures (401/403/429/500/502/503). Without exercising
+  // it the back-pressure branch stays at 0 % coverage even though the
+  // file is otherwise green. Stub setTimeout so the test doesn't wait
+  // multi-second exponential backoff windows.
+  let originalSetTimeout: typeof globalThis.setTimeout;
+  beforeEach(() => {
+    originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void) => {
+      // Run the callback synchronously on next microtask — close enough
+      // for the worker's `await new Promise(r => setTimeout(r, delay))`.
+      Promise.resolve().then(fn);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof globalThis.setTimeout;
+  });
+  afterEach(() => {
+    globalThis.setTimeout = originalSetTimeout;
+  });
+
+  for (const v of VARIANTS) {
+    it(`${v.agent}: 503 → 200 retry succeeds and continues to upload`, async () => {
+      writeFileSync(configPath, JSON.stringify(makeCfg(v.cfgExtra, "9.9.9")));
+      process.argv[2] = configPath;
+      let firstEventsCall = true;
+      fetchMock.mockImplementation(async (_url: string, init: any) => {
+        const sql = JSON.parse(init.body).query as string;
+        if (sql.startsWith("SELECT message, creation_date")) {
+          if (firstEventsCall) {
+            firstEventsCall = false;
+            return jsonResp("upstream temporarily unavailable", false, 503);
+          }
+          return jsonResp({
+            columns: ["message", "creation_date"],
+            rows: [[JSON.stringify({ type: "user_message", content: "hi" }), "2026-04-20T00:00:00Z"]],
+          });
+        }
+        if (sql.startsWith("SELECT DISTINCT path")) {
+          return jsonResp({ columns: ["path"], rows: [["/sessions/alice/alice_org_default_sid-pv.jsonl"]] });
+        }
+        if (sql.startsWith("SELECT summary FROM")) {
+          return jsonResp({ columns: ["summary"], rows: [] });
+        }
+        return jsonResp({ columns: [], rows: [] });
+      });
+      // @ts-expect-error
+      global.fetch = fetchMock;
+      vi.resetModules();
+      await import(v.workerPath);
+      // Extra ticks for the retry path's awaited setTimeout.
+      for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r));
+
+      expect(uploadSummaryMock).toHaveBeenCalledOnce();
+      expect(uploadSummaryMock.mock.calls[0][1].pluginVersion).toBe("9.9.9");
+    });
+  }
+});
+
+describe("wiki-worker resume + embeddings-disabled branches — per agent", () => {
+  for (const v of VARIANTS) {
+    it(`${v.agent}: resumed session — reads existing summary and parses offset`, async () => {
+      // When a summary row already exists at /summaries/<user>/<sid>.md the
+      // worker reads it, parses the `**JSONL offset**` line, and re-uses
+      // both as the resume baseline for the LLM prompt. Hits the otherwise
+      // uncovered branch in main() (lines ~150-155 in the cursor variant).
+      writeFileSync(configPath, JSON.stringify(makeCfg(v.cfgExtra, "9.9.9")));
+      process.argv[2] = configPath;
+      fetchMock.mockImplementation(async (_url: string, init: any) => {
+        const sql = JSON.parse(init.body).query as string;
+        if (sql.startsWith("SELECT message, creation_date")) {
+          return jsonResp({
+            columns: ["message", "creation_date"],
+            rows: [[JSON.stringify({ type: "user_message", content: "hi" }), "2026-04-20T00:00:00Z"]],
+          });
+        }
+        if (sql.startsWith("SELECT DISTINCT path")) {
+          return jsonResp({ columns: ["path"], rows: [["/sessions/alice/alice_org_default_sid-pv.jsonl"]] });
+        }
+        if (sql.startsWith("SELECT summary FROM")) {
+          // Existing summary with a JSONL offset marker → triggers the
+          // resume branch + parseInt extraction.
+          return jsonResp({
+            columns: ["summary"],
+            rows: [["# Session sid-pv\n- **JSONL offset**: 42\n\n## What Happened\nprior"]],
+          });
+        }
+        return jsonResp({ columns: [], rows: [] });
+      });
+      // @ts-expect-error
+      global.fetch = fetchMock;
+      vi.resetModules();
+      await import(v.workerPath);
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+
+      expect(uploadSummaryMock).toHaveBeenCalledOnce();
+      // The pluginVersion still threads through on resume.
+      expect(uploadSummaryMock.mock.calls[0][1].pluginVersion).toBe("9.9.9");
+    });
+
+    it(`${v.agent}: HIVEMIND_EMBEDDINGS=false skips the embed daemon`, async () => {
+      // Hit the embeddingsDisabled() branch — uploadSummary should still
+      // be called, but with embedding === null (skipped daemon hop).
+      const prev = process.env.HIVEMIND_EMBEDDINGS;
+      process.env.HIVEMIND_EMBEDDINGS = "false";
+      try {
+        await runVariant(v, "9.9.9");
+        expect(uploadSummaryMock).toHaveBeenCalledOnce();
+        const params = uploadSummaryMock.mock.calls[0][1];
+        expect(params.embedding).toBeNull();
+        expect(params.pluginVersion).toBe("9.9.9");
+      } finally {
+        if (prev === undefined) delete process.env.HIVEMIND_EMBEDDINGS;
+        else process.env.HIVEMIND_EMBEDDINGS = prev;
+      }
+    });
+  }
+});
+
 describe("wiki-worker error / edge-case branches — per agent", () => {
   for (const v of VARIANTS) {
     it(`${v.agent}: LLM-spawn failure → no upload, releaseLock still fires`, async () => {
