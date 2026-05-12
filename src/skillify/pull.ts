@@ -107,6 +107,14 @@ export function buildPullSql(args: {
   tableName: string;
   users: string[];
   skillName?: string;
+  /**
+   * Legacy mode for tables that pre-date the `contributors` column.
+   * The default SELECT includes `contributors`; when a backend errors
+   * with "column does not exist" we retry with this flag set to false,
+   * and renderSkillFile fills in `contributors = [author]` for any row
+   * with a non-empty author.
+   */
+  includeContributors?: boolean;
 }): string {
   const where: string[] = [];
   if (args.users.length > 0) {
@@ -117,13 +125,30 @@ export function buildPullSql(args: {
     where.push(`name = '${esc(args.skillName)}'`);
   }
   const whereClause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
+  const contributorsCol = args.includeContributors === false ? "" : "contributors, ";
   return (
     `SELECT name, project, project_key, body, version, source_agent, scope, ` +
-    `author, contributors, description, trigger_text, source_sessions, install, ` +
+    `author, ${contributorsCol}description, trigger_text, source_sessions, install, ` +
     `created_at, updated_at ` +
     `FROM "${args.tableName}"${whereClause} ` +
     `ORDER BY project_key ASC, name ASC, version DESC`
   );
+}
+
+/**
+ * Recognises errors emitted when a table is missing the `contributors`
+ * column — typically a deployment that predates issue #118 and that hasn't
+ * had a lazy-migrating INSERT yet. `runPull` catches this and retries
+ * the SELECT in legacy mode so an outdated table degrades gracefully
+ * instead of aborting the pull entirely.
+ *
+ * Kept narrow on purpose (must mention the column by name) so generic
+ * 400s don't accidentally route into the legacy retry.
+ */
+export function isMissingContributorsColumnError(message: string | undefined): boolean {
+  if (!message) return false;
+  return /contributors.*(?:does not exist|not found|unknown)/i.test(message)
+    || /(?:does not exist|unknown column).*contributors/i.test(message);
 }
 
 /**
@@ -134,6 +159,12 @@ export function buildPullSql(args: {
  */
 export function isMissingTableError(message: string | undefined): boolean {
   if (!message) return false;
+  // Missing-column errors typically read
+  //   `column "contributors" of relation "skills" does not exist`
+  // which would otherwise match the `relation .* does not exist` arm
+  // below and get silently swallowed as an empty result set — masking
+  // the legacy-table case that needs the contributors-column retry.
+  if (/\bcolumn\b/i.test(message)) return false;
   // Deeplake / Postgres-flavoured errors:
   //   "Table does not exist: relation \"skills\" does not exist"
   //   "relation \"skills\" does not exist"
@@ -428,12 +459,26 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
   });
   // Treat "table does not exist" as an empty result set — the table is
   // created lazily on first INSERT, so a fresh workspace has no skills yet.
+  // On a missing-contributors error (legacy table that pre-dates #118 and
+  // hasn't been lazy-migrated by an INSERT yet) retry once with the
+  // legacy SELECT shape so the pull keeps working until the next write.
   let rows: Record<string, unknown>[] = [];
   try {
     rows = await opts.query(sql);
   } catch (e: any) {
-    if (isMissingTableError(e?.message)) rows = [];
-    else throw e;
+    if (isMissingTableError(e?.message)) {
+      rows = [];
+    } else if (isMissingContributorsColumnError(e?.message)) {
+      const legacySql = buildPullSql({
+        tableName: opts.tableName,
+        users: opts.users,
+        skillName: opts.skillName,
+        includeContributors: false,
+      });
+      rows = await opts.query(legacySql);
+    } else {
+      throw e;
+    }
   }
   const latest = selectLatestPerName(rows);
 

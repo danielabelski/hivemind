@@ -936,10 +936,18 @@ function buildPullSql(args) {
     where.push(`name = '${esc(args.skillName)}'`);
   }
   const whereClause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
-  return `SELECT name, project, project_key, body, version, source_agent, scope, author, contributors, description, trigger_text, source_sessions, install, created_at, updated_at FROM "${args.tableName}"${whereClause} ORDER BY project_key ASC, name ASC, version DESC`;
+  const contributorsCol = args.includeContributors === false ? "" : "contributors, ";
+  return `SELECT name, project, project_key, body, version, source_agent, scope, author, ${contributorsCol}description, trigger_text, source_sessions, install, created_at, updated_at FROM "${args.tableName}"${whereClause} ORDER BY project_key ASC, name ASC, version DESC`;
+}
+function isMissingContributorsColumnError(message) {
+  if (!message)
+    return false;
+  return /contributors.*(?:does not exist|not found|unknown)/i.test(message) || /(?:does not exist|unknown column).*contributors/i.test(message);
 }
 function isMissingTableError(message) {
   if (!message)
+    return false;
+  if (/\bcolumn\b/i.test(message))
     return false;
   return /Table does not exist|relation .* does not exist|no such table/i.test(message);
 }
@@ -1138,10 +1146,19 @@ async function runPull(opts) {
   try {
     rows = await opts.query(sql);
   } catch (e) {
-    if (isMissingTableError(e?.message))
+    if (isMissingTableError(e?.message)) {
       rows = [];
-    else
+    } else if (isMissingContributorsColumnError(e?.message)) {
+      const legacySql = buildPullSql({
+        tableName: opts.tableName,
+        users: opts.users,
+        skillName: opts.skillName,
+        includeContributors: false
+      });
+      rows = await opts.query(legacySql);
+    } else {
       throw e;
+    }
   }
   const latest = selectLatestPerName(rows);
   const root = resolvePullDestination(opts.install, opts.cwd);
