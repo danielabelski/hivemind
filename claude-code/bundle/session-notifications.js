@@ -329,28 +329,25 @@ function sumMetric(records, key) {
   }
   return total;
 }
-function countUserGeneratedSkills() {
-  const dir = join5(homedir5(), ".deeplake", "state", "skillify");
+function countUserGeneratedSkills(userName) {
+  if (!userName)
+    return 0;
+  const dir = join5(homedir5(), ".claude", "skills");
   if (!existsSync(dir))
     return 0;
-  let total = 0;
+  const suffix = `--${userName}`;
   try {
+    let count = 0;
     for (const name of readdirSync(dir)) {
-      if (!name.endsWith(".json") || name === "config.json")
-        continue;
-      try {
-        const raw = readFileSync4(join5(dir, name), "utf-8");
-        const s = JSON.parse(raw);
-        if (Array.isArray(s.skillsGenerated))
-          total += s.skillsGenerated.length;
-      } catch {
-      }
+      const idx = name.lastIndexOf(suffix);
+      if (idx > 0 && idx + suffix.length === name.length)
+        count += 1;
     }
+    return count;
   } catch (e) {
     log5(`countUserGeneratedSkills readdir failed: ${e?.message ?? String(e)}`);
     return 0;
   }
-  return total;
 }
 
 // dist/src/notifications/sources/local-usage.js
@@ -368,7 +365,7 @@ function formatTokens(n) {
     return `${Math.round(n / 1e3)}k`;
   return `${(n / 1e6).toFixed(1)}M`;
 }
-function fetchLocalUsageNotifications(sessionId) {
+function fetchLocalUsageNotifications(sessionId, userName) {
   if (!sessionId) {
     return [];
   }
@@ -392,7 +389,7 @@ function fetchLocalUsageNotifications(sessionId) {
   const zTokens = (SAVINGS_MULTIPLIER - 1) * yTokens;
   const sessionCount = records.length;
   const memorySearches = sumMetric(records, "memorySearchCount");
-  const skillsGenerated = countUserGeneratedSkills();
+  const skillsGenerated = countUserGeneratedSkills(userName);
   const title = `Hivemind has saved you ~${formatTokens(zTokens)} tokens`;
   const segments = [
     `${sessionCount} ${sessionCount === 1 ? "session" : "sessions"}`,
@@ -425,7 +422,7 @@ async function drainSessionStart(opts) {
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
     const fromBackend = await fetchBackendNotifications(opts.creds);
-    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId);
+    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId, opts.creds?.userName);
     const all = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
     const fresh = all.filter((n) => !alreadyShown(state, n));
     if (fresh.length === 0) {

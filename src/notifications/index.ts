@@ -69,7 +69,7 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
     // Local-usage source: synchronous, reads ~/.deeplake/usage-stats.jsonl
     // to render the cumulative savings recap. Returns [] when sessionId
     // is missing OR there's no memory-search activity to claim.
-    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId);
+    const fromLocalUsage = fetchLocalUsageNotifications(opts.sessionId, opts.creds?.userName);
     const all: Notification[] = [...fromRules, ...fromQueue, ...fromBackend, ...fromLocalUsage];
 
     const fresh = all.filter(n => !alreadyShown(state, n));

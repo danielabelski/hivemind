@@ -58,7 +58,7 @@ export function formatTokens(n: number): string {
  * SessionStart drain. Pure — reads the local stats file, no network, no
  * writes. Returns [] when there's nothing meaningful to claim.
  */
-export function fetchLocalUsageNotifications(sessionId: string | undefined): Notification[] {
+export function fetchLocalUsageNotifications(sessionId: string | undefined, userName: string | undefined): Notification[] {
   if (!sessionId) {
     // Without a stable per-session dedupKey, we can't safely dedupe across
     // the two parallel hook registrations — better to render nothing.
@@ -94,7 +94,7 @@ export function fetchLocalUsageNotifications(sessionId: string | undefined): Not
   // count from ~/.deeplake/state/skillify/<projectKey>.json. Omitted from
   // the body when 0 to avoid a "0 skills generated" indictment on fresh
   // installs (same rationale as skipping the whole recap when Y is 0).
-  const skillsGenerated = countUserGeneratedSkills();
+  const skillsGenerated = countUserGeneratedSkills(userName);
 
   const title = `Hivemind has saved you ~${formatTokens(zTokens)} tokens`;
   const segments = [

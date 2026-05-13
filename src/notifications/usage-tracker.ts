@@ -116,38 +116,54 @@ export function sumMetric(records: UsageRecord[], key: keyof UsageRecord): numbe
 }
 
 /**
- * Count skills mined from this user's sessions, summed across all projects.
+ * Count skills authored by `userName` that are visible locally — i.e.
+ * directories under `~/.claude/skills/` matching `<name>--<userName>`.
  *
- * Skillify maintains per-project state at
- *   ~/.deeplake/state/skillify/<projectKey>.json
- * with a `skillsGenerated: string[]` field. Each entry is a skill name
- * mined from a session in that project. We sum across all project files
- * to get the user's lifetime "skills generated" count.
+ * Why this signal: hivemind's skillify pipeline writes mined skills to
+ * the deeplake `skills` table tagged with `author`. When a user (or
+ * teammate) pulls those skills, they land at
+ *   ~/.claude/skills/<name>--<author>/SKILL.md
+ * So counting directories whose suffix matches the current `userName`
+ * gives us "skills you've generated that are installed on this machine."
  *
- * Purely local — no network, no SQL, no LLM. Fail-soft on every step:
- * unreadable file = 0 contribution, missing dir = 0, parse error = skip.
+ * What it does NOT count:
+ *   - Skills you generated but never pulled to this machine (lives only
+ *     in the deeplake table; counting them needs the SQL+network path)
+ *   - Skills you generated and later deleted from disk
+ *   - Skills generated under a slightly different author string
  *
- * Skips `config.json` (which holds skillify scope/team/install settings,
- * not a project state file).
+ * Trade-off: undercounts in those edge cases, but stays zero-latency and
+ * accurate for the common case (skillify auto-pulls org skills on
+ * session start, so authored skills usually ARE installed).
+ *
+ * Purely local — no network, no SQL, no LLM. Fail-soft on every step.
+ *
+ * Earlier version used `~/.deeplake/state/skillify/<projectKey>.json`'s
+ * `skillsGenerated[]` field, but that's per-project + per-machine and
+ * misses skills authored in other projects or on other machines. The
+ * filesystem suffix-match is broader AND simpler.
  */
-export function countUserGeneratedSkills(): number {
-  const dir = join(homedir(), ".deeplake", "state", "skillify");
+export function countUserGeneratedSkills(userName: string | undefined): number {
+  if (!userName) return 0;
+  const dir = join(homedir(), ".claude", "skills");
   if (!existsSync(dir)) return 0;
-  let total = 0;
+  // Skill dirs are `<name>--<author>`. Author is the last `--`-separated
+  // segment; match against the trimmed userName. Substring-equality so
+  // we don't false-match a name that happens to be a prefix of another.
+  const suffix = `--${userName}`;
   try {
+    let count = 0;
     for (const name of readdirSync(dir)) {
-      if (!name.endsWith(".json") || name === "config.json") continue;
-      try {
-        const raw = readFileSync(join(dir, name), "utf-8");
-        const s = JSON.parse(raw) as { skillsGenerated?: unknown };
-        if (Array.isArray(s.skillsGenerated)) total += s.skillsGenerated.length;
-      } catch {
-        // unreadable / malformed — skip this project, keep counting others
-      }
+      // Require the entry to END with `--<userName>` AND have something
+      // before the `--` (not a bare `--kamo`). Stricter than .endsWith()
+      // because a hypothetical user named `--kamo` would otherwise match
+      // an entry literally `--kamo`.
+      const idx = name.lastIndexOf(suffix);
+      if (idx > 0 && idx + suffix.length === name.length) count += 1;
     }
+    return count;
   } catch (e: any) {
     log(`countUserGeneratedSkills readdir failed: ${e?.message ?? String(e)}`);
     return 0;
   }
-  return total;
 }

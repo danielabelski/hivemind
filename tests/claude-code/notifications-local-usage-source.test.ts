@@ -62,24 +62,24 @@ describe("formatTokens", () => {
 describe("fetchLocalUsageNotifications — skip conditions", () => {
   it("returns [] when sessionId is undefined (no stable dedupKey)", () => {
     appendUsageRecord(rec({ memorySearchBytes: 5000 }));
-    expect(fetchLocalUsageNotifications(undefined)).toEqual([]);
+    expect(fetchLocalUsageNotifications(undefined, undefined)).toEqual([]);
   });
 
   it("returns [] when no records exist", () => {
-    expect(fetchLocalUsageNotifications("sess-abc")).toEqual([]);
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
   });
 
   it("returns [] when records exist but all have 0 memorySearchBytes", () => {
     appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 0, memorySearchCount: 0 }));
     appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 0, memorySearchCount: 0 }));
-    expect(fetchLocalUsageNotifications("sess-abc")).toEqual([]);
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
   });
 
   it("never throws — corrupt stats file just yields no recap", () => {
     mkdirSync(join(TEMP_HOME, ".deeplake"), { recursive: true });
     writeFileSync(join(TEMP_HOME, ".deeplake", "usage-stats.jsonl"), "{not-json}\n", "utf-8");
-    expect(() => fetchLocalUsageNotifications("sess-abc")).not.toThrow();
-    expect(fetchLocalUsageNotifications("sess-abc")).toEqual([]);
+    expect(() => fetchLocalUsageNotifications("sess-abc", undefined)).not.toThrow();
+    expect(fetchLocalUsageNotifications("sess-abc", undefined)).toEqual([]);
   });
 });
 
@@ -90,7 +90,7 @@ describe("fetchLocalUsageNotifications — emits a notification", () => {
     appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 4000, memorySearchCount: 2 }));
     appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 4000, memorySearchCount: 5 }));
     appendUsageRecord(rec({ sessionId: "s-3", memorySearchBytes: 4000, memorySearchCount: 3 }));
-    const out = fetchLocalUsageNotifications("sess-abc");
+    const out = fetchLocalUsageNotifications("sess-abc", undefined);
     expect(out).toHaveLength(1);
     const n = out[0];
     expect(n.id).toBe("local-usage:savings-recap");
@@ -103,7 +103,7 @@ describe("fetchLocalUsageNotifications — emits a notification", () => {
 
   it("singular phrasing for 1 session / 1 search", () => {
     appendUsageRecord(rec({ sessionId: "only", memorySearchBytes: 8000, memorySearchCount: 1 }));
-    const out = fetchLocalUsageNotifications("sess-z");
+    const out = fetchLocalUsageNotifications("sess-z", undefined);
     expect(out).toHaveLength(1);
     expect(out[0].body).toContain("1 session ·");
     expect(out[0].body).toContain("1 memory search");
@@ -112,8 +112,8 @@ describe("fetchLocalUsageNotifications — emits a notification", () => {
   it("dedupKey rotates between sessions so each session refires", () => {
     appendUsageRecord(rec({ sessionId: "any", memorySearchBytes: 4000, memorySearchCount: 1 }));
     appendUsageRecord(rec({ sessionId: "any", memorySearchBytes: 4000, memorySearchCount: 1 }));
-    const a = fetchLocalUsageNotifications("session-A");
-    const b = fetchLocalUsageNotifications("session-B");
+    const a = fetchLocalUsageNotifications("session-A", undefined);
+    const b = fetchLocalUsageNotifications("session-B", undefined);
     expect(a[0].dedupKey).toEqual({ session: "session-A" });
     expect(b[0].dedupKey).toEqual({ session: "session-B" });
     expect(a[0].dedupKey).not.toEqual(b[0].dedupKey);
@@ -122,7 +122,7 @@ describe("fetchLocalUsageNotifications — emits a notification", () => {
   it("anti-puffery: no $-figure, no unsupported percentages", () => {
     appendUsageRecord(rec({ memorySearchBytes: 5000 }));
     appendUsageRecord(rec({ memorySearchBytes: 5000 }));
-    const out = fetchLocalUsageNotifications("sess-abc");
+    const out = fetchLocalUsageNotifications("sess-abc", undefined);
     const fullText = out[0].title + "\n" + out[0].body;
     expect(fullText).not.toMatch(/\$/);
     expect(fullText).not.toMatch(/\d+%\s*(off|cheaper|reduction|less|saved)/i);
@@ -130,60 +130,66 @@ describe("fetchLocalUsageNotifications — emits a notification", () => {
 });
 
 describe("fetchLocalUsageNotifications — skills-generated segment", () => {
-  it("appends 'N skills generated' to body when skillify state has skills", () => {
+  it("appends 'N skills generated' to body when ~/.claude/skills has dirs matching --<userName>", () => {
     appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 4000, memorySearchCount: 2 }));
     appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 4000, memorySearchCount: 2 }));
-    // Bootstrap skillify state with 3 skills across 2 projects.
     const fs = require("node:fs");
     const path = require("node:path");
-    const dir = path.join(TEMP_HOME, ".deeplake", "state", "skillify");
+    const dir = path.join(TEMP_HOME, ".claude", "skills");
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "projA.json"), JSON.stringify({ skillsGenerated: ["a", "b"] }), "utf-8");
-    fs.writeFileSync(path.join(dir, "projB.json"), JSON.stringify({ skillsGenerated: ["c"] }), "utf-8");
+    fs.mkdirSync(path.join(dir, "skill-one--kamo"));
+    fs.mkdirSync(path.join(dir, "skill-two--kamo"));
+    fs.mkdirSync(path.join(dir, "skill-three--kamo"));
+    fs.mkdirSync(path.join(dir, "other-skill--levon"));         // different author — must not count
+    fs.mkdirSync(path.join(dir, "hivemind-openclaw-capture"));  // no author suffix — must not count
 
-    const out = fetchLocalUsageNotifications("sess-abc");
+    const out = fetchLocalUsageNotifications("sess-abc", "kamo");
     expect(out).toHaveLength(1);
     expect(out[0].body).toContain("3 skills generated");
-    // Order: sessions, memory searches, skills (last)
     expect(out[0].body).toMatch(/2 sessions · 4 memory searches · 3 skills generated$/);
   });
 
-  it("singular 'skill generated' phrasing when only 1 was mined", () => {
+  it("singular 'skill generated' phrasing when only 1 matches the userName", () => {
     appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 4000, memorySearchCount: 1 }));
     appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 4000, memorySearchCount: 1 }));
     const fs = require("node:fs");
     const path = require("node:path");
-    const dir = path.join(TEMP_HOME, ".deeplake", "state", "skillify");
+    const dir = path.join(TEMP_HOME, ".claude", "skills");
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "projA.json"), JSON.stringify({ skillsGenerated: ["only-one"] }), "utf-8");
+    fs.mkdirSync(path.join(dir, "only-one--kamo"));
 
-    const out = fetchLocalUsageNotifications("sess-abc");
+    const out = fetchLocalUsageNotifications("sess-abc", "kamo");
     expect(out[0].body).toContain("1 skill generated");
     expect(out[0].body).not.toContain("1 skills generated");
   });
 
-  it("OMITS the skills segment when skillify state is missing (avoid '0 skills' indictment)", () => {
+  it("OMITS the skills segment when userName is undefined (no anchor for the match)", () => {
     appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 4000, memorySearchCount: 2 }));
     appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 4000, memorySearchCount: 2 }));
-    // No skillify state dir at all.
-    const out = fetchLocalUsageNotifications("sess-abc");
+    // Even with skill dirs on disk, no userName means no count.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const dir = path.join(TEMP_HOME, ".claude", "skills");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.join(dir, "skill-one--kamo"));
+
+    const out = fetchLocalUsageNotifications("sess-abc", undefined);
     expect(out[0].body).not.toContain("skills generated");
-    // Body still has the other two segments.
     expect(out[0].body).toContain("2 sessions");
     expect(out[0].body).toContain("4 memory searches");
   });
 
-  it("OMITS the skills segment when skillify state exists but no skills mined yet", () => {
+  it("OMITS the skills segment when no dirs match this userName (avoids 0 indictment)", () => {
     appendUsageRecord(rec({ sessionId: "s-1", memorySearchBytes: 4000, memorySearchCount: 2 }));
     appendUsageRecord(rec({ sessionId: "s-2", memorySearchBytes: 4000, memorySearchCount: 2 }));
     const fs = require("node:fs");
     const path = require("node:path");
-    const dir = path.join(TEMP_HOME, ".deeplake", "state", "skillify");
+    const dir = path.join(TEMP_HOME, ".claude", "skills");
     fs.mkdirSync(dir, { recursive: true });
-    // Fresh project, counter has incremented but no skills mined yet.
-    fs.writeFileSync(path.join(dir, "projA.json"), JSON.stringify({ counter: 5, skillsGenerated: [] }), "utf-8");
+    fs.mkdirSync(path.join(dir, "their-skill--levon"));
+    fs.mkdirSync(path.join(dir, "another--emanuele.fenocchi"));
 
-    const out = fetchLocalUsageNotifications("sess-abc");
+    const out = fetchLocalUsageNotifications("sess-abc", "kamo");
     expect(out[0].body).not.toContain("skills generated");
   });
 });

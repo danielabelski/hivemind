@@ -182,63 +182,55 @@ describe("usage-tracker — statsFilePath", () => {
 });
 
 describe("countUserGeneratedSkills", () => {
-  it("returns 0 when ~/.deeplake/state/skillify/ does not exist", async () => {
+  it("returns 0 when userName is undefined", async () => {
     const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(0);
+    expect(countUserGeneratedSkills(undefined)).toBe(0);
   });
 
-  it("sums skillsGenerated across all per-project state files", async () => {
-    const dir = join(TEMP_HOME, ".deeplake", "state", "skillify");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "projA.json"), JSON.stringify({ skillsGenerated: ["a", "b", "c"] }), "utf-8");
-    writeFileSync(join(dir, "projB.json"), JSON.stringify({ skillsGenerated: ["d", "e"] }), "utf-8");
-    writeFileSync(join(dir, "projC.json"), JSON.stringify({ skillsGenerated: [] }), "utf-8");
+  it("returns 0 when ~/.claude/skills/ does not exist", async () => {
     const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(5);
+    expect(countUserGeneratedSkills("kamo.aghbalyan")).toBe(0);
   });
 
-  it("skips config.json (skillify settings file, not a project state)", async () => {
-    const dir = join(TEMP_HOME, ".deeplake", "state", "skillify");
+  it("counts dirs whose suffix matches --<userName>", async () => {
+    const dir = join(TEMP_HOME, ".claude", "skills");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "config.json"), JSON.stringify({ scope: "team", team: ["e"], install: "project" }), "utf-8");
-    writeFileSync(join(dir, "projA.json"), JSON.stringify({ skillsGenerated: ["a"] }), "utf-8");
+    mkdirSync(join(dir, "skill-one--kamo.aghbalyan"));
+    mkdirSync(join(dir, "skill-two--kamo.aghbalyan"));
+    mkdirSync(join(dir, "skill-three--kamo.aghbalyan"));
+    mkdirSync(join(dir, "other-skill--levon"));         // different author
+    mkdirSync(join(dir, "hivemind-openclaw-capture"));  // no author suffix
     const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(1);
+    expect(countUserGeneratedSkills("kamo.aghbalyan")).toBe(3);
   });
 
-  it("skips non-.json files in the directory", async () => {
-    const dir = join(TEMP_HOME, ".deeplake", "state", "skillify");
+  it("does not match a userName that's a prefix of another author", async () => {
+    const dir = join(TEMP_HOME, ".claude", "skills");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "stray.txt"), "ignore me", "utf-8");
-    writeFileSync(join(dir, "projA.json"), JSON.stringify({ skillsGenerated: ["a", "b"] }), "utf-8");
+    mkdirSync(join(dir, "skill-a--kamo"));
+    mkdirSync(join(dir, "skill-b--kamo.aghbalyan"));
     const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(2);
+    // "kamo" as userName must match only "skill-a--kamo", NOT "skill-b--kamo.aghbalyan"
+    expect(countUserGeneratedSkills("kamo")).toBe(1);
+    // "kamo.aghbalyan" as userName must match only the longer one
+    expect(countUserGeneratedSkills("kamo.aghbalyan")).toBe(1);
   });
 
-  it("treats a missing skillsGenerated field as 0 contribution", async () => {
-    const dir = join(TEMP_HOME, ".deeplake", "state", "skillify");
+  it("requires content before the `--<userName>` suffix (no bare matches)", async () => {
+    const dir = join(TEMP_HOME, ".claude", "skills");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "projA.json"), JSON.stringify({ counter: 5 /* no skillsGenerated */ }), "utf-8");
-    writeFileSync(join(dir, "projB.json"), JSON.stringify({ skillsGenerated: ["a"] }), "utf-8");
+    mkdirSync(join(dir, "--kamo"));      // pathological / empty name
+    mkdirSync(join(dir, "real--kamo"));
     const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(1);
+    expect(countUserGeneratedSkills("kamo")).toBe(1);
   });
 
-  it("treats a non-array skillsGenerated as 0 contribution (defensive)", async () => {
-    const dir = join(TEMP_HOME, ".deeplake", "state", "skillify");
+  it("returns 0 when no dirs match the userName suffix", async () => {
+    const dir = join(TEMP_HOME, ".claude", "skills");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "projA.json"), JSON.stringify({ skillsGenerated: "wrong-type" }), "utf-8");
-    writeFileSync(join(dir, "projB.json"), JSON.stringify({ skillsGenerated: ["good"] }), "utf-8");
+    mkdirSync(join(dir, "skill-x--levon"));
+    mkdirSync(join(dir, "skill-y--emanuele.fenocchi"));
     const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(1);
-  });
-
-  it("skips malformed JSON without aborting the count", async () => {
-    const dir = join(TEMP_HOME, ".deeplake", "state", "skillify");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "broken.json"), "{not json", "utf-8");
-    writeFileSync(join(dir, "good.json"), JSON.stringify({ skillsGenerated: ["x", "y"] }), "utf-8");
-    const { countUserGeneratedSkills } = await import("../../src/notifications/usage-tracker.js");
-    expect(countUserGeneratedSkills()).toBe(2);
+    expect(countUserGeneratedSkills("kamo")).toBe(0);
   });
 });
