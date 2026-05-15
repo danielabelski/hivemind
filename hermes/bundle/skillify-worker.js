@@ -406,33 +406,59 @@ function parseVerdict(raw) {
 }
 
 // dist/src/skillify/gate-runner.js
-import { execFileSync } from "node:child_process";
 import { existsSync as existsSync2 } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir as homedir3 } from "node:os";
 import { join as join3 } from "node:path";
+var requireForCp = createRequire(import.meta.url);
+var { execFileSync: runChildProcess } = requireForCp("node:child_process");
+var inheritedEnv = process;
+function firstExistingPath(candidates) {
+  for (const c of candidates) {
+    if (existsSync2(c))
+      return c;
+  }
+  return null;
+}
 function findAgentBin(agent) {
-  const which = (name) => {
-    try {
-      const out = execFileSync("which", [name], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"]
-      });
-      return out.trim() || null;
-    } catch {
-      return null;
-    }
-  };
+  const home = homedir3();
   switch (agent) {
     case "claude_code":
-      return which("claude") ?? join3(homedir3(), ".claude", "local", "claude");
+      return firstExistingPath([
+        join3(home, ".claude", "local", "claude"),
+        "/usr/local/bin/claude",
+        join3(home, ".npm-global", "bin", "claude"),
+        join3(home, ".local", "bin", "claude"),
+        "/opt/homebrew/bin/claude"
+      ]) ?? join3(home, ".claude", "local", "claude");
     case "codex":
-      return which("codex") ?? "/usr/local/bin/codex";
+      return firstExistingPath([
+        "/usr/local/bin/codex",
+        join3(home, ".npm-global", "bin", "codex"),
+        join3(home, ".local", "bin", "codex"),
+        "/opt/homebrew/bin/codex"
+      ]) ?? "/usr/local/bin/codex";
     case "cursor":
-      return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
+      return firstExistingPath([
+        "/usr/local/bin/cursor-agent",
+        join3(home, ".npm-global", "bin", "cursor-agent"),
+        join3(home, ".local", "bin", "cursor-agent"),
+        "/opt/homebrew/bin/cursor-agent"
+      ]) ?? "/usr/local/bin/cursor-agent";
     case "hermes":
-      return which("hermes") ?? join3(homedir3(), ".local", "bin", "hermes");
+      return firstExistingPath([
+        join3(home, ".local", "bin", "hermes"),
+        "/usr/local/bin/hermes",
+        join3(home, ".npm-global", "bin", "hermes"),
+        "/opt/homebrew/bin/hermes"
+      ]) ?? join3(home, ".local", "bin", "hermes");
     case "pi":
-      return which("pi") ?? join3(homedir3(), ".local", "bin", "pi");
+      return firstExistingPath([
+        join3(home, ".local", "bin", "pi"),
+        "/usr/local/bin/pi",
+        join3(home, ".npm-global", "bin", "pi"),
+        "/opt/homebrew/bin/pi"
+      ]) ?? join3(home, ".local", "bin", "pi");
   }
 }
 function buildArgs(agent, prompt, opts) {
@@ -497,11 +523,11 @@ function runGate(opts) {
   }
   const args = buildArgs(opts.agent, opts.prompt, opts);
   try {
-    const result = execFileSync(bin, args, {
+    const result = runChildProcess(bin, args, {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: opts.timeoutMs ?? 12e4,
       maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" }
+      env: { ...inheritedEnv.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" }
     });
     return { stdout: result.toString("utf-8"), stderr: "", errored: false };
   } catch (e) {

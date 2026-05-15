@@ -625,7 +625,7 @@ function uninstallCursor() {
 import { existsSync as existsSync7, writeFileSync as writeFileSync3, readFileSync as readFileSync5, rmSync as rmSync2, unlinkSync as unlinkSync4 } from "node:fs";
 import { join as join8 } from "node:path";
 
-// node_modules/js-yaml/dist/js-yaml.mjs
+// ../../../node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }

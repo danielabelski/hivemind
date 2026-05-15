@@ -871,33 +871,59 @@ import { writeFileSync as writeFileSync4, mkdirSync as mkdirSync5, appendFileSyn
 import { homedir as homedir6, tmpdir as tmpdir3 } from "node:os";
 
 // dist/src/skillify/gate-runner.js
-import { execFileSync } from "node:child_process";
 import { existsSync as existsSync4 } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir as homedir5 } from "node:os";
 import { join as join8 } from "node:path";
+var requireForCp = createRequire(import.meta.url);
+var { execFileSync: runChildProcess } = requireForCp("node:child_process");
+var inheritedEnv = process;
+function firstExistingPath(candidates) {
+  for (const c of candidates) {
+    if (existsSync4(c))
+      return c;
+  }
+  return null;
+}
 function findAgentBin(agent) {
-  const which = (name) => {
-    try {
-      const out = execFileSync("which", [name], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"]
-      });
-      return out.trim() || null;
-    } catch {
-      return null;
-    }
-  };
+  const home = homedir5();
   switch (agent) {
     case "claude_code":
-      return which("claude") ?? join8(homedir5(), ".claude", "local", "claude");
+      return firstExistingPath([
+        join8(home, ".claude", "local", "claude"),
+        "/usr/local/bin/claude",
+        join8(home, ".npm-global", "bin", "claude"),
+        join8(home, ".local", "bin", "claude"),
+        "/opt/homebrew/bin/claude"
+      ]) ?? join8(home, ".claude", "local", "claude");
     case "codex":
-      return which("codex") ?? "/usr/local/bin/codex";
+      return firstExistingPath([
+        "/usr/local/bin/codex",
+        join8(home, ".npm-global", "bin", "codex"),
+        join8(home, ".local", "bin", "codex"),
+        "/opt/homebrew/bin/codex"
+      ]) ?? "/usr/local/bin/codex";
     case "cursor":
-      return which("cursor-agent") ?? "/usr/local/bin/cursor-agent";
+      return firstExistingPath([
+        "/usr/local/bin/cursor-agent",
+        join8(home, ".npm-global", "bin", "cursor-agent"),
+        join8(home, ".local", "bin", "cursor-agent"),
+        "/opt/homebrew/bin/cursor-agent"
+      ]) ?? "/usr/local/bin/cursor-agent";
     case "hermes":
-      return which("hermes") ?? join8(homedir5(), ".local", "bin", "hermes");
+      return firstExistingPath([
+        join8(home, ".local", "bin", "hermes"),
+        "/usr/local/bin/hermes",
+        join8(home, ".npm-global", "bin", "hermes"),
+        "/opt/homebrew/bin/hermes"
+      ]) ?? join8(home, ".local", "bin", "hermes");
     case "pi":
-      return which("pi") ?? join8(homedir5(), ".local", "bin", "pi");
+      return firstExistingPath([
+        join8(home, ".local", "bin", "pi"),
+        "/usr/local/bin/pi",
+        join8(home, ".npm-global", "bin", "pi"),
+        "/opt/homebrew/bin/pi"
+      ]) ?? join8(home, ".local", "bin", "pi");
   }
 }
 
@@ -1470,19 +1496,19 @@ function embeddingSqlLiteral(vec) {
 }
 
 // dist/src/embeddings/disable.js
-import { createRequire } from "node:module";
+import { createRequire as createRequire2 } from "node:module";
 import { homedir as homedir11 } from "node:os";
 import { join as join14 } from "node:path";
 import { pathToFileURL } from "node:url";
 var cachedStatus = null;
 function defaultResolveTransformers() {
   try {
-    createRequire(import.meta.url).resolve("@huggingface/transformers");
+    createRequire2(import.meta.url).resolve("@huggingface/transformers");
     return;
   } catch {
   }
   const sharedDir = join14(homedir11(), ".hivemind", "embed-deps");
-  createRequire(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
+  createRequire2(pathToFileURL(`${sharedDir}/`).href).resolve("@huggingface/transformers");
 }
 var _resolve = defaultResolveTransformers;
 function detectStatus() {

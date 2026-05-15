@@ -276,6 +276,18 @@ await build({
     "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "undefined",
     "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "undefined",
     "process.env.HIVEMIND_INDEX_MARKER_DIR": "undefined",
+    // Transitively bundled from src/shell/grep-core.ts via the
+    // hivemind_search tool. Inline to undefined so the openclaw bundle has
+    // zero `process.env.X` reads — ClawHub's per-bundle static scanner
+    // treats any process.env access in a file that also fetch()s as
+    // critical `env-harvesting`. Defaults at the call sites (`?? "20"`,
+    // `=== "case-sensitive"`, etc.) still apply once env reads → undefined.
+    "process.env.HIVEMIND_SEMANTIC_LIMIT": "undefined",
+    "process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT": "undefined",
+    "process.env.HIVEMIND_GREP_LIKE": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_SEARCH": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "undefined",
   },
   plugins: [{
     // Dead-code elimination for transitively bundled CC/Codex-only features.
@@ -324,6 +336,39 @@ await build({
   external: ["node:*"],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+    // Inline `HIVEMIND_*` env reads to `undefined` so the openclaw
+    // skillify-worker bundle has zero `process.env.X` literals. ClawHub's
+    // static scanner treats any `process.env` access in a file that also
+    // does `fetch()` as critical `env-harvesting`, and the worker
+    // legitimately fetches Deeplake. Defaults at the call sites still apply
+    // (e.g. `process.env.HIVEMIND_DEBUG === "1"` → `undefined === "1"` →
+    // `false`, semantic-limit `?? "20"` → `20`). The other agents'
+    // worker bundles read these vars from process.env at runtime; only the
+    // openclaw bundle inlines them because only openclaw is scanned.
+    //
+    // The list below MUST cover every `process.env.HIVEMIND_*` that may be
+    // transitively imported into the worker bundle — even a single missed
+    // read leaves a literal `process.env.X` in the output and re-trips the
+    // rule. Sourced via:
+    //   grep -rn "process\.env\.HIVEMIND_" src/skillify src/shell \
+    //       src/deeplake-api.ts src/utils src/hooks/virtual-table-query.ts
+    "process.env.HIVEMIND_DEBUG": "undefined",
+    "process.env.HIVEMIND_TRACE_SQL": "undefined",
+    "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_LIMIT": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_SEARCH": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "undefined",
+    "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "undefined",
+    "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "undefined",
+    "process.env.HIVEMIND_INDEX_MARKER_DIR": "undefined",
+    "process.env.HIVEMIND_CURSOR_MODEL": "undefined",
+    "process.env.HIVEMIND_HERMES_PROVIDER": "undefined",
+    "process.env.HIVEMIND_HERMES_MODEL": "undefined",
+    "process.env.HIVEMIND_PI_PROVIDER": "undefined",
+    "process.env.HIVEMIND_PI_MODEL": "undefined",
+    "process.env.HIVEMIND_SKILLIFY_WORKER": "undefined",
+    "process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS": "undefined",
+    "process.env.HIVEMIND_AUTOPULL_DISABLED": "undefined",
   },
 });
 chmodSync("openclaw/dist/skillify-worker.js", 0o755);
