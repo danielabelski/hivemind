@@ -517,20 +517,17 @@ describe("EmbedClient — hello handshake / stuck daemon recycle", () => {
     expect(existsSync(pidPath)).toBe(false);
   });
 
-  it("recycles the daemon (SIGTERM + clear sock/pid) when hello returns a mismatched daemonPath", async () => {
+  it("recycles when the running daemon's path no longer exists on disk (GC'd marketplace bundle)", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
     const pidPath = join(dir, `hivemind-embed-${uid}.pid`);
-    // Pre-write a fake pidfile so the recycle path has something to read.
-    // PID 1 is the init process — SIGTERM to it will fail silently (good
-    // for test: we don't actually want to kill anything).
     writeFileSync(pidPath, "1");
 
     await startFakeDaemon(dir, (req) => {
       if (req.op === "hello") {
-        // Pretend the running daemon came from an old bundle path.
-        return { id: req.id, daemonPath: "/old/bundle/embed-daemon.js", pid: 1, protocolVersion: 1 };
+        // Stale path — bundle was GC'd by Claude Code's plugin-cache cleanup.
+        return { id: req.id, daemonPath: "/non/existent/old/bundle/embed-daemon.js", pid: 1, protocolVersion: 1 };
       }
       if (req.op === "embed") return { id: req.id, embedding: [0.5] };
       return { id: req.id, error: "unknown" };
@@ -543,9 +540,43 @@ describe("EmbedClient — hello handshake / stuck daemon recycle", () => {
       daemonEntry: "/new/bundle/embed-daemon.js",
     });
     await client.embed("hi");
-    // After recycle, both the pid file and the sock file should be gone.
     expect(existsSync(pidPath)).toBe(false);
     expect(existsSync(sockPath)).toBe(false);
+  });
+
+  it("does NOT recycle when paths differ but the running daemon's bundle still exists (multi-agent share)", async () => {
+    // Simulates: claude-code spawned the daemon; now codex connects.
+    // Both bundle files are present on disk → daemons are functionally
+    // identical → codex must NOT kill claude-code's daemon. Recycling
+    // here would cause endless thrash between the agents.
+    const dir = makeTmpDir();
+    const uid = String(process.getuid?.() ?? "test");
+    const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
+
+    // Two real daemon-binary paths on disk (just empty files; we only
+    // need existsSync(...) to return true).
+    const claudePath = join(dir, "claude-code-daemon.js");
+    const codexPath = join(dir, "codex-daemon.js");
+    writeFileSync(claudePath, "");
+    writeFileSync(codexPath, "");
+
+    await startFakeDaemon(dir, (req) => {
+      if (req.op === "hello") {
+        return { id: req.id, daemonPath: claudePath, pid: 99999, protocolVersion: 1 };
+      }
+      if (req.op === "embed") return { id: req.id, embedding: [0.5] };
+      return { id: req.id, error: "unknown" };
+    });
+
+    const client = new EmbedClient({
+      socketDir: dir,
+      timeoutMs: 500,
+      autoSpawn: false,
+      daemonEntry: codexPath,
+    });
+    const vec = await client.embed("hi");
+    expect(vec).toEqual([0.5]); // happily reused claude-code's daemon
+    expect(existsSync(sockPath)).toBe(true); // socket NOT recycled
   });
 
   it("only verifies hello once per EmbedClient instance (subsequent calls skip)", async () => {

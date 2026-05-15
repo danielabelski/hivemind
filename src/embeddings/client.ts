@@ -150,21 +150,37 @@ export class EmbedClient {
       return;
     }
     const hello = resp as HelloResponse;
-    // A daemon from before this protocol version answers `hello` with
-    // `{ id, error: "unknown op" }` and no `daemonPath`. Treat that the
-    // same as a path mismatch: the running daemon doesn't speak the
-    // current protocol, so it can't be trusted for what comes next.
-    const noProtocolSupport = !hello.daemonPath;
-    const mismatch = !noProtocolSupport && hello.daemonPath !== this.daemonEntry;
-    if (!noProtocolSupport && !mismatch) return;
-    if (_recycledStuckDaemon) return; // already recycled this process
-    _recycledStuckDaemon = true;
-    if (noProtocolSupport) {
+    // Recycle triggers — in order of severity:
+    //
+    // 1. No `daemonPath` in the response: the daemon predates this protocol
+    //    (i.e. `{ error: "unknown op" }` from an older bundle). It's an
+    //    incompatible older binary that needs to be replaced.
+    //
+    // 2. `daemonPath` is set but the file no longer exists on disk: the
+    //    bundle that spawned it was GC'd (typical after Claude Code prunes
+    //    old marketplace versions). The daemon is orphaned and a fresh
+    //    spawn would use the current bundle.
+    //
+    // Note we DO NOT recycle on plain path mismatch when both paths exist
+    // — that's the multi-agent case (e.g. claude-code spawned the daemon,
+    // codex now wants to use it). All bundled daemons at the same
+    // protocolVersion are functionally identical, so any of them serves
+    // every agent fine. Recycling here would cause endless thrash.
+    if (_recycledStuckDaemon) return;
+    if (!hello.daemonPath) {
+      _recycledStuckDaemon = true;
       log(`daemon does not implement hello (older protocol); recycling`);
-    } else {
-      log(`daemon path mismatch — running=${hello.daemonPath} expected=${this.daemonEntry}; recycling`);
+      this.recycleDaemon(hello.pid);
+      return;
     }
-    this.recycleDaemon(hello.pid);
+    if (hello.daemonPath !== this.daemonEntry && !existsSync(hello.daemonPath)) {
+      _recycledStuckDaemon = true;
+      log(`daemon path no longer on disk — running=${hello.daemonPath} (gone) expected=${this.daemonEntry}; recycling`);
+      this.recycleDaemon(hello.pid);
+      return;
+    }
+    // Compatible — same path, or different path but functionally identical
+    // (multi-agent sharing of one warm daemon).
   }
 
   /**
