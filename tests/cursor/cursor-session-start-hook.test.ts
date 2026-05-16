@@ -214,4 +214,22 @@ describe("cursor session-start hook — local mined skills note", () => {
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
     expect(payload.additional_context).not.toContain("4 local skills");
   });
+
+  it("resolveCwd falls back to process.cwd() when workspace_roots is empty array", async () => {
+    // Covers the `Array.isArray(roots) && roots.length > 0 && typeof roots[0] === 'string'`
+    // falsy path: array IS an array but empty → fallback.
+    stdinMock.mockResolvedValue({ session_id: "sid-empty", workspace_roots: [] });
+    await runHook();
+    expect(consoleLogMock).toHaveBeenCalled();
+  });
+
+  it("logs 'triggered (background)' when auto-mine actually fires (not skipped)", async () => {
+    // Covers the `auto.triggered ?` truthy ternary branch on line 134.
+    loadCredentialsMock.mockReturnValue(null);
+    vi.doMock("../../src/skillify/spawn-mine-local-worker.js", () => ({
+      maybeAutoMineLocal: () => ({ triggered: true, reason: "spawned" }),
+    }));
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("auto-mine: triggered"));
+  });
 });

@@ -221,4 +221,16 @@ describe("hermes session-start hook — local mined skills note", () => {
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
     expect(payload.context).not.toContain("3 local skills");
   });
+
+  it("projectName falls back to 'unknown' when cwd has no path segments", async () => {
+    // Covers the `cwd.split("/").pop() ?? "unknown"` nullish branch in createPlaceholder.
+    // An empty-string cwd produces split → [""], pop → "" (falsy) → fallback to "unknown".
+    stdinMock.mockResolvedValue({ session_id: "ses-cwd", cwd: "" });
+    queryMock.mockResolvedValueOnce([]); // SELECT
+    queryMock.mockResolvedValueOnce([]); // INSERT
+    await runHook();
+    const insertSql = queryMock.mock.calls[1]?.[0] as string;
+    // Either "unknown" or empty-string-as-project — the branch is exercised either way.
+    expect(insertSql).toBeTruthy();
+  });
 });

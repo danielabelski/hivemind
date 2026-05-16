@@ -165,6 +165,16 @@ describe("codex session-start hook — spawn async setup", () => {
     await runHook();
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  it("logs 'triggered (background)' on the auto-mine path when creds are missing and worker actually fires", async () => {
+    // Covers the `auto.triggered ?` truthy path in the log line at line 54.
+    loadCredsMock.mockReturnValue(null);
+    vi.doMock("../../src/skillify/spawn-mine-local-worker.js", () => ({
+      maybeAutoMineLocal: () => ({ triggered: true, reason: "spawned" }),
+    }));
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("auto-mine: triggered"));
+  });
 });
 
 describe("codex session-start hook — fatal catch", () => {
