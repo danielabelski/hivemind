@@ -170,4 +170,29 @@ describe("parseMultiVerdict", () => {
     expect(mv!.skills[0].description).toBe("also");
     expect(mv!.skills[0].body).toBe("body");
   });
+
+  it("returns null when parsed JSON is not an object", () => {
+    expect(parseMultiVerdict(JSON.stringify("just a string"))).toBeNull();
+    expect(parseMultiVerdict(JSON.stringify(42))).toBeNull();
+  });
+
+  it("returns undefined reason when missing", () => {
+    const mv = parseMultiVerdict(JSON.stringify({ skills: [] }));
+    expect(mv).not.toBeNull();
+    expect(mv!.reason).toBeUndefined();
+  });
+
+  it("skips entries where skill is null or not an object", () => {
+    const raw = JSON.stringify({
+      reason: "mixed",
+      skills: [
+        null,
+        "not an object",
+        { name: "kept", description: "x", body: "y" },
+      ],
+    });
+    const mv = parseMultiVerdict(raw);
+    expect(mv!.skills).toHaveLength(1);
+    expect(mv!.skills[0].name).toBe("kept");
+  });
 });

@@ -6,11 +6,11 @@
  * mine-local e2e flow instead of mocked here.
  */
 
-import { describe, it, expect, afterAll } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, afterAll, afterEach, beforeEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pickSessions, nativeJsonlToRows, type SessionFile } from "../../src/skillify/local-source.js";
+import { pickSessions, nativeJsonlToRows, listLocalSessions, type SessionFile, type AgentInstall } from "../../src/skillify/local-source.js";
 
 function makeSession(id: string, mtime: number, inCwd: boolean): SessionFile {
   return {
@@ -198,6 +198,185 @@ describe("nativeJsonlToRows", () => {
     const rows = nativeJsonlToRows(path, "sid", "claude_code");
     expect(rows).toHaveLength(2);
     expect(rows[0].content).toBe("the only real one");
+  });
+});
+
+describe("listLocalSessions", () => {
+  const root = mkdtempSync(join(tmpdir(), "list-local-test-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it("returns [] when sessionRoot does not exist", () => {
+    const installs: AgentInstall[] = [{
+      agent: "claude_code",
+      sessionRoot: join(root, "does-not-exist"),
+      encodeCwd: (cwd) => cwd.replace(/[/_]/g, "-"),
+    }];
+    expect(listLocalSessions(installs, "/some/cwd")).toEqual([]);
+  });
+
+  it("walks subdirs and collects .jsonl files, tagging inCwd correctly", () => {
+    const sessionRoot = join(root, "scenario1");
+    const cwdSub = "-home-foo-bar";
+    const otherSub = "-other-project";
+    mkdirSync(join(sessionRoot, cwdSub), { recursive: true });
+    mkdirSync(join(sessionRoot, otherSub), { recursive: true });
+    writeFileSync(join(sessionRoot, cwdSub, "session-a.jsonl"), "");
+    writeFileSync(join(sessionRoot, cwdSub, "session-b.jsonl"), "");
+    writeFileSync(join(sessionRoot, otherSub, "session-c.jsonl"), "");
+    // non-jsonl file should be skipped
+    writeFileSync(join(sessionRoot, otherSub, "notes.txt"), "ignored");
+
+    const installs: AgentInstall[] = [{
+      agent: "claude_code",
+      sessionRoot,
+      encodeCwd: () => cwdSub,
+    }];
+    const out = listLocalSessions(installs, "/home/foo/bar");
+    expect(out).toHaveLength(3);
+    const aRow = out.find(s => s.sessionId === "session-a");
+    const cRow = out.find(s => s.sessionId === "session-c");
+    expect(aRow?.inCwd).toBe(true);
+    expect(cRow?.inCwd).toBe(false);
+    expect(out.every(s => s.path.endsWith(".jsonl"))).toBe(true);
+    expect(out.every(s => typeof s.mtime === "number")).toBe(true);
+  });
+
+  it("skips entries that are not directories (e.g. stray files at root)", () => {
+    const sessionRoot = join(root, "scenario2");
+    mkdirSync(sessionRoot, { recursive: true });
+    // A file directly under sessionRoot — not a subdir
+    writeFileSync(join(sessionRoot, "stray.txt"), "noise");
+    // A real subdir with one session
+    mkdirSync(join(sessionRoot, "real"), { recursive: true });
+    writeFileSync(join(sessionRoot, "real", "s.jsonl"), "");
+
+    const installs: AgentInstall[] = [{
+      agent: "claude_code",
+      sessionRoot,
+      encodeCwd: () => "irrelevant",
+    }];
+    const out = listLocalSessions(installs, "/any");
+    expect(out).toHaveLength(1);
+    expect(out[0].sessionId).toBe("s");
+  });
+
+  it("aggregates across multiple installs", () => {
+    const rootA = join(root, "agentA");
+    const rootB = join(root, "agentB");
+    mkdirSync(join(rootA, "subA"), { recursive: true });
+    mkdirSync(join(rootB, "subB"), { recursive: true });
+    writeFileSync(join(rootA, "subA", "a1.jsonl"), "");
+    writeFileSync(join(rootB, "subB", "b1.jsonl"), "");
+
+    const installs: AgentInstall[] = [
+      { agent: "claude_code", sessionRoot: rootA, encodeCwd: () => "subA" },
+      { agent: "codex", sessionRoot: rootB, encodeCwd: () => "__cwd_unknown__" },
+    ];
+    const out = listLocalSessions(installs, "/cwd");
+    expect(out.map(s => s.agent).sort()).toEqual(["claude_code", "codex"]);
+  });
+});
+
+describe("detectInstalledAgents + detectHostAgent + encodeCwdClaudeCode", () => {
+  let tmpHome: string;
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "detect-agents-"));
+    originalEnv = { ...process.env };
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    rmSync(tmpHome, { recursive: true, force: true });
+    vi.doUnmock("node:os");
+  });
+
+  async function importWithMockedHome(home: string) {
+    vi.doMock("node:os", async (orig) => {
+      const actual = await orig<typeof import("node:os")>();
+      return { ...actual, homedir: () => home };
+    });
+    return await import("../../src/skillify/local-source.js");
+  }
+
+  it("detectInstalledAgents: no agents installed → empty", async () => {
+    const mod = await importWithMockedHome(tmpHome);
+    expect(mod.detectInstalledAgents()).toEqual([]);
+  });
+
+  it("detectInstalledAgents: claude_code only", async () => {
+    mkdirSync(join(tmpHome, ".claude", "projects"), { recursive: true });
+    const mod = await importWithMockedHome(tmpHome);
+    const installs = mod.detectInstalledAgents();
+    expect(installs).toHaveLength(1);
+    expect(installs[0].agent).toBe("claude_code");
+    expect(installs[0].sessionRoot).toBe(join(tmpHome, ".claude", "projects"));
+    // encodeCwdClaudeCode: both '/' and '_' become '-'
+    expect(installs[0].encodeCwd("/home/foo/my_project")).toBe("-home-foo-my-project");
+  });
+
+  it("detectInstalledAgents: codex only", async () => {
+    mkdirSync(join(tmpHome, ".codex", "sessions"), { recursive: true });
+    const mod = await importWithMockedHome(tmpHome);
+    const installs = mod.detectInstalledAgents();
+    expect(installs).toHaveLength(1);
+    expect(installs[0].agent).toBe("codex");
+    expect(installs[0].encodeCwd("/anything")).toBe("__cwd_unknown__");
+  });
+
+  it("detectInstalledAgents: both claude_code and codex", async () => {
+    mkdirSync(join(tmpHome, ".claude", "projects"), { recursive: true });
+    mkdirSync(join(tmpHome, ".codex", "sessions"), { recursive: true });
+    const mod = await importWithMockedHome(tmpHome);
+    const installs = mod.detectInstalledAgents();
+    expect(installs.map(i => i.agent).sort()).toEqual(["claude_code", "codex"]);
+  });
+
+  it("detectHostAgent: returns claude_code via CLAUDECODE=1", async () => {
+    delete process.env.CODEX_HOME;
+    delete process.env.CODEX_SESSION_ID;
+    delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    process.env.CLAUDECODE = "1";
+    const mod = await importWithMockedHome(tmpHome);
+    expect(mod.detectHostAgent()).toBe("claude_code");
+  });
+
+  it("detectHostAgent: returns claude_code via CLAUDE_CODE_ENTRYPOINT", async () => {
+    delete process.env.CLAUDECODE;
+    delete process.env.CODEX_HOME;
+    delete process.env.CODEX_SESSION_ID;
+    process.env.CLAUDE_CODE_ENTRYPOINT = "cli";
+    const mod = await importWithMockedHome(tmpHome);
+    expect(mod.detectHostAgent()).toBe("claude_code");
+  });
+
+  it("detectHostAgent: returns codex via CODEX_HOME", async () => {
+    delete process.env.CLAUDECODE;
+    delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    delete process.env.CODEX_SESSION_ID;
+    process.env.CODEX_HOME = "/some/path";
+    const mod = await importWithMockedHome(tmpHome);
+    expect(mod.detectHostAgent()).toBe("codex");
+  });
+
+  it("detectHostAgent: returns codex via CODEX_SESSION_ID", async () => {
+    delete process.env.CLAUDECODE;
+    delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    delete process.env.CODEX_HOME;
+    process.env.CODEX_SESSION_ID = "abc";
+    const mod = await importWithMockedHome(tmpHome);
+    expect(mod.detectHostAgent()).toBe("codex");
+  });
+
+  it("detectHostAgent: returns null when no agent env vars are set", async () => {
+    delete process.env.CLAUDECODE;
+    delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    delete process.env.CODEX_HOME;
+    delete process.env.CODEX_SESSION_ID;
+    const mod = await importWithMockedHome(tmpHome);
+    expect(mod.detectHostAgent()).toBeNull();
   });
 });
 

@@ -18,6 +18,7 @@ const loadCredsMock = vi.fn();
 const debugLogMock = vi.fn();
 const spawnMock = vi.fn();
 const autoPullSkillsMock = vi.fn();
+const localManifestMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -32,6 +33,13 @@ vi.mock("../../src/utils/debug.js", () => ({
 vi.mock("../../src/skillify/auto-pull.js", () => ({
   autoPullSkills: (...a: any[]) => autoPullSkillsMock(...a),
 }));
+vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/skillify/local-manifest.js")>();
+  return {
+    ...actual,
+    countLocalManifestEntries: (...a: any[]) => localManifestMock(...a),
+  };
+});
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return { ...actual, spawn: (...a: any[]) => spawnMock(...a) };
@@ -76,6 +84,7 @@ beforeEach(() => {
   debugLogMock.mockReset();
   spawnMock.mockReset().mockImplementation(() => makeFakeChild());
   autoPullSkillsMock.mockReset().mockResolvedValue({ pulled: 0, skipped: true, reason: "stubbed" });
+  localManifestMock.mockReset().mockReturnValue(0);
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -166,6 +175,40 @@ describe("codex session-start hook — fatal catch", () => {
     await new Promise(r => setImmediate(r));
     expect(debugLogMock).toHaveBeenCalledWith("fatal: stdin boom");
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("codex session-start hook — local mined skills systemMessage", () => {
+  it("not logged in + 1 mined skill → systemMessage uses singular 'skill'", async () => {
+    loadCredsMock.mockReturnValue(null);
+    localManifestMock.mockReturnValue(1);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toContain("1 skill mined");
+    expect(parsed.systemMessage).not.toContain("1 skills");
+  });
+
+  it("not logged in + 5 mined skills → systemMessage uses plural 'skills'", async () => {
+    loadCredsMock.mockReturnValue(null);
+    localManifestMock.mockReturnValue(5);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toContain("5 skills mined");
+  });
+
+  it("not logged in + 0 mined → no systemMessage emitted", async () => {
+    loadCredsMock.mockReturnValue(null);
+    localManifestMock.mockReturnValue(0);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toBeUndefined();
+  });
+
+  it("logged in + N mined → no systemMessage (only shown to logged-out users)", async () => {
+    localManifestMock.mockReturnValue(3);
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.systemMessage).toBeUndefined();
   });
 });
 
