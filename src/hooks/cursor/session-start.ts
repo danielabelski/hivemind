@@ -92,6 +92,7 @@ async function createPlaceholder(
   userName: string,
   orgName: string,
   workspaceId: string,
+  pluginVersion: string,
 ): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
   const existing = await api.query(
@@ -113,9 +114,9 @@ async function createPlaceholder(
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, creation_date, last_update_date) ` +
+    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'cursor', '${now}', '${now}')`,
+    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'cursor', '${sqlStr(pluginVersion)}', '${now}', '${now}')`,
   );
 }
 
@@ -141,6 +142,10 @@ async function main(): Promise<void> {
   // sees the upgrade notice promptly even when the API is down.
   await autoUpdate(creds, { agent: "cursor" });
 
+  // Resolve plugin version once — also stamped on the placeholder row.
+  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
+  const pluginVersion = current ?? "";
+
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (creds?.token && captureEnabled) {
     try {
@@ -151,7 +156,7 @@ async function main(): Promise<void> {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
         await api.ensureTable();
         await api.ensureSessionsTable(sessionsTable);
-        await createPlaceholder(api, table, sessionId, cwd, config.userName, config.orgName, config.workspaceId);
+        await createPlaceholder(api, table, sessionId, cwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
         log("placeholder created");
       }
     } catch (e: any) {
@@ -169,7 +174,6 @@ async function main(): Promise<void> {
   log(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
 
   let versionNotice = "";
-  const current = getInstalledVersion(__bundleDir, ".claude-plugin");
   if (current) versionNotice = `\nHivemind v${current}`;
 
   // No placeholder substitution — inject already uses bare `hivemind <sub>` form.

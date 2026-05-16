@@ -299,3 +299,233 @@ describe("uninstallClaude", () => {
     expect(calls().length).toBe(1);
   });
 });
+
+
+describe("cleanupBrokenSettingsHooks", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  let TEMP_HOME = "";
+  let ORIGINAL_HOME: string | undefined;
+
+  function writeSettings(s: unknown) {
+    const dir = path.join(TEMP_HOME, ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(s), "utf-8");
+  }
+  function readSettings(): any {
+    return JSON.parse(fs.readFileSync(path.join(TEMP_HOME, ".claude", "settings.json"), "utf-8"));
+  }
+  function bundlePath(rel: string) {
+    return path.join(TEMP_HOME, ".claude", "plugins", "hivemind", "bundle", rel);
+  }
+  function makeBrokenEntry(file: string) {
+    return { type: "command", command: `node "${bundlePath(file)}"`, timeout: 10 };
+  }
+
+  beforeEach(() => {
+    TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "hivemind-cleanup-test-"));
+    ORIGINAL_HOME = process.env.HOME;
+    process.env.HOME = TEMP_HOME;
+    execFileSyncMock.mockReset();
+  });
+  afterEach(() => {
+    if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
+    else delete process.env.HOME;
+    fs.rmSync(TEMP_HOME, { recursive: true, force: true });
+  });
+
+  it("returns {removed:0} when settings.json does not exist", async () => {
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(cleanupBrokenSettingsHooks()).toEqual({ removed: 0, events: [] });
+  });
+
+  it("returns {removed:0} when settings.json has no hooks key", async () => {
+    writeSettings({ unrelated: "field" });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(cleanupBrokenSettingsHooks()).toEqual({ removed: 0, events: [] });
+  });
+
+  it("returns {removed:0} when settings.json is malformed (no-op, file untouched)", async () => {
+    fs.mkdirSync(path.join(TEMP_HOME, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(TEMP_HOME, ".claude", "settings.json"), "{not-json", "utf-8");
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(cleanupBrokenSettingsHooks()).toEqual({ removed: 0, events: [] });
+    expect(fs.readFileSync(path.join(TEMP_HOME, ".claude", "settings.json"), "utf-8")).toBe("{not-json");
+  });
+
+  it("returns {removed:0} when settings.json is literally 'null' (CodeRabbit PR#166)", async () => {
+    // JSON.parse("null") returns null without throwing — dereferencing
+    // `.hooks` would crash. Regression guard for the post-parse null check.
+    fs.mkdirSync(path.join(TEMP_HOME, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(TEMP_HOME, ".claude", "settings.json"), "null", "utf-8");
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(() => cleanupBrokenSettingsHooks()).not.toThrow();
+    expect(cleanupBrokenSettingsHooks()).toEqual({ removed: 0, events: [] });
+  });
+
+  it("returns {removed:0} when settings.json is a JSON primitive (string/number/bool)", async () => {
+    // Other JSON.parse non-object outputs: "5", "\"x\"", "true". All valid
+    // JSON, none usable as a SettingsShape.
+    fs.mkdirSync(path.join(TEMP_HOME, ".claude"), { recursive: true });
+    for (const literal of ["5", "\"some-string\"", "true", "[]"]) {
+      fs.writeFileSync(path.join(TEMP_HOME, ".claude", "settings.json"), literal, "utf-8");
+      const { cleanupBrokenSettingsHooks } = await importFresh();
+      expect(() => cleanupBrokenSettingsHooks(), `failed for literal ${literal}`).not.toThrow();
+      expect(cleanupBrokenSettingsHooks()).toEqual({ removed: 0, events: [] });
+    }
+  });
+
+  it("removes a hook entry whose legacy path points at a non-existent file", async () => {
+    // Path is in the legacy fragment AND the file doesn't exist → remove.
+    writeSettings({
+      hooks: {
+        SessionStart: [{ hooks: [
+          makeBrokenEntry("session-notifications.js"),
+        ] }],
+      },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r = cleanupBrokenSettingsHooks();
+    expect(r.removed).toBe(1);
+    expect(r.events).toEqual(["SessionStart"]);
+    // Empty matcher block was dropped (no orphan empty hooks array).
+    const s = readSettings();
+    expect(s.hooks.SessionStart).toEqual([]);
+  });
+
+  it("PRESERVES a legacy-path hook entry whose file actually exists", async () => {
+    // Legitimate legacy install: path is legacy-style, file exists on disk → keep.
+    const bundleDir = path.join(TEMP_HOME, ".claude", "plugins", "hivemind", "bundle");
+    fs.mkdirSync(bundleDir, { recursive: true });
+    fs.writeFileSync(path.join(bundleDir, "session-start.js"), "// real legacy bundle", "utf-8");
+
+    writeSettings({
+      hooks: {
+        SessionStart: [{ hooks: [
+          makeBrokenEntry("session-start.js"),
+        ] }],
+      },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r = cleanupBrokenSettingsHooks();
+    expect(r.removed).toBe(0);
+    expect(readSettings().hooks.SessionStart[0].hooks).toHaveLength(1);
+  });
+
+  it("PRESERVES marketplace-style entries with ${CLAUDE_PLUGIN_ROOT}", async () => {
+    // These are the correct, runtime-resolved entries. Don't touch.
+    writeSettings({
+      hooks: {
+        SessionStart: [{ hooks: [
+          { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/bundle/session-start.js"', timeout: 10 },
+        ] }],
+      },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r = cleanupBrokenSettingsHooks();
+    expect(r.removed).toBe(0);
+    expect(readSettings().hooks.SessionStart[0].hooks).toHaveLength(1);
+  });
+
+  it("PRESERVES non-hivemind entries unconditionally", async () => {
+    writeSettings({
+      hooks: {
+        PostToolUse: [{ matcher: "Bash", hooks: [
+          { type: "command", command: "/usr/local/bin/lint-bash" },
+        ] }],
+      },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r = cleanupBrokenSettingsHooks();
+    expect(r.removed).toBe(0);
+    expect(readSettings().hooks.PostToolUse[0].hooks).toHaveLength(1);
+  });
+
+  it("removes broken hivemind entries while preserving non-hivemind in the same matcher", async () => {
+    writeSettings({
+      hooks: {
+        PostToolUse: [{ hooks: [
+          { type: "command", command: "/usr/local/bin/some-other-tool" }, // keep
+          makeBrokenEntry("capture.js"),                                   // remove
+        ] }],
+      },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r = cleanupBrokenSettingsHooks();
+    expect(r.removed).toBe(1);
+    expect(r.events).toEqual(["PostToolUse"]);
+    const remaining = readSettings().hooks.PostToolUse[0].hooks;
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].command).toBe("/usr/local/bin/some-other-tool");
+  });
+
+  it("removes broken entries across multiple events in one pass", async () => {
+    writeSettings({
+      hooks: {
+        SessionStart: [{ hooks: [makeBrokenEntry("session-notifications.js")] }],
+        SessionEnd:   [{ hooks: [makeBrokenEntry("session-end.js")] }],
+        PostToolUse:  [{ hooks: [makeBrokenEntry("capture.js")] }],
+      },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r = cleanupBrokenSettingsHooks();
+    expect(r.removed).toBe(3);
+    expect(r.events.sort()).toEqual(["PostToolUse", "SessionEnd", "SessionStart"]);
+  });
+
+  it("is idempotent — second call after first cleanup is a no-op", async () => {
+    writeSettings({
+      hooks: { SessionStart: [{ hooks: [makeBrokenEntry("session-notifications.js")] }] },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    const r1 = cleanupBrokenSettingsHooks();
+    expect(r1.removed).toBe(1);
+    const r2 = cleanupBrokenSettingsHooks();
+    expect(r2.removed).toBe(0);
+  });
+
+  it("handles non-string command field gracefully", async () => {
+    writeSettings({
+      hooks: { SessionStart: [{ hooks: [
+        { type: "command", command: null, timeout: 10 },
+      ] }] },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(cleanupBrokenSettingsHooks().removed).toBe(0);
+  });
+
+  it("handles Windows-style backslash paths (defensive)", async () => {
+    // The buggy helper could have produced Windows-style paths on Windows.
+    // Cleanup must recognize them by normalizing backslashes.
+    writeSettings({
+      hooks: { SessionStart: [{ hooks: [{
+        type: "command",
+        command: `node "${TEMP_HOME}\\.claude\\plugins\\hivemind\\bundle\\session-notifications.js"`,
+        timeout: 5,
+      }] }] },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    // Cleanup only fires if the path doesn't exist; on Linux this Windows-style
+    // path won't exist either way, so the broken-entry detection should fire.
+    expect(cleanupBrokenSettingsHooks().removed).toBe(1);
+  });
+
+  it("does NOT touch matcher blocks with no hooks array (malformed but harmless)", async () => {
+    writeSettings({
+      hooks: { SessionStart: [{ /* no hooks key */ } as any] },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(cleanupBrokenSettingsHooks().removed).toBe(0);
+    // Matcher block preserved verbatim.
+    expect(readSettings().hooks.SessionStart).toHaveLength(1);
+  });
+
+  it("does NOT touch events whose value is not an array (defensive)", async () => {
+    writeSettings({
+      hooks: { SessionStart: "not-an-array" as any },
+    });
+    const { cleanupBrokenSettingsHooks } = await importFresh();
+    expect(cleanupBrokenSettingsHooks().removed).toBe(0);
+  });
+});

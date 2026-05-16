@@ -36,9 +36,17 @@ async function main(): Promise<void> {
   // as session-start.ts. Avoids duplicate work for nested invocations.
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
-  // Drain stdin so Claude Code's writer doesn't EPIPE; we don't currently
-  // use the input, but future rules may key dedup on session_id.
-  await readStdin<SessionStartInput>().catch(() => ({}));
+  // Drain stdin so Claude Code's writer doesn't EPIPE. We also extract
+  // session_id so the local-usage source can scope its dedupKey to the
+  // current session — two parallel hook fires for the same session share
+  // the same id and dedupe to one emission via the atomic claim file.
+  const input = await readStdin<SessionStartInput>().catch(() => ({} as SessionStartInput));
+  // Trim + non-empty check: an empty or whitespace-only session_id would
+  // collapse the dedupKey across unrelated sessions. fetchLocalUsageNotifications
+  // already returns [] when sessionId is undefined; route there instead of
+  // letting an empty string slip through.
+  const rawSessionId = typeof input?.session_id === "string" ? input.session_id.trim() : "";
+  const sessionId = rawSessionId.length > 0 ? rawSessionId : undefined;
 
   const creds = loadCredentials();
   // Read the local-mined count here (rules stay pure / IO-free). countLocalManifestEntries
@@ -47,7 +55,7 @@ async function main(): Promise<void> {
   let localSkillsCount: number | null = null;
   try { localSkillsCount = countLocalManifestEntries(); }
   catch { /* keep null */ }
-  await drainSessionStart({ agent: "claude-code", creds, localSkillsCount });
+  await drainSessionStart({ agent: "claude-code", creds, sessionId, localSkillsCount });
 }
 
 main().catch((e) => { log(`fatal: ${e?.message ?? String(e)}`); process.exit(0); });
