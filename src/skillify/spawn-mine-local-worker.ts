@@ -25,7 +25,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LOCAL_MANIFEST_PATH, LOCAL_MINE_LOCK_PATH } from "./local-manifest.js";
 
 const HOME = homedir();
@@ -39,13 +40,50 @@ const CLAUDE_PROJECTS_DIR = join(HOME, ".claude", "projects");
 // generous buffer for slow gates without leaving a stale lock forever.
 const LOCK_STALE_MS = 15 * 60 * 1000;
 
-function findHivemindBin(): string | null {
+/**
+ * How to invoke the `hivemind` CLI. Two flavours:
+ *   - `node-script`: run `node <path>` (path is a bundled cli.js inside the
+ *     same plugin install as this hook). Preferred — guarantees the worker
+ *     is the SAME version as the hook that spawned it, so a new subcommand
+ *     introduced in this release can't go missing because the user has an
+ *     older `hivemind` first on PATH.
+ *   - `bin`: run the binary directly (resolved via `which hivemind`).
+ *     Fallback for installs where the bundled cli.js is missing (e.g. a
+ *     legacy install layout or a user who hand-trimmed the plugin tree).
+ */
+type HivemindLauncher =
+  | { kind: "node-script"; path: string }
+  | { kind: "bin"; path: string };
+
+/**
+ * Locate the CLI bundle that ships in the SAME plugin install as this
+ * hook bundle. Layout:
+ *   <plugin>/<agent>/bundle/session-start.js   ← spawn-mine-local-worker is bundled into this
+ *   <plugin>/bundle/cli.js                     ← target
+ * From either the source TS (during tests) or the bundled JS (at runtime),
+ * the relative path `../../bundle/cli.js` lands on the shared CLI bundle.
+ * Returns null when the file is missing — caller falls back to `which`.
+ */
+function findBundledCliPath(): string | null {
+  try {
+    const thisDir = dirname(fileURLToPath(import.meta.url));
+    const cliPath = join(thisDir, "..", "..", "bundle", "cli.js");
+    return existsSync(cliPath) ? cliPath : null;
+  } catch {
+    return null;
+  }
+}
+
+function findHivemindLauncher(): HivemindLauncher | null {
+  const bundled = findBundledCliPath();
+  if (bundled) return { kind: "node-script", path: bundled };
   try {
     const out = execFileSync("which", ["hivemind"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return out.trim() || null;
+    const bin = out.trim();
+    return bin ? { kind: "bin", path: bin } : null;
   } catch {
     return null;
   }
@@ -109,8 +147,8 @@ export function maybeAutoMineLocal(): AutoMineGuardReport {
     catch { return { triggered: false, reason: "lock-exists" }; }
   }
   if (!hasLocalClaudeSessions()) return { triggered: false, reason: "no-claude-sessions" };
-  const bin = findHivemindBin();
-  if (!bin) return { triggered: false, reason: "no-hivemind-bin" };
+  const launcher = findHivemindLauncher();
+  if (!launcher) return { triggered: false, reason: "no-hivemind-bin" };
 
   // Acquire the lock as a courtesy sentinel against rapid double-fire.
   // The exclusive open (wx) is atomic on POSIX — only one caller can win.
@@ -125,7 +163,10 @@ export function maybeAutoMineLocal(): AutoMineGuardReport {
   try {
     mkdirSync(join(HOME, ".claude", "hooks"), { recursive: true });
     const out = openSync(LOG_PATH, "a");
-    const child = spawn(bin, ["skillify", "mine-local"], {
+    const [cmd, args] = launcher.kind === "node-script"
+      ? [process.execPath, [launcher.path, "skillify", "mine-local"]]
+      : [launcher.path, ["skillify", "mine-local"]];
+    const child = spawn(cmd, args, {
       detached: true,
       stdio: ["ignore", out, out],
       env: process.env,

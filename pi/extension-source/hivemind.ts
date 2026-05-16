@@ -31,6 +31,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 import { spawn, spawnSync, execSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -730,13 +731,24 @@ function piMaybeAutoMineLocal(): boolean {
     } catch { return false; }
     if (!hasJsonl) return false;
 
-    // Locate the hivemind binary on PATH; skip auto-mine if missing.
-    let bin: string | null = null;
+    // Prefer the sibling bundled CLI (same plugin install as this hook
+    // extension → guaranteed to know `mine-local`). Fall back to PATH for
+    // unusual install layouts. Mirrors findHivemindLauncher() in
+    // src/skillify/spawn-mine-local-worker.ts.
+    let launcher: { kind: "node-script" | "bin"; path: string } | null = null;
     try {
-      const out = execFileSync("which", ["hivemind"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-      bin = String(out).trim() || null;
-    } catch { return false; }
-    if (!bin) return false;
+      const thisDir = dirname(fileURLToPath(import.meta.url));
+      const cliPath = join(thisDir, "..", "..", "bundle", "cli.js");
+      if (existsSync(cliPath)) launcher = { kind: "node-script", path: cliPath };
+    } catch { /* fall through to which */ }
+    if (!launcher) {
+      try {
+        const out = execFileSync("which", ["hivemind"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+        const bin = String(out).trim();
+        if (bin) launcher = { kind: "bin", path: bin };
+      } catch { return false; }
+    }
+    if (!launcher) return false;
 
     // Acquire the lock (exclusive create); if another pi session got
     // here first, skip.
@@ -749,7 +761,10 @@ function piMaybeAutoMineLocal(): boolean {
     try {
       mkdirSync(dirname(PI_AUTO_MINE_LOG_PATH), { recursive: true });
       const out = openSync(PI_AUTO_MINE_LOG_PATH, "a");
-      const child = spawn(bin, ["skillify", "mine-local"], {
+      const [cmd, args]: [string, string[]] = launcher.kind === "node-script"
+        ? [process.execPath, [launcher.path, "skillify", "mine-local"]]
+        : [launcher.path, ["skillify", "mine-local"]];
+      const child = spawn(cmd, args, {
         detached: true,
         stdio: ["ignore", out, out],
         env: process.env,

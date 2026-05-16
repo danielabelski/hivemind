@@ -92,7 +92,11 @@ describe("codex session-start hook — guards", () => {
     loadCredsMock.mockReturnValue(null);
     const out = await runHook();
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(out).toContain("Not logged in to Deeplake");
+    // Codex hook now emits JSON, not plain text. Parse + assert on
+    // additionalContext (single-line status). See AGENT_CHANNELS.md → Codex
+    // for why we kept this minimal.
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: not logged in");
     expect(debugLogMock).toHaveBeenCalledWith(
       expect.stringContaining("no credentials found"),
     );
@@ -103,8 +107,9 @@ describe("codex session-start hook — guards", () => {
     expect(debugLogMock).toHaveBeenCalledWith(
       expect.stringContaining("credentials loaded: org=acme"),
     );
-    expect(out).toContain("Logged in to Deeplake as org: acme");
-    expect(out).toContain("workspace: default");
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: logged in as org acme");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
   });
 
   it("falls back to orgId when orgName is missing", async () => {
@@ -115,8 +120,9 @@ describe("codex session-start hook — guards", () => {
     expect(debugLogMock).toHaveBeenCalledWith(
       expect.stringContaining("credentials loaded: org=org-uuid-123"),
     );
-    expect(out).toContain("Logged in to Deeplake as org: org-uuid-123");
-    expect(out).toContain("workspace: staging");
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: logged in as org org-uuid-123");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: staging");
   });
 
   it("defaults workspace to 'default' when creds omit workspaceId", async () => {
@@ -124,7 +130,8 @@ describe("codex session-start hook — guards", () => {
       token: "tok", orgId: "o", orgName: "acme", userName: "alice",
     });
     const out = await runHook();
-    expect(out).toContain("workspace: default");
+    const parsed = JSON.parse(out!.trim());
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
   });
 });
 

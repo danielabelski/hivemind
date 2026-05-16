@@ -54,8 +54,8 @@ var init_index_marker_store = __esm({
 
 // dist/src/hooks/codex/session-start.js
 import { spawn as spawn2 } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname as dirname5, join as join13 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname6, join as join13 } from "node:path";
 
 // dist/src/commands/auth.js
 import { execSync } from "node:child_process";
@@ -104,32 +104,6 @@ function readStdin() {
   });
 }
 
-// dist/src/cli/skillify-spec.js
-var SKILLIFY_COMMANDS = [
-  { cmd: "hivemind skillify", desc: "show scope, team, install, per-project state" },
-  { cmd: "hivemind skillify pull", desc: "sync project skills from the org table to local FS" },
-  { cmd: "hivemind skillify pull --user <email>", desc: "only skills authored by that user" },
-  { cmd: "hivemind skillify pull --users <a,b,c>", desc: "only skills from those authors" },
-  { cmd: "hivemind skillify pull --all-users", desc: 'explicit "no author filter" (default)' },
-  { cmd: "hivemind skillify pull --to <project|global>", desc: "install location (project=cwd/.claude/skills, global=~/.claude/skills)" },
-  { cmd: "hivemind skillify pull --dry-run", desc: "preview without touching disk" },
-  { cmd: "hivemind skillify pull --force", desc: "overwrite local files even if up-to-date (creates .bak)" },
-  { cmd: "hivemind skillify pull <skill-name>", desc: "pull only that one skill (combines with --user)" },
-  { cmd: "hivemind skillify unpull", desc: "remove every skill previously installed by pull" },
-  { cmd: "hivemind skillify unpull --user <email>", desc: "remove only that author's pulls" },
-  { cmd: "hivemind skillify unpull --not-mine", desc: "remove all pulls except your own" },
-  { cmd: "hivemind skillify unpull --dry-run", desc: "preview without touching disk" },
-  { cmd: "hivemind skillify scope <me|team|org>", desc: "sharing scope for newly mined skills" },
-  { cmd: "hivemind skillify install <project|global>", desc: "default install location for new skills" },
-  { cmd: "hivemind skillify promote <skill-name>", desc: "move a project skill to the global location" },
-  { cmd: "hivemind skillify team add|remove|list <name>", desc: "manage team member list" },
-  { cmd: "hivemind skillify mine-local", desc: "one-shot: mine skills from local sessions (no auth needed)" }
-];
-function renderSkillifyCommands() {
-  const maxLen = Math.max(...SKILLIFY_COMMANDS.map((c) => c.cmd.length));
-  return SKILLIFY_COMMANDS.map((c) => `- ${c.cmd.padEnd(maxLen + 2)} \u2014 ${c.desc}`).join("\n");
-}
-
 // dist/src/skillify/local-manifest.js
 import { existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
@@ -154,19 +128,33 @@ function countLocalManifestEntries(path = LOCAL_MANIFEST_PATH) {
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync as existsSync2, mkdirSync as mkdirSync3, openSync, readdirSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { join as join3 } from "node:path";
+import { dirname as dirname2, join as join3 } from "node:path";
+import { fileURLToPath } from "node:url";
 var HOME = homedir3();
 var HIVEMIND_DIR = join3(HOME, ".claude", "hivemind");
 var LOG_PATH = join3(HOME, ".claude", "hooks", "mine-local.log");
 var CLAUDE_PROJECTS_DIR = join3(HOME, ".claude", "projects");
 var LOCK_STALE_MS = 15 * 60 * 1e3;
-function findHivemindBin() {
+function findBundledCliPath() {
+  try {
+    const thisDir = dirname2(fileURLToPath(import.meta.url));
+    const cliPath = join3(thisDir, "..", "..", "bundle", "cli.js");
+    return existsSync2(cliPath) ? cliPath : null;
+  } catch {
+    return null;
+  }
+}
+function findHivemindLauncher() {
+  const bundled = findBundledCliPath();
+  if (bundled)
+    return { kind: "node-script", path: bundled };
   try {
     const out = execFileSync("which", ["hivemind"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"]
     });
-    return out.trim() || null;
+    const bin = out.trim();
+    return bin ? { kind: "bin", path: bin } : null;
   } catch {
     return null;
   }
@@ -212,8 +200,8 @@ function maybeAutoMineLocal() {
   }
   if (!hasLocalClaudeSessions())
     return { triggered: false, reason: "no-claude-sessions" };
-  const bin = findHivemindBin();
-  if (!bin)
+  const launcher = findHivemindLauncher();
+  if (!launcher)
     return { triggered: false, reason: "no-hivemind-bin" };
   try {
     mkdirSync3(HIVEMIND_DIR, { recursive: true });
@@ -225,7 +213,8 @@ function maybeAutoMineLocal() {
   try {
     mkdirSync3(join3(HOME, ".claude", "hooks"), { recursive: true });
     const out = openSync(LOG_PATH, "a");
-    const child = spawn(bin, ["skillify", "mine-local"], {
+    const [cmd, args] = launcher.kind === "node-script" ? [process.execPath, [launcher.path, "skillify", "mine-local"]] : [launcher.path, ["skillify", "mine-local"]];
+    const child = spawn(cmd, args, {
       detached: true,
       stdio: ["ignore", out, out],
       env: process.env
@@ -257,7 +246,7 @@ function log(tag, msg) {
 
 // dist/src/utils/version-check.js
 import { readFileSync as readFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join5 } from "node:path";
+import { dirname as dirname3, join as join5 } from "node:path";
 function getInstalledVersion(bundleDir, pluginManifestDir) {
   try {
     const pluginJson = join5(bundleDir, "..", pluginManifestDir, "plugin.json");
@@ -289,7 +278,7 @@ function getInstalledVersion(bundleDir, pluginManifestDir) {
         return pkg.version;
     } catch {
     }
-    const parent = dirname2(dir);
+    const parent = dirname3(dir);
     if (parent === dir)
       break;
     dir = parent;
@@ -760,7 +749,7 @@ var DeeplakeApi = class {
 // dist/src/skillify/pull.js
 import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync6, mkdirSync as mkdirSync7, renameSync as renameSync3, lstatSync as lstatSync2, readlinkSync, symlinkSync, unlinkSync as unlinkSync4 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
-import { dirname as dirname4, join as join12 } from "node:path";
+import { dirname as dirname5, join as join12 } from "node:path";
 
 // dist/src/skillify/skill-writer.js
 import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync6, readdirSync as readdirSync2, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
@@ -826,7 +815,7 @@ function parseFrontmatter(text) {
 // dist/src/skillify/manifest.js
 import { existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync7, renameSync as renameSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir8 } from "node:os";
-import { dirname as dirname3, join as join10 } from "node:path";
+import { dirname as dirname4, join as join10 } from "node:path";
 
 // dist/src/skillify/legacy-migration.js
 import { existsSync as existsSync6, renameSync } from "node:fs";
@@ -918,7 +907,7 @@ function loadManifest(path = manifestPath()) {
 }
 function saveManifest(m, path = manifestPath()) {
   migrateLegacyStateDir();
-  mkdirSync6(dirname3(path), { recursive: true });
+  mkdirSync6(dirname4(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync5(tmp, JSON.stringify(m, null, 2) + "\n", { mode: 384 });
   renameSync2(tmp, path);
@@ -1060,7 +1049,7 @@ function fanOutSymlinks(canonicalDir, dirName, agentRoots) {
       }
     }
     try {
-      mkdirSync7(dirname4(link), { recursive: true });
+      mkdirSync7(dirname5(link), { recursive: true });
       symlinkSync(canonicalDir, link, "dir");
       out.push(link);
     } catch {
@@ -1365,38 +1354,7 @@ async function autoPullSkills(deps = {}) {
 
 // dist/src/hooks/codex/session-start.js
 var log4 = (msg) => log("codex-session-start", msg);
-var __bundleDir = dirname5(fileURLToPath(import.meta.url));
-var context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
-
-Deeplake memory has THREE tiers \u2014 pick the right one for the question:
-1. ~/.deeplake/memory/index.md   \u2014 auto-generated index, top 50 most-recently-updated entries with Created + Last Updated + Project + Description columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the Last Updated column over any "Started:" line in summary bodies.
-2. ~/.deeplake/memory/summaries/ \u2014 condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
-3. ~/.deeplake/memory/sessions/  \u2014 raw full-dialogue JSONL (~5 KB each). FALLBACK only \u2014 use when summaries don't contain the exact quote/turn you need.
-
-Search workflow:
-- Time-based ("last week", "today", "since X"): cat ~/.deeplake/memory/index.md and read the most-recent rows.
-- Keyword/topic recall: grep -r "keyword" ~/.deeplake/memory/summaries/ (the shell hook routes this through hybrid lexical+semantic search \u2014 synonyms match too). Then cat the top-matching summary.
-- Raw transcript fallback only: grep -r "keyword" ~/.deeplake/memory/sessions/ (use sparingly \u2014 JSONL is verbose).
-
-\u2705 grep -r "keyword" ~/.deeplake/memory/summaries/
-\u274C grep without a summaries/ or sessions/ suffix \u2014 too noisy
-
-IMPORTANT: Only use bash builtins (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) on ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters \u2014 they are not available in the memory filesystem.
-Do NOT spawn subagents to read deeplake memory.
-
-Organization management \u2014 each argument is SEPARATE (do NOT quote subcommands together):
-- hivemind login                              \u2014 SSO login
-- hivemind whoami                             \u2014 show current user/org
-- hivemind org list                           \u2014 list organizations
-- hivemind org switch <name-or-id>            \u2014 switch organization
-- hivemind workspaces                         \u2014 list workspaces
-- hivemind workspace <id>                     \u2014 switch workspace
-- hivemind invite <email> <ADMIN|WRITE|READ>  \u2014 invite member (ALWAYS ask user which role before inviting)
-- hivemind members                            \u2014 list members
-- hivemind remove <user-id>                   \u2014 remove member
-
-SKILLS (skillify) \u2014 mine + share reusable skills across the org:
-${renderSkillifyCommands()}`;
+var __bundleDir = dirname6(fileURLToPath2(import.meta.url));
 async function main() {
   if (process.env.HIVEMIND_WIKI_WORKER === "1")
     return;
@@ -1430,12 +1388,18 @@ async function main() {
 Hivemind v${current}`;
   }
   const localMined = countLocalManifestEntries();
-  const localMinedNote = localMined > 0 ? `
-${localMined} local skill${localMined === 1 ? "" : "s"} from past 'hivemind skillify mine-local' run(s) live in ~/.claude/skills/. Run 'hivemind login' to start sharing new mining results with your team.` : "";
-  const additionalContext = creds?.token ? `${context}
-Logged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}` : `${context}
-Not logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
-  console.log(additionalContext);
+  const skillNoun = localMined === 1 ? "skill" : "skills";
+  const additionalContext = creds?.token ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${versionNotice}` : `Hivemind: not logged in. Run \`hivemind login\` to enable shared memory + skill sharing.${versionNotice}`;
+  const systemMessage = !creds?.token && localMined > 0 ? `\u{1F4A1} ${localMined} ${skillNoun} mined from your local sessions live in ~/.claude/skills/. Run 'hivemind login' to share them with your team.` : void 0;
+  const output = {
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext
+    }
+  };
+  if (systemMessage)
+    output.systemMessage = systemMessage;
+  console.log(JSON.stringify(output));
 }
 main().catch((e) => {
   log4(`fatal: ${e.message}`);

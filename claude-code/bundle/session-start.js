@@ -53,8 +53,8 @@ var init_index_marker_store = __esm({
 });
 
 // dist/src/hooks/session-start.js
-import { fileURLToPath } from "node:url";
-import { dirname as dirname5, join as join15 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { dirname as dirname6, join as join15 } from "node:path";
 import { homedir as homedir11 } from "node:os";
 
 // dist/src/commands/auth.js
@@ -1353,19 +1353,33 @@ function countLocalManifestEntries(path = LOCAL_MANIFEST_PATH) {
 import { execFileSync, spawn as spawn2 } from "node:child_process";
 import { closeSync, existsSync as existsSync10, mkdirSync as mkdirSync8, openSync, readdirSync as readdirSync2, statSync as statSync2, unlinkSync as unlinkSync4 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
-import { join as join14 } from "node:path";
+import { dirname as dirname5, join as join14 } from "node:path";
+import { fileURLToPath } from "node:url";
 var HOME = homedir10();
 var HIVEMIND_DIR = join14(HOME, ".claude", "hivemind");
 var LOG_PATH = join14(HOME, ".claude", "hooks", "mine-local.log");
 var CLAUDE_PROJECTS_DIR = join14(HOME, ".claude", "projects");
 var LOCK_STALE_MS = 15 * 60 * 1e3;
-function findHivemindBin() {
+function findBundledCliPath() {
+  try {
+    const thisDir = dirname5(fileURLToPath(import.meta.url));
+    const cliPath = join14(thisDir, "..", "..", "bundle", "cli.js");
+    return existsSync10(cliPath) ? cliPath : null;
+  } catch {
+    return null;
+  }
+}
+function findHivemindLauncher() {
+  const bundled = findBundledCliPath();
+  if (bundled)
+    return { kind: "node-script", path: bundled };
   try {
     const out = execFileSync("which", ["hivemind"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"]
     });
-    return out.trim() || null;
+    const bin = out.trim();
+    return bin ? { kind: "bin", path: bin } : null;
   } catch {
     return null;
   }
@@ -1411,8 +1425,8 @@ function maybeAutoMineLocal() {
   }
   if (!hasLocalClaudeSessions())
     return { triggered: false, reason: "no-claude-sessions" };
-  const bin = findHivemindBin();
-  if (!bin)
+  const launcher = findHivemindLauncher();
+  if (!launcher)
     return { triggered: false, reason: "no-hivemind-bin" };
   try {
     mkdirSync8(HIVEMIND_DIR, { recursive: true });
@@ -1424,7 +1438,8 @@ function maybeAutoMineLocal() {
   try {
     mkdirSync8(join14(HOME, ".claude", "hooks"), { recursive: true });
     const out = openSync(LOG_PATH, "a");
-    const child = spawn2(bin, ["skillify", "mine-local"], {
+    const [cmd, args] = launcher.kind === "node-script" ? [process.execPath, [launcher.path, "skillify", "mine-local"]] : [launcher.path, ["skillify", "mine-local"]];
+    const child = spawn2(cmd, args, {
       detached: true,
       stdio: ["ignore", out, out],
       env: process.env
@@ -1443,7 +1458,7 @@ function maybeAutoMineLocal() {
 
 // dist/src/hooks/session-start.js
 var log5 = (msg) => log("session-start", msg);
-var __bundleDir = dirname5(fileURLToPath(import.meta.url));
+var __bundleDir = dirname6(fileURLToPath2(import.meta.url));
 var context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) \u2014 personal per-project notes

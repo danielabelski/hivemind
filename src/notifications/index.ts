@@ -32,6 +32,11 @@ export { enqueueNotification } from "./queue.js";
 export interface DrainOptions {
   agent: Agent;
   creds: Credentials | null;
+  /**
+   * Optional, populated by the hook entry point so rules don't have to
+   * read the local-mined manifest themselves (rules contract: no IO).
+   */
+  localSkillsCount?: number | null;
 }
 
 /**
@@ -47,7 +52,12 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
   try {
     const state = readState();
     const queue = readQueue();
-    const ctx: NotificationContext = { agent: opts.agent, creds: opts.creds, state };
+    const ctx: NotificationContext = {
+      agent: opts.agent,
+      creds: opts.creds,
+      state,
+      localSkillsCount: opts.localSkillsCount ?? null,
+    };
 
     const fromRules = evaluateRules("session_start", ctx);
     const fromQueue = queue.queue;
