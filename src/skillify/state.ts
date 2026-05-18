@@ -17,7 +17,7 @@
  */
 
 import {
-  readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, rmSync,
+  readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, rmdirSync,
   existsSync, lstatSync, unlinkSync, openSync, closeSync,
 } from "node:fs";
 import { execSync } from "node:child_process";
@@ -284,18 +284,25 @@ export function tryAcquireWorkerLock(projectKey: string, maxAgeMs = 10 * 60 * 10
       // with EISDIR and the project's Stop-counter trigger silently
       // no-ops forever.
       //
-      // TOCTOU note: we re-`lstatSync` the path before `rmSync` instead
-      // of blindly recursive-deleting. A concurrent process may have
-      // already cleared the stale dir and `openSync(p, "wx")`-ed a
-      // fresh lock file in the same path while we sat between the
-      // failed `unlinkSync` and the recovery. If that happened, the
-      // path is no longer a directory and `rmSync` would happily
-      // delete the *other process's* live lock, letting both
-      // processes' subsequent `openSync(wx)` succeed and double-acquire
-      // the worker slot. Re-statting closes that window — if the path
-      // changed shape under our feet, we leave it alone and let the
-      // final atomic `openSync(p, "wx")` arbitrate: exactly one process
-      // wins, the other returns false.
+      // TOCTOU defense: we use `rmdirSync(p)` for the recovery instead
+      // of `rmSync(p, { recursive: true, force: true })`. A concurrent
+      // process may have already cleared the stale dir and
+      // `openSync(p, "wx")`-ed a fresh lock file in the same path
+      // while we sat between the failed `unlinkSync` and the recovery.
+      // `rmSync` with `force/recursive` would happily unlink that
+      // racing process's live lock, letting both processes' subsequent
+      // `openSync(wx)` succeed and double-acquire the worker slot.
+      // `rmdirSync` is the right shape-aware primitive:
+      //   - regular file at the path → ENOTDIR, we bail
+      //   - non-empty directory      → ENOTEMPTY, we bail
+      //   - path gone                → ENOENT, we bail
+      //   - empty directory          → removes it (the actual recovery)
+      // In every bail case the final `openSync(p, "wx")` arbitrates:
+      // exactly one process wins, the other returns false.
+      //
+      // The pre-stat with `lstatSync` is kept only as a cheap fast-path
+      // (skip the syscall entirely when the path is already a file).
+      // It is not safety-relevant — `rmdirSync` itself is the gate.
       if (unlinkErr?.code !== "EISDIR") {
         dlog(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
         return false;
@@ -303,8 +310,8 @@ export function tryAcquireWorkerLock(projectKey: string, maxAgeMs = 10 * 60 * 10
       let isDir = false;
       try { isDir = lstatSync(p).isDirectory(); } catch { /* gone — fall through */ }
       if (isDir) {
-        try { rmSync(p, { recursive: true, force: true }); } catch (rmErr: any) {
-          dlog(`could not remove stale dir-lock for ${projectKey}: ${rmErr.message}`);
+        try { rmdirSync(p); } catch (rmErr: any) {
+          dlog(`could not rmdir stale lock for ${projectKey}: ${rmErr.message}`);
           return false;
         }
       }

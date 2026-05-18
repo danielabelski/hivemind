@@ -294,6 +294,27 @@ describe("worker lock edge cases", () => {
     releaseWorkerLock(key);
   });
 
+  it("does NOT destroy unexpected content inside a non-empty stale lock dir", () => {
+    // Why this matters: round 2 of /codex challenge pointed out that
+    // the original `rmSync(p, { recursive: true, force: true })` would
+    // happily delete *anything* at the path — including the racing
+    // process's regular file, or any content sitting inside the dir.
+    // Switching to `rmdirSync(p)` makes recovery shape-aware: a
+    // non-empty stale dir throws ENOTEMPTY and we bail without
+    // touching its contents. Locks down that invariant.
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock`);
+    fs.mkdirSync(path, { recursive: true });
+    const innerFile = join(path, "do-not-delete.txt");
+    fs.writeFileSync(innerFile, "preserve me");
+    expect(tryAcquireWorkerLock(key)).toBe(false);
+    expect(fs.existsSync(innerFile)).toBe(true);
+    expect(fs.readFileSync(innerFile, "utf-8")).toBe("preserve me");
+  });
+
   it("does NOT rmSync a regular lock file that replaced the stale dir mid-recovery", () => {
     // Regression test for the TOCTOU race Codex flagged: the EISDIR
     // self-heal must not steamroll a file that appeared at the lock
