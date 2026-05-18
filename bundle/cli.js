@@ -500,6 +500,7 @@ function installOpenclaw() {
     throw new Error(`OpenClaw bundle missing at ${srcDist}. Run 'npm run build' first.`);
   }
   ensureDir(PLUGIN_DIR2);
+  rmSync(join5(PLUGIN_DIR2, "dist"), { recursive: true, force: true });
   copyDir(srcDist, join5(PLUGIN_DIR2, "dist"));
   if (existsSync4(srcManifest))
     copyFileSync(srcManifest, join5(PLUGIN_DIR2, "openclaw.plugin.json"));
@@ -625,7 +626,7 @@ function uninstallCursor() {
 import { existsSync as existsSync7, writeFileSync as writeFileSync3, readFileSync as readFileSync5, rmSync as rmSync2, unlinkSync as unlinkSync4 } from "node:fs";
 import { join as join8 } from "node:path";
 
-// ../../../node_modules/js-yaml/dist/js-yaml.mjs
+// node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
   return typeof subject === "undefined" || subject === null;
 }
