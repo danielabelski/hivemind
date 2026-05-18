@@ -67,7 +67,8 @@ import { homedir, tmpdir } from "node:os";
 import {
   existsSync as fsExists, mkdirSync as fsMkdir, openSync as fsOpen,
   closeSync as fsClose, writeFileSync as fsWriteFile, constants as fsConstants,
-  readFileSync as fsReadFile, renameSync as fsRename,
+  readFileSync as fsReadFile, renameSync as fsRename, unlinkSync as fsUnlink,
+  statSync as fsStat,
 } from "node:fs";
 import { createHash } from "node:crypto";
 // node:child_process is stubbed in the main openclaw bundle (see esbuild.config.mjs
@@ -374,6 +375,15 @@ let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
 
+// Per-runtime dedup of skillify worker spawns. Without this, every
+// agent_end after the previous worker exits re-acquires the on-disk
+// lock and spawns a fresh worker, which does one watermark-check SQL
+// round-trip and exits — wasted Node cold-start + DB I/O across a long
+// session. Single-spawn-per-session-per-runtime matches what the
+// non-openclaw agents already do via `tryAcquireWorkerLock` semantics
+// in src/skillify/state.ts. See #100.
+const skillifySpawnedFor = new Set<string>();
+
 // --- Skillify worker spawn (mirror of src/skillify/spawn-skillify-worker.ts) ---
 //
 // OpenClaw can't import the shared skillify TS modules — its bundle is
@@ -425,14 +435,61 @@ function deriveOpenclawProjectKey(channel: string): { key: string; project: stri
   return { key, project };
 }
 
+// Per-project filesystem lock guarding the skillify worker spawn.
+// Mirrors `tryAcquireWorkerLock` in src/skillify/state.ts: writes a ms
+// timestamp into the lock file when acquired, treats locks older than
+// LOCK_MAX_AGE_MS as stale (abnormal worker death, kernel kill, OOM —
+// the worker's `finally`-release didn't run), unlinks and re-acquires.
+// Without this, a single crashed worker halts mining for that
+// project_key permanently until manual cleanup. See #110.
+//
+// Empty pre-existing locks (from earlier code that wrote no payload)
+// parse as NaN and are treated as immediately stale — clean migration
+// on first patched run.
+const LOCK_MAX_AGE_MS = 10 * 60 * 1000; // 10 min, generous vs typical
+                                        // worker run (<30s + buffer)
+
 function tryAcquireOpenclawSkillifyLock(projectKey: string): boolean {
   try {
     migrateOpenclawSkillifyLegacyStateDir();
     fsMkdir(OPENCLAW_SKILLIFY_STATE_DIR, { recursive: true });
     const lockPath = joinPath(OPENCLAW_SKILLIFY_STATE_DIR, `${projectKey}.worker.lock`);
-    const fd = fsOpen(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
-    fsClose(fd);
-    return true;
+    const acquire = (): boolean => {
+      const fd = fsOpen(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
+      try {
+        fsWriteFile(fd, String(Date.now()));
+      } finally {
+        fsClose(fd);
+      }
+      return true;
+    };
+    try {
+      return acquire();
+    } catch {
+      // O_EXCL failed → lock file already exists. Check staleness.
+      // There's a brief window between O_CREAT|O_EXCL and the timestamp
+      // write where a racing caller can see an empty body. Don't treat
+      // empty/NaN as immediately stale (CodeRabbit on #172) — fall back
+      // to the file's mtime to decide. If the FILE is fresh, the
+      // competitor is mid-write and we should yield; if the file is
+      // older than LOCK_MAX_AGE_MS, the previous holder crashed without
+      // writing the timestamp (or the disk lost it), and we can recycle.
+      try {
+        const body = fsReadFile(lockPath, "utf-8");
+        const ts = Number.parseInt(body.trim(), 10);
+        const ageByBody = Number.isFinite(ts) ? Date.now() - ts : Number.POSITIVE_INFINITY;
+        let ageByMtime = 0;
+        try { ageByMtime = Date.now() - fsStat(lockPath).mtimeMs; } catch { ageByMtime = 0; }
+        const effectiveAge = Number.isFinite(ts) ? ageByBody : ageByMtime;
+        if (effectiveAge > LOCK_MAX_AGE_MS) {
+          try { fsUnlink(lockPath); } catch { /* race; recheck below */ }
+          try { return acquire(); } catch { return false; }
+        }
+        return false; // fresh lock held by a live worker — skip spawn
+      } catch {
+        return false; // couldn't stat/read; safer to skip than double-spawn
+      }
+    }
   } catch { return false; }
 }
 
@@ -489,26 +546,36 @@ function detectOpenclawGateAgent(): GateAgent | null {
   return null;
 }
 
-function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): void {
+/**
+ * Returns true when the worker was actually spawned (the caller can
+ * record the session in the per-runtime dedup set). Returns false on
+ * any "didn't spawn" outcome — missing worker, no delegate gate CLI,
+ * lock not acquired, mkdir/config write failure, or spawn() throw —
+ * so the caller can let a future agent_end retry. CodeRabbit on #172
+ * caught the previous flow that recorded the session before knowing
+ * whether spawn succeeded, suppressing retries forever within the
+ * runtime.
+ */
+function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): boolean {
   if (!fsExists(OPENCLAW_SKILLIFY_WORKER_PATH)) {
     a.loggerWarn?.(`skillify worker missing at ${OPENCLAW_SKILLIFY_WORKER_PATH} — reinstall openclaw plugin`);
-    return;
+    return false;
   }
   const gateAgent = detectOpenclawGateAgent();
   if (!gateAgent) {
     a.loggerWarn?.(`skillify spawn: no delegate gate CLI found on PATH (need one of: claude, codex, cursor-agent, hermes, pi). Mining skipped.`);
-    return;
+    return false;
   }
   const { key: projectKey, project } = deriveOpenclawProjectKey(a.channel);
   if (!tryAcquireOpenclawSkillifyLock(projectKey)) {
     // A worker is already running for this project — skip (next agent_end may
     // re-fire after the worker releases the lock, or the worker watermark
     // advance makes the re-fire a no-op).
-    return;
+    return false;
   }
   const tmpDir = joinPath(tmpdir(), `deeplake-skillify-openclaw-${projectKey}-${Date.now()}`);
   try { fsMkdir(tmpDir, { recursive: true, mode: 0o700 }); }
-  catch (e: any) { a.loggerWarn?.(`skillify spawn: mkdir failed: ${e?.message ?? e}`); return; }
+  catch (e: any) { a.loggerWarn?.(`skillify spawn: mkdir failed: ${e?.message ?? e}`); return false; }
   const configPath = joinPath(tmpDir, "config.json");
 
   // install: "global" — openclaw has no per-project filesystem cwd, so written
@@ -549,7 +616,7 @@ function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): void {
     },
   };
   try { fsWriteFile(configPath, JSON.stringify(config), { mode: 0o600 }); }
-  catch (e: any) { a.loggerWarn?.(`skillify spawn: config write failed: ${e?.message ?? e}`); return; }
+  catch (e: any) { a.loggerWarn?.(`skillify spawn: config write failed: ${e?.message ?? e}`); return false; }
 
   try {
     realSpawn(process.execPath, [OPENCLAW_SKILLIFY_WORKER_PATH, configPath], {
@@ -557,37 +624,16 @@ function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): void {
       stdio: "ignore",
       env: { ...inheritedEnv.env, HIVEMIND_SKILLIFY_WORKER: "1", HIVEMIND_CAPTURE: "false" },
     }).unref();
+    return true;
   } catch (e: any) {
     a.loggerWarn?.(`skillify spawn: spawn failed: ${e?.message ?? e}`);
+    return false;
   }
 }
 
 /** Build session path matching CC convention: /sessions/<user>/<user>_<org>_<workspace>_<sessionId>.jsonl */
 function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;
-}
-
-const RECALL_STOPWORDS = new Set([
-  "the","and","for","are","but","not","you","all","can","had","her","was","one",
-  "our","out","has","have","what","does","like","with","this","that","from","they",
-  "been","will","more","when","who","how","its","into","some","than","them","these",
-  "then","your","just","about","would","could","should","where","which","there",
-  "their","being","each","other",
-]);
-
-/**
- * Extract the signal-bearing tokens from a natural-language prompt so we can
- * feed them into `searchDeeplakeTables` as a multi-word ILIKE. Mirrors the
- * pattern used by claude-code/codex grep intercepts — lowercase, strip
- * non-alphanumeric, drop short words + stopwords, cap at 4 so the SQL doesn't
- * turn into a 20-way OR.
- */
-function extractKeywords(prompt: string): string[] {
-  return prompt.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter(w => w.length >= 3 && !RECALL_STOPWORDS.has(w))
-    .slice(0, 4);
 }
 
 /** Trim a path filter down to a safe virtual prefix. `/` ⇒ unfiltered. */
@@ -782,9 +828,12 @@ export default definePluginEntry({
             return { text: `✅ Hivemind tools are already enabled in your allowlist.\n\nNo changes needed — memory tools are available to the agent.${skillifyHint}` };
           }
           if (result.status === "added") {
-            return { text: `✅ Added "hivemind" to your tool allowlist.\n\nOpenclaw will detect the config change and restart. On the next turn, the agent will have access to hivemind_search, hivemind_read, and hivemind_index.\n\nBackup of previous config: ${result.backupPath}${skillifyHint}` };
+            const touched: string[] = [];
+            if (result.delta.pluginsAllow) touched.push(`"hivemind" → plugins.allow`);
+            if (result.delta.toolsAlsoAllow) touched.push(`"hivemind" → tools.alsoAllow`);
+            return { text: `✅ Added:\n  • ${touched.join("\n  • ")}\n\nOpenclaw will detect the config change and restart. On the next turn, the agent will have access to hivemind_search, hivemind_read, and hivemind_index. **Capture starts on the next turn — earlier turns are NOT backfilled.**\n\nBackup of previous config: ${result.backupPath}${skillifyHint}` };
           }
-          return { text: `⚠️ Could not update allowlist: ${result.error}\n\nManual fix: open ${result.configPath} and add "hivemind" to the "alsoAllow" array under "tools".` };
+          return { text: `⚠️ Could not update allowlist: ${result.error}\n\nManual fix: open ${result.configPath}. If \`plugins.allow\` exists as a non-empty array, add "hivemind" to it. If \`tools.alsoAllow\` exists as a non-empty array, add "hivemind" to it. If either is absent or empty, leave it as-is (openclaw treats that as default-allow).` };
         },
       });
 
@@ -1116,76 +1165,51 @@ export default definePluginEntry({
       });
     }
 
-    // Auto-recall: search memory before each turn
-    if (config.autoRecall !== false) {
-      hook("before_agent_start", async (event: { prompt?: string }) => {
-        if (!event.prompt || event.prompt.length < 5) return;
-        try {
-          const dl = await getApi();
+    // before_agent_start handles two narrow paths that legitimately fire
+    // before the agent starts:
+    //   1. Login nudge — when the user isn't authenticated yet, drop the
+    //      device-flow URL into the agent's context so it can show it.
+    //   2. Welcome banner — once after a successful device-flow auth.
+    //
+    // The previous version of this hook also did a proactive recall query
+    // across the memory + sessions tables on every turn. That made every
+    // openclaw turn pay Deeplake's `sessions`-table latency (200ms–10s+)
+    // even when the prompt needed no memory at all, and a slow Deeplake
+    // would block the agent for the full timeout before it could reply.
+    // Other agents (claude-code, codex, cursor, hermes, pi) don't do
+    // this — they let the agent decide when to search by intercepting its
+    // Grep tool calls. Openclaw now matches that pattern: the agent gets
+    // memory via the registered tools (hivemind_search/_read/_index), with
+    // the SKILL.md body in the system prompt directing it to call them
+    // first. See issue #121 for the original report (plugins.allow gating
+    // also fixed in the same PR).
+    // No `config.autoRecall` gate here: the hook body no longer does any
+    // recall (CodeRabbit on #124 caught this). Both remaining paths — the
+    // login URL nudge and the post-auth welcome banner — must run for
+    // every user, including those who set autoRecall=false. Gating the
+    // whole hook registration would silently break their auth flow.
+    hook("before_agent_start", async (event: { prompt?: string }) => {
+      if (!event.prompt || event.prompt.length < 5) return;
+      try {
+        const dl = await getApi();
 
-          if (!dl && authUrl) {
-            return {
-              prependContext: `\n\nIMPORTANT: The user needs to authenticate with Hivemind. Include this link in your reply: ${authUrl}\nTell them to click it and sign in, then send another message.\n`,
-            };
-          }
-          if (!dl) return;
-
-          if (justAuthenticated) {
-            justAuthenticated = false;
-            const creds = await loadCredentials();
-            const orgName = creds?.orgName ?? creds?.orgId ?? "unknown";
-            return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgName}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
-          }
-
-          // Multi-keyword search across BOTH the memory (summaries) and
-          // sessions (raw turns) tables. Uses the same `searchDeeplakeTables`
-          // primitive that claude-code and codex agents reach via their
-          // PreToolUse-intercepted Grep, so recall quality is model-agnostic
-          // (no more first-keyword-only ILIKE on sessions alone).
-          const keywords = extractKeywords(event.prompt);
-          if (!keywords.length) return;
-
-          const grepParams: GrepMatchParams = {
-            pattern: keywords.join(" "),
-            ignoreCase: true,
-            wordMatch: false,
-            filesOnly: false,
-            countOnly: false,
-            lineNumber: false,
-            invertMatch: false,
-            fixedString: true,
-          };
-          const searchOpts = buildGrepSearchOptions(grepParams, "/");
-          searchOpts.limit = 10;
-          const rows = await searchDeeplakeTables(dl, memoryTable, sessionsTable, searchOpts);
-          if (!rows.length) return;
-
-          const recalled = rows
-            .map(r => {
-              const body = normalizeContent(r.path, r.content);
-              return `[${r.path}] ${body.slice(0, 400)}`;
-            })
-            .join("\n\n");
-
-          logger.info?.(`Auto-recalled ${rows.length} memories`);
-          const instruction =
-            "These are raw Hivemind search hits from prior sessions. Each hit is prefixed with its path " +
-            "(e.g. `/summaries/<username>/...`). Different usernames are different people — do NOT merge, " +
-            "alias, or conflate them. If you need more detail, call `hivemind_search` with a more specific " +
-            "query or `hivemind_read` on a specific path. If these hits don't answer the question, say so " +
-            "rather than guessing.";
+        if (!dl && authUrl) {
           return {
-            prependContext:
-              "\n\n<recalled-memories>\n" +
-              instruction + "\n\n" +
-              recalled +
-              "\n</recalled-memories>\n",
+            prependContext: `\n\nIMPORTANT: The user needs to authenticate with Hivemind. Include this link in your reply: ${authUrl}\nTell them to click it and sign in, then send another message.\n`,
           };
-        } catch (err) {
-          logger.error(`Auto-recall failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-      });
-    }
+        if (!dl) return;
+
+        if (justAuthenticated) {
+          justAuthenticated = false;
+          const creds = await loadCredentials();
+          const orgName = creds?.orgName ?? creds?.orgId ?? "unknown";
+          return { prependContext: `\n\n🐝 Welcome to Hivemind!\n\nCurrent org: ${orgName}\n\nYour agents now share memory across sessions, teammates, and machines.\n\nGet started:\n1. Verify sync: spin up multiple sessions and confirm agents share context\n2. Invite a teammate: ask the agent to add them over email\n3. Switch orgs: ask the agent to list or switch your organizations\n\nOne brain for every agent on your team.\n` };
+        }
+      } catch (err) {
+        logger.error(`before_agent_start failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
 
     // Auto-capture: store new messages in sessions table (same format as CC capture.ts)
     if (config.autoCapture !== false) {
@@ -1258,23 +1282,43 @@ export default definePluginEntry({
           // never blocks the agent. Worker reads from the sessions table we
           // just wrote to. Non-fatal: a spawn failure here only loses one
           // mining attempt, never breaks capture.
-          try {
-            spawnOpenclawSkillifyWorker({
-              apiUrl: cfg.apiUrl,
-              token: cfg.token,
-              orgId: cfg.orgId,
-              workspaceId: cfg.workspaceId,
-              userName: cfg.userName,
-              channel: ev.channel || "openclaw",
-              sessionId: sid,
-              loggerWarn: (msg) => logger.error(`Skillify spawn: ${msg}`),
-              // Pass the same tuning dispatch the plugin populated at
-              // register-time. The worker will repopulate its own
-              // globalThis from this.
-              tuning: (globalThis as Record<string, unknown>).__hivemind_tuning__ as Record<string, string | undefined> | undefined,
-            });
-          } catch (e: any) {
-            logger.error(`Skillify spawn threw: ${e?.message ?? e}`);
+          //
+          // Per-runtime dedup (see #100): on long sessions, agent_end fires
+          // many times, and the previous worker has typically finished by
+          // the second or third turn — releasing the on-disk lock. Without
+          // this guard, every subsequent agent_end re-acquires the lock and
+          // spawns a fresh worker that does one watermark-check SQL roundtrip
+          // and exits. The on-disk lock is still authoritative across
+          // processes (e.g. multiple gateway restarts); this Set only
+          // suppresses redundant spawns within the same runtime.
+          if (!skillifySpawnedFor.has(sid)) {
+            // Only record the session as deduped on SUCCESSFUL spawn.
+            // spawnOpenclawSkillifyWorker has multiple non-exception
+            // failure paths (no delegate CLI, lock held by a fresh
+            // worker, mkdir/config write failure, spawn throw). If we
+            // add to the set before knowing the outcome, one transient
+            // failure suppresses every retry for the rest of the
+            // runtime. CodeRabbit on #172.
+            try {
+              if (spawnOpenclawSkillifyWorker({
+                apiUrl: cfg.apiUrl,
+                token: cfg.token,
+                orgId: cfg.orgId,
+                workspaceId: cfg.workspaceId,
+                userName: cfg.userName,
+                channel: ev.channel || "openclaw",
+                sessionId: sid,
+                loggerWarn: (msg) => logger.error(`Skillify spawn: ${msg}`),
+                // Pass the same tuning dispatch the plugin populated at
+                // register-time. The worker will repopulate its own
+                // globalThis from this.
+                tuning: (globalThis as Record<string, unknown>).__hivemind_tuning__ as Record<string, string | undefined> | undefined,
+              })) {
+                skillifySpawnedFor.add(sid);
+              }
+            } catch (e: any) {
+              logger.error(`Skillify spawn threw: ${e?.message ?? e}`);
+            }
           }
         } catch (err) {
           logger.error(`Auto-capture failed: ${err instanceof Error ? err.message : String(err)}`);
