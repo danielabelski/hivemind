@@ -405,7 +405,7 @@ function spawnSkillifyWorker(opts) {
 }
 
 // dist/src/skillify/state.js
-import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, writeSync as writeSync2, mkdirSync as mkdirSync5, renameSync as renameSync3, existsSync as existsSync5, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, writeSync as writeSync2, mkdirSync as mkdirSync5, renameSync as renameSync3, rmSync, existsSync as existsSync5, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir8 } from "node:os";
 import { createHash } from "node:crypto";
@@ -443,17 +443,19 @@ function migrateLegacyStateDir() {
 
 // dist/src/skillify/state.js
 var dlog3 = (msg) => log("skillify-state", msg);
-var STATE_DIR2 = join10(homedir8(), ".deeplake", "state", "skillify");
+function getStateDir() {
+  return process.env.HIVEMIND_STATE_DIR ?? join10(homedir8(), ".deeplake", "state", "skillify");
+}
 var YIELD_BUF2 = new Int32Array(new SharedArrayBuffer(4));
 var TRIGGER_THRESHOLD = (() => {
   const n = Number(process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS ?? "");
   return Number.isInteger(n) && n > 0 ? n : 20;
 })();
 function statePath(projectKey) {
-  return join10(STATE_DIR2, `${projectKey}.json`);
+  return join10(getStateDir(), `${projectKey}.json`);
 }
 function lockPath2(projectKey) {
-  return join10(STATE_DIR2, `${projectKey}.lock`);
+  return join10(getStateDir(), `${projectKey}.lock`);
 }
 var DEFAULT_PORTS = {
   http: "80",
@@ -509,7 +511,7 @@ function readState(projectKey) {
 }
 function writeState(projectKey, state) {
   migrateLegacyStateDir();
-  mkdirSync5(STATE_DIR2, { recursive: true });
+  mkdirSync5(getStateDir(), { recursive: true });
   const p = statePath(projectKey);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync4(tmp, JSON.stringify(state, null, 2));
@@ -517,7 +519,7 @@ function writeState(projectKey, state) {
 }
 function withRmwLock(projectKey, fn) {
   migrateLegacyStateDir();
-  mkdirSync5(STATE_DIR2, { recursive: true });
+  mkdirSync5(getStateDir(), { recursive: true });
   const rmw = lockPath2(projectKey) + ".rmw";
   const deadline = Date.now() + 2e3;
   let fd = null;
@@ -560,7 +562,7 @@ function resetCounter(projectKey) {
 }
 function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
   migrateLegacyStateDir();
-  mkdirSync5(STATE_DIR2, { recursive: true });
+  mkdirSync5(getStateDir(), { recursive: true });
   const p = lockPath2(projectKey);
   if (existsSync5(p)) {
     try {
@@ -573,8 +575,17 @@ function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
     try {
       unlinkSync2(p);
     } catch (unlinkErr) {
-      dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
-      return false;
+      if (unlinkErr?.code === "EISDIR") {
+        try {
+          rmSync(p, { recursive: true, force: true });
+        } catch (rmErr) {
+          dlog3(`could not remove stale dir-lock for ${projectKey}: ${rmErr.message}`);
+          return false;
+        }
+      } else {
+        dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
+        return false;
+      }
     }
   }
   try {
@@ -601,8 +612,8 @@ function releaseWorkerLock(projectKey) {
 import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync5, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join11 } from "node:path";
-var STATE_DIR3 = join11(homedir9(), ".deeplake", "state", "skillify");
-var CONFIG_PATH = join11(STATE_DIR3, "config.json");
+var STATE_DIR2 = join11(homedir9(), ".deeplake", "state", "skillify");
+var CONFIG_PATH = join11(STATE_DIR2, "config.json");
 var DEFAULT = { scope: "me", team: [], install: "project" };
 function loadScopeConfig() {
   migrateLegacyStateDir();

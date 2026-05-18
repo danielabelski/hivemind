@@ -998,7 +998,7 @@ function spawnSkillifyWorker(opts) {
 }
 
 // dist/src/skillify/state.js
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync5, writeSync as writeSync2, mkdirSync as mkdirSync6, renameSync as renameSync3, existsSync as existsSync6, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync5, writeSync as writeSync2, mkdirSync as mkdirSync6, renameSync as renameSync3, rmSync, existsSync as existsSync6, unlinkSync as unlinkSync2, openSync as openSync2, closeSync as closeSync2 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir8 } from "node:os";
 import { createHash } from "node:crypto";
@@ -1036,17 +1036,19 @@ function migrateLegacyStateDir() {
 
 // dist/src/skillify/state.js
 var dlog3 = (msg) => log("skillify-state", msg);
-var STATE_DIR2 = join11(homedir8(), ".deeplake", "state", "skillify");
+function getStateDir() {
+  return process.env.HIVEMIND_STATE_DIR ?? join11(homedir8(), ".deeplake", "state", "skillify");
+}
 var YIELD_BUF2 = new Int32Array(new SharedArrayBuffer(4));
 var TRIGGER_THRESHOLD = (() => {
   const n = Number(process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS ?? "");
   return Number.isInteger(n) && n > 0 ? n : 20;
 })();
 function statePath2(projectKey) {
-  return join11(STATE_DIR2, `${projectKey}.json`);
+  return join11(getStateDir(), `${projectKey}.json`);
 }
 function lockPath2(projectKey) {
-  return join11(STATE_DIR2, `${projectKey}.lock`);
+  return join11(getStateDir(), `${projectKey}.lock`);
 }
 var DEFAULT_PORTS = {
   http: "80",
@@ -1102,7 +1104,7 @@ function readState2(projectKey) {
 }
 function writeState2(projectKey, state) {
   migrateLegacyStateDir();
-  mkdirSync6(STATE_DIR2, { recursive: true });
+  mkdirSync6(getStateDir(), { recursive: true });
   const p = statePath2(projectKey);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync5(tmp, JSON.stringify(state, null, 2));
@@ -1110,7 +1112,7 @@ function writeState2(projectKey, state) {
 }
 function withRmwLock2(projectKey, fn) {
   migrateLegacyStateDir();
-  mkdirSync6(STATE_DIR2, { recursive: true });
+  mkdirSync6(getStateDir(), { recursive: true });
   const rmw = lockPath2(projectKey) + ".rmw";
   const deadline = Date.now() + 2e3;
   let fd = null;
@@ -1170,7 +1172,7 @@ function resetCounter(projectKey) {
 }
 function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
   migrateLegacyStateDir();
-  mkdirSync6(STATE_DIR2, { recursive: true });
+  mkdirSync6(getStateDir(), { recursive: true });
   const p = lockPath2(projectKey);
   if (existsSync6(p)) {
     try {
@@ -1183,8 +1185,17 @@ function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
     try {
       unlinkSync2(p);
     } catch (unlinkErr) {
-      dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
-      return false;
+      if (unlinkErr?.code === "EISDIR") {
+        try {
+          rmSync(p, { recursive: true, force: true });
+        } catch (rmErr) {
+          dlog3(`could not remove stale dir-lock for ${projectKey}: ${rmErr.message}`);
+          return false;
+        }
+      } else {
+        dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
+        return false;
+      }
     }
   }
   try {
@@ -1211,8 +1222,8 @@ function releaseWorkerLock(projectKey) {
 import { existsSync as existsSync7, mkdirSync as mkdirSync7, readFileSync as readFileSync6, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join12 } from "node:path";
-var STATE_DIR3 = join12(homedir9(), ".deeplake", "state", "skillify");
-var CONFIG_PATH = join12(STATE_DIR3, "config.json");
+var STATE_DIR2 = join12(homedir9(), ".deeplake", "state", "skillify");
+var CONFIG_PATH = join12(STATE_DIR2, "config.json");
 var DEFAULT = { scope: "me", team: [], install: "project" };
 function loadScopeConfig() {
   migrateLegacyStateDir();
@@ -1904,7 +1915,7 @@ function embeddingSqlLiteral(vec) {
 }
 
 // dist/src/embeddings/self-heal.js
-import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync10, readlinkSync, renameSync as renameSync6, rmSync, symlinkSync, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync10, readlinkSync, renameSync as renameSync6, rmSync as rmSync2, symlinkSync, statSync as statSync2 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
 import { basename as basename2, dirname as dirname5, join as join17 } from "node:path";
 function ensurePluginNodeModulesLink(opts) {
@@ -1938,7 +1949,7 @@ function ensurePluginNodeModulesLink(opts) {
       return { kind: "linked-elsewhere", link, existingTarget };
     } catch {
       try {
-        rmSync(link);
+        rmSync2(link);
       } catch {
       }
       const recreated = createSymlinkAtomic(target, link);
@@ -1957,7 +1968,7 @@ function createSymlinkAtomic(target, link) {
       mkdirSync10(parent, { recursive: true });
     const tmp = `${link}.tmp.${process.pid}`;
     try {
-      rmSync(tmp, { force: true });
+      rmSync2(tmp, { force: true });
     } catch {
     }
     symlinkSync(target, tmp);

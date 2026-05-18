@@ -1699,7 +1699,7 @@ function spawnSkillifyWorker(opts) {
 }
 
 // dist/src/skillify/state.js
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync7, writeSync as writeSync3, mkdirSync as mkdirSync9, renameSync as renameSync6, existsSync as existsSync9, unlinkSync as unlinkSync4, openSync as openSync4, closeSync as closeSync4 } from "node:fs";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync7, writeSync as writeSync3, mkdirSync as mkdirSync9, renameSync as renameSync6, rmSync as rmSync2, existsSync as existsSync9, unlinkSync as unlinkSync4, openSync as openSync4, closeSync as closeSync4 } from "node:fs";
 import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir13 } from "node:os";
 import { createHash } from "node:crypto";
@@ -1737,17 +1737,19 @@ function migrateLegacyStateDir() {
 
 // dist/src/skillify/state.js
 var dlog3 = (msg) => log("skillify-state", msg);
-var STATE_DIR2 = join16(homedir13(), ".deeplake", "state", "skillify");
+function getStateDir() {
+  return process.env.HIVEMIND_STATE_DIR ?? join16(homedir13(), ".deeplake", "state", "skillify");
+}
 var YIELD_BUF2 = new Int32Array(new SharedArrayBuffer(4));
 var TRIGGER_THRESHOLD = (() => {
   const n = Number(process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS ?? "");
   return Number.isInteger(n) && n > 0 ? n : 20;
 })();
 function statePath2(projectKey) {
-  return join16(STATE_DIR2, `${projectKey}.json`);
+  return join16(getStateDir(), `${projectKey}.json`);
 }
 function lockPath3(projectKey) {
-  return join16(STATE_DIR2, `${projectKey}.lock`);
+  return join16(getStateDir(), `${projectKey}.lock`);
 }
 var DEFAULT_PORTS = {
   http: "80",
@@ -1803,7 +1805,7 @@ function readState2(projectKey) {
 }
 function writeState2(projectKey, state) {
   migrateLegacyStateDir();
-  mkdirSync9(STATE_DIR2, { recursive: true });
+  mkdirSync9(getStateDir(), { recursive: true });
   const p = statePath2(projectKey);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync7(tmp, JSON.stringify(state, null, 2));
@@ -1811,7 +1813,7 @@ function writeState2(projectKey, state) {
 }
 function withRmwLock2(projectKey, fn) {
   migrateLegacyStateDir();
-  mkdirSync9(STATE_DIR2, { recursive: true });
+  mkdirSync9(getStateDir(), { recursive: true });
   const rmw = lockPath3(projectKey) + ".rmw";
   const deadline = Date.now() + 2e3;
   let fd = null;
@@ -1871,7 +1873,7 @@ function resetCounter(projectKey) {
 }
 function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
   migrateLegacyStateDir();
-  mkdirSync9(STATE_DIR2, { recursive: true });
+  mkdirSync9(getStateDir(), { recursive: true });
   const p = lockPath3(projectKey);
   if (existsSync9(p)) {
     try {
@@ -1884,8 +1886,17 @@ function tryAcquireWorkerLock(projectKey, maxAgeMs = 10 * 60 * 1e3) {
     try {
       unlinkSync4(p);
     } catch (unlinkErr) {
-      dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
-      return false;
+      if (unlinkErr?.code === "EISDIR") {
+        try {
+          rmSync2(p, { recursive: true, force: true });
+        } catch (rmErr) {
+          dlog3(`could not remove stale dir-lock for ${projectKey}: ${rmErr.message}`);
+          return false;
+        }
+      } else {
+        dlog3(`could not unlink stale worker lock for ${projectKey}: ${unlinkErr.message}`);
+        return false;
+      }
     }
   }
   try {
@@ -1912,8 +1923,8 @@ function releaseWorkerLock(projectKey) {
 import { existsSync as existsSync10, mkdirSync as mkdirSync10, readFileSync as readFileSync9, writeFileSync as writeFileSync8 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
 import { join as join17 } from "node:path";
-var STATE_DIR3 = join17(homedir14(), ".deeplake", "state", "skillify");
-var CONFIG_PATH = join17(STATE_DIR3, "config.json");
+var STATE_DIR2 = join17(homedir14(), ".deeplake", "state", "skillify");
+var CONFIG_PATH = join17(STATE_DIR2, "config.json");
 var DEFAULT = { scope: "me", team: [], install: "project" };
 function loadScopeConfig() {
   migrateLegacyStateDir();
