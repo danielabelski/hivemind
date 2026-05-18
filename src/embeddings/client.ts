@@ -130,13 +130,22 @@ export class EmbedClient {
    * If the daemon answers with a path that doesn't match our configured
    * daemonEntry — typical after a marketplace upgrade replaced the bundle
    * — SIGTERM the daemon + clear sock/pid so the next call spawns from the
-   * current bundle. We mark `helloVerified` even on mismatch so we don't
-   * re-issue the hello against the next, fresh connection.
+   * current bundle.
+   *
+   * `helloVerified` is set ONLY after we've seen a compatible response,
+   * so a transient probe failure or a recycle-triggering mismatch leaves
+   * the flag false; the next reconnect re-runs verification against
+   * whatever daemon is then live (typically the fresh spawn).
    */
   private async verifyDaemonOnce(sock: Socket): Promise<void> {
     if (this.helloVerified) return;
-    this.helloVerified = true;
-    if (!this.daemonEntry) return; // no expectation to verify against
+    if (!this.daemonEntry) {
+      // No expectation to verify against (e.g. canonical-shared-deps mode,
+      // or pi's fallback). Mark verified so we don't re-enter on every
+      // connect for the same EmbedClient.
+      this.helloVerified = true;
+      return;
+    }
     const id = String(++this.nextId);
     const req: HelloRequest = { op: "hello", id };
     let resp: DaemonResponse;
@@ -145,8 +154,10 @@ export class EmbedClient {
     } catch (e: unknown) {
       // Daemon doesn't understand `hello` (older protocol) or connection
       // hiccup. Don't kill on a transient — let embed proceed and surface
-      // any real problem there.
-      log(`hello probe failed (treating as compatible): ${e instanceof Error ? e.message : String(e)}`);
+      // any real problem there. Leave `helloVerified` false so the next
+      // reconnect attempts verification again (the current probe was
+      // inconclusive, not "definitely compatible").
+      log(`hello probe failed (inconclusive, will retry next connect): ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     const hello = resp as HelloResponse;
@@ -166,7 +177,13 @@ export class EmbedClient {
     // codex now wants to use it). All bundled daemons at the same
     // protocolVersion are functionally identical, so any of them serves
     // every agent fine. Recycling here would cause endless thrash.
-    if (_recycledStuckDaemon) return;
+    if (_recycledStuckDaemon) {
+      // Another EmbedClient already triggered a recycle in this process;
+      // skip the check (but don't mark verified — the next reconnect
+      // against the freshly spawned daemon will run hello again, which
+      // is a single round-trip and harmless).
+      return;
+    }
     if (!hello.daemonPath) {
       _recycledStuckDaemon = true;
       log(`daemon does not implement hello (older protocol); recycling`);
@@ -180,7 +197,9 @@ export class EmbedClient {
       return;
     }
     // Compatible — same path, or different path but functionally identical
-    // (multi-agent sharing of one warm daemon).
+    // (multi-agent sharing of one warm daemon). Only NOW do we mark the
+    // EmbedClient as verified.
+    this.helloVerified = true;
   }
 
   /**

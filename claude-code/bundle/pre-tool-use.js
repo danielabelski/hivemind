@@ -1310,27 +1310,33 @@ var EmbedClient = class {
    * If the daemon answers with a path that doesn't match our configured
    * daemonEntry — typical after a marketplace upgrade replaced the bundle
    * — SIGTERM the daemon + clear sock/pid so the next call spawns from the
-   * current bundle. We mark `helloVerified` even on mismatch so we don't
-   * re-issue the hello against the next, fresh connection.
+   * current bundle.
+   *
+   * `helloVerified` is set ONLY after we've seen a compatible response,
+   * so a transient probe failure or a recycle-triggering mismatch leaves
+   * the flag false; the next reconnect re-runs verification against
+   * whatever daemon is then live (typically the fresh spawn).
    */
   async verifyDaemonOnce(sock) {
     if (this.helloVerified)
       return;
-    this.helloVerified = true;
-    if (!this.daemonEntry)
+    if (!this.daemonEntry) {
+      this.helloVerified = true;
       return;
+    }
     const id = String(++this.nextId);
     const req = { op: "hello", id };
     let resp;
     try {
       resp = await this.sendAndWait(sock, req);
     } catch (e) {
-      log4(`hello probe failed (treating as compatible): ${e instanceof Error ? e.message : String(e)}`);
+      log4(`hello probe failed (inconclusive, will retry next connect): ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     const hello = resp;
-    if (_recycledStuckDaemon)
+    if (_recycledStuckDaemon) {
       return;
+    }
     if (!hello.daemonPath) {
       _recycledStuckDaemon = true;
       log4(`daemon does not implement hello (older protocol); recycling`);
@@ -1343,6 +1349,7 @@ var EmbedClient = class {
       this.recycleDaemon(hello.pid);
       return;
     }
+    this.helloVerified = true;
   }
   /**
    * On a transformers-missing error from the daemon, SIGTERM the stuck

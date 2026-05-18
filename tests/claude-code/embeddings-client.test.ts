@@ -607,6 +607,76 @@ describe("EmbedClient — hello handshake / stuck daemon recycle", () => {
     expect(embedCount).toBe(3);
   });
 
+  it("does NOT mark helloVerified after a probe failure — next reconnect retries verification", async () => {
+    // Regression for CodeRabbit #5: previously the client set
+    // `helloVerified = true` *before* awaiting the probe response, so a
+    // genuinely transient probe failure (socket dies before responding)
+    // on the first connect permanently disabled verification for every
+    // later embed call on the same EmbedClient.
+    //
+    // Simulate a transient failure by destroying the socket on the FIRST
+    // hello (no response written). That triggers the catch branch in
+    // verifyDaemonOnce (vs. an error-shaped JSON response, which routes
+    // through the recycle path instead).
+    const dir = makeTmpDir();
+    const uid = String(process.getuid?.() ?? "test");
+    const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
+    let helloAttempts = 0;
+    let embedAttempts = 0;
+    const srv = createServer((sock: Socket) => {
+      let buf = "";
+      sock.setEncoding("utf-8");
+      sock.on("data", (chunk: string) => {
+        buf += chunk;
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as DaemonRequest;
+          if (req.op === "hello") {
+            helloAttempts += 1;
+            if (helloAttempts === 1) {
+              // Drop the connection without responding — sendAndWait
+              // resolves with an error from the socket close event.
+              sock.destroy();
+              return;
+            }
+            sock.write(JSON.stringify({ id: req.id, daemonPath: "/match", pid: 42, protocolVersion: 1 }) + "\n");
+          } else if (req.op === "embed") {
+            embedAttempts += 1;
+            sock.write(JSON.stringify({ id: req.id, embedding: [0.5, 0.6] }) + "\n");
+          }
+        }
+      });
+      sock.on("error", () => { /* */ });
+    });
+    servers.push(srv);
+    await new Promise<void>((resolve) => srv.listen(sockPath, resolve));
+
+    const client = new EmbedClient({
+      socketDir: dir,
+      timeoutMs: 500,
+      autoSpawn: false,
+      daemonEntry: "/match",
+    });
+    await client.embed("first");
+    await client.embed("second");
+    await client.embed("third");
+    // Fix: probe is retried on the second connect because the first
+    // attempt was inconclusive (catch branch). After the second connect,
+    // the response is compatible so the flag is set and the third call
+    // skips the probe.
+    //
+    // embedAttempts is 2 (not 3) because the first connect's socket gets
+    // destroyed by the server during the failed probe, so the first
+    // embed() returns null without ever reaching the daemon's embed
+    // handler. The CORE invariant under test is that helloAttempts === 2
+    // — proving the second connect did re-run verification.
+    expect(helloAttempts).toBe(2);
+    expect(embedAttempts).toBe(2);
+  });
+
   it("does not send hello when daemonEntry is empty (nothing to compare against)", async () => {
     // Force the resolver to land on a falsy daemonEntry by setting the env
     // override to empty — env wins over the SHARED_DAEMON_PATH fallback,
