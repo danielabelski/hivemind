@@ -26,7 +26,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
   readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync,
-  openSync, closeSync, renameSync, readdirSync, statSync, unlinkSync,
+  openSync, closeSync, writeSync, renameSync, readdirSync, statSync, unlinkSync,
   constants as fsConstants,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -187,13 +187,18 @@ function isPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function readPidFileInline(path: string): number | null {
-  try {
-    const raw = readFileSync(path, "utf-8").trim();
-    const pid = Number(raw);
-    if (!pid || Number.isNaN(pid)) return null;
-    return pid;
-  } catch { return null; }
+// Three-state read: "empty" means the file exists but hasn't been
+// written yet — another caller is mid-spawn between openSync(wx) and
+// writeFileSync(pid). Treating that as stale is the codex P1 #1 race:
+// both callers end up spawning a daemon, second one crashes on bind.
+// Mirrors src/embeddings/standalone-embed-client.ts:readPidFile.
+function readPidFileInline(path: string): number | "empty" | null {
+  let raw: string;
+  try { raw = readFileSync(path, "utf-8").trim(); } catch { return null; }
+  if (raw === "") return "empty";
+  const pid = Number(raw);
+  if (!pid || Number.isNaN(pid)) return null;
+  return pid;
 }
 
 function connectDaemonOnce(timeoutMs: number): Promise<ReturnType<typeof connect> | null> {
@@ -217,9 +222,16 @@ function trySpawnDaemonInline(): boolean {
   let fd: number;
   try {
     fd = openSync(EMBED_PID_PATH, "wx", 0o600);
-    writeFileSync(EMBED_PID_PATH, String(process.pid)); // placeholder; daemon overwrites with its own pid
+    // Write the placeholder PID through the open fd. The previous version
+    // used writeFileSync(path, ...) which races with concurrent unlink +
+    // re-open elsewhere — it could overwrite another caller's pidfile
+    // entirely. writeSync(fd, ...) writes to OUR fd only.
+    writeSync(fd, String(process.pid));
   } catch {
     const existing = readPidFileInline(EMBED_PID_PATH);
+    // Empty file: another caller won openSync(wx) but hasn't written its
+    // PID yet. We MUST NOT unlink + respawn (codex P1 #1). Wait.
+    if (existing === "empty") return false;
     if (existing !== null && isPidAlive(existing)) {
       // Live owner: another agent / pi turn is bringing the daemon up. Wait.
       return false;
@@ -227,7 +239,7 @@ function trySpawnDaemonInline(): boolean {
     try { unlinkSync(EMBED_PID_PATH); } catch { /* */ }
     try {
       fd = openSync(EMBED_PID_PATH, "wx", 0o600);
-      writeFileSync(EMBED_PID_PATH, String(process.pid));
+      writeSync(fd, String(process.pid));
     } catch {
       return false; // sub-ms race: another caller claimed it between our unlink and reopen
     }
@@ -250,6 +262,18 @@ function trySpawnDaemonInline(): boolean {
   }
 }
 
+// Codex P1 #2 — after a spawnWaitMs timeout with daemon never opening
+// socket, the pidfile still holds OUR placeholder PID. Every subsequent
+// pi turn would see "live owner" (we're still running) and wait forever
+// instead of retrying the spawn. Clean up the placeholder, but only if
+// it's still ours — the daemon may have already overwritten it.
+function maybeCleanupOwnPlaceholderInline(): void {
+  const existing = readPidFileInline(EMBED_PID_PATH);
+  if (existing === process.pid) {
+    try { unlinkSync(EMBED_PID_PATH); } catch { /* already gone */ }
+  }
+}
+
 async function sendEmbedRequest(sock: ReturnType<typeof connect>, text: string, kind: "document" | "query", timeoutMs: number): Promise<number[] | null> {
   return new Promise((resolve) => {
     let resolved = false;
@@ -264,7 +288,15 @@ async function sendEmbedRequest(sock: ReturnType<typeof connect>, text: string, 
       try {
         const resp = JSON.parse(buf.slice(0, nl));
         // Daemon may return `{ error: "unknown op" }` from an older protocol — graceful NULL.
-        settle(Array.isArray(resp.embedding) ? resp.embedding : null);
+        if (!Array.isArray(resp.embedding)) return settle(null);
+        // Codex P2 — JSON-over-socket is untrusted at runtime. Reject any
+        // non-finite element (string, null, NaN, Infinity, object). Without
+        // this, a misbehaving daemon could ship bad values that flow into
+        // the ARRAY[...]::FLOAT4[] SQL literal.
+        for (const v of resp.embedding) {
+          if (typeof v !== "number" || !Number.isFinite(v)) return settle(null);
+        }
+        settle(resp.embedding);
       } catch { settle(null); }
     });
     sock.on("error", () => { clearTimeout(timer); settle(null); });
@@ -302,6 +334,9 @@ async function tryEmbedOverSocket(text: string, kind: "document" | "query"): Pro
       if (sock) break;
     }
     if (!sock) {
+      // Codex P1 #2 — clean up our placeholder PID so the next pi turn
+      // can retry the spawn instead of waiting on us forever.
+      maybeCleanupOwnPlaceholderInline();
       logHm(`embed: daemon never opened socket within 5s`);
       return null;
     }

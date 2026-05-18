@@ -64,6 +64,37 @@ describe("pi extension — embedding wiring", () => {
     expect(PI_SRC).not.toMatch(/process\.kill\([^,]+,\s*["']?SIGTERM/);
   });
 
+  it("treats an empty pidfile as 'writer in progress' (codex P1 #1)", () => {
+    // The catch-after-openSync(wx) branch MUST short-circuit on empty
+    // pidfile, not unlink + retry. Without this, two pi turns racing
+    // openSync(wx) can both end up calling spawn(): caller A wins
+    // openSync but hasn't yet writeSync'd its PID, caller B sees the
+    // empty pidfile, treats it as stale, unlinks, and spawns too.
+    // The second daemon crashes on bind().
+    expect(PI_SRC).toMatch(/if\s*\(\s*existing\s*===\s*"empty"\s*\)\s*return\s+false/);
+  });
+
+  it("cleans up own placeholder PID after spawnWaitMs timeout (codex P1 #2)", () => {
+    // If trySpawnDaemonInline wrote our placeholder PID and the daemon
+    // never opened a socket, the pidfile still holds our PID. Every
+    // subsequent pi turn sees "live owner" (we're alive) and waits
+    // forever instead of retrying the spawn. Source must call
+    // maybeCleanupOwnPlaceholderInline on the timeout path.
+    expect(PI_SRC).toContain("maybeCleanupOwnPlaceholderInline");
+    // The cleanup must be guarded on "still ours" — never blindly unlink
+    // (a fresh daemon may have already overwritten the placeholder).
+    expect(PI_SRC).toMatch(/existing\s*===\s*process\.pid/);
+  });
+
+  it("validates daemon embedding payload is finite numbers (codex P2)", () => {
+    // JSON from the socket is untrusted at runtime. A misbehaving / older
+    // daemon could ship strings or NaN that flow into the ARRAY[...] SQL
+    // literal. The inline sendEmbedRequest must reject any non-finite
+    // element before returning the vector.
+    expect(PI_SRC).toMatch(/Number\.isFinite\(/);
+    expect(PI_SRC).toMatch(/typeof\s+v\s*!==\s*"number"/);
+  });
+
   it("speaks the daemon's protocol shape exactly: {op:'embed', id, kind, text}", () => {
     // Regression guard: an earlier version sent `{type:'embed', id:1, ...}` —
     // the daemon silently ignored the malformed verb (`type` instead of `op`)

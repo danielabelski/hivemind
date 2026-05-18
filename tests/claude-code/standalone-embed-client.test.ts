@@ -227,7 +227,15 @@ describe("tryEmbedStandalone", () => {
   it("does not spawn or SIGTERM when an alive pidfile owner is present but the socket never appears", async () => {
     const dir = makeTmpDir();
     const { pid: pidPath } = pathsFor(dir);
-    writeFileSync(pidPath, String(process.pid)); // our own pid → alive
+    // Use the test runner's PARENT pid — a real live process that is NOT
+    // us. Using our own pid would mask the "other agent owns the pidfile"
+    // semantics: tryEmbedStandalone now cleans up its OWN placeholder on
+    // timeout (codex P1 #2 fix), so writing process.pid here would
+    // legitimately unlink and the test would assert the wrong thing.
+    const otherLivePid = process.ppid;
+    expect(otherLivePid).toBeGreaterThan(0);
+    expect(otherLivePid).not.toBe(process.pid);
+    writeFileSync(pidPath, String(otherLivePid));
 
     const fakeEntry = join(dir, "daemon-marker.js");
     writeFileSync(fakeEntry, "");
@@ -249,7 +257,7 @@ describe("tryEmbedStandalone", () => {
     for (const call of killSpy.mock.calls) {
       expect(call[1]).toBe(0);
     }
-    // Pidfile is left untouched (live owner).
+    // Pidfile is left untouched — the live owner is someone else.
     expect(existsSync(pidPath)).toBe(true);
   });
 
@@ -451,6 +459,114 @@ describe("tryEmbedStandalone", () => {
     });
     await tryEmbedStandalone("q", "query", { socketDir: dir, daemonEntry: "/dev/null", requestTimeoutMs: 500 });
     expect(seen).toEqual(["query"]);
+  });
+
+  // Codex P1 #1 — empty pidfile (writer in progress) must NOT be treated
+  // as stale + respawned. Before the fix, the catch-block in
+  // trySpawnDaemon called readPidFile → Number("") === 0 → null → "stale"
+  // → unlink + retry openSync. Two callers could both end up spawning.
+  it("treats an empty pidfile as 'writer in progress' and does not respawn", async () => {
+    const dir = makeTmpDir();
+    const { pid: pidPath } = pathsFor(dir);
+    writeFileSync(pidPath, ""); // brand-new empty pidfile (the race window)
+
+    const fakeEntry = join(dir, "daemon-marker.js");
+    writeFileSync(fakeEntry, "");
+
+    let spawnCalls = 0;
+    _setSpawnImpl(() => { spawnCalls += 1; return makeFakeChild(); });
+
+    const vec = await tryEmbedStandalone("x", "document", {
+      socketDir: dir,
+      daemonEntry: fakeEntry,
+      requestTimeoutMs: 50,
+      spawnWaitMs: 200,
+    });
+
+    expect(vec).toBeNull();
+    // Critical: zero spawns because we deferred to the (presumed) winner.
+    expect(spawnCalls).toBe(0);
+    // The empty pidfile is left untouched — clearing it would race with
+    // the supposed winner's pending writeSync(pid).
+    expect(existsSync(pidPath)).toBe(true);
+  });
+
+  // Codex P1 #2 — if we spawned and the daemon never opened the socket,
+  // our placeholder PID must be cleaned up so a SECOND call can retry the
+  // spawn. Otherwise the next caller sees a live owner (us) and waits
+  // forever, locking the system into "NULL embeddings until process restart".
+  it("cleans up its own placeholder PID after spawnWaitMs so a retry can recover", async () => {
+    const dir = makeTmpDir();
+    const { pid: pidPath } = pathsFor(dir);
+    const fakeEntry = join(dir, "daemon-marker.js");
+    writeFileSync(fakeEntry, "");
+
+    let spawnCalls = 0;
+    // Spawn "succeeds" but no daemon ever listens — the bug repro.
+    _setSpawnImpl(() => { spawnCalls += 1; return makeFakeChild(); });
+
+    const first = await tryEmbedStandalone("x", "document", {
+      socketDir: dir,
+      daemonEntry: fakeEntry,
+      requestTimeoutMs: 30,
+      spawnWaitMs: 150,
+    });
+    expect(first).toBeNull();
+    expect(spawnCalls).toBe(1);
+    // Placeholder cleaned: the next caller must be free to retry.
+    expect(existsSync(pidPath)).toBe(false);
+
+    const second = await tryEmbedStandalone("x", "document", {
+      socketDir: dir,
+      daemonEntry: fakeEntry,
+      requestTimeoutMs: 30,
+      spawnWaitMs: 150,
+    });
+    expect(second).toBeNull();
+    // Without the cleanup, this stays at 1 (next caller saw a live owner).
+    // With the fix, the retry actually spawns.
+    expect(spawnCalls).toBe(2);
+  });
+
+  // Codex P2 — daemon-side payload is JSON-over-socket; even though our
+  // TypeScript type is number[], a buggy / older daemon could ship strings,
+  // null, NaN, or objects. Those would flow straight into the
+  // ARRAY[...]::float4[] SQL literal. Defense at the boundary.
+  it("returns null when the daemon ships an embedding array with non-finite numbers", async () => {
+    const dir = makeTmpDir();
+    await startFakeDaemon(dir, (req) => {
+      if (req.op === "embed") {
+        // Cast through unknown to bypass the EmbedResponse type check —
+        // simulates a misbehaving daemon, which is exactly what we're
+        // hardening against.
+        return { id: req.id, embedding: [0.5, "oops", 0.7] as unknown as number[] };
+      }
+      return { id: req.id, error: "nope" };
+    });
+    const vec = await tryEmbedStandalone("x", "document", {
+      socketDir: dir,
+      daemonEntry: "/dev/null",
+      requestTimeoutMs: 500,
+    });
+    expect(vec).toBeNull();
+  });
+
+  it("returns null when the daemon ships an embedding array with NaN / Infinity", async () => {
+    const dir = makeTmpDir();
+    await startFakeDaemon(dir, (req) => {
+      if (req.op === "embed") {
+        // JSON.stringify emits null for NaN/Infinity, so simulate the
+        // post-parse shape directly: a number element that is non-finite.
+        return { id: req.id, embedding: [0.1, Number.NaN, 0.3] };
+      }
+      return { id: req.id, error: "nope" };
+    });
+    const vec = await tryEmbedStandalone("x", "document", {
+      socketDir: dir,
+      daemonEntry: "/dev/null",
+      requestTimeoutMs: 500,
+    });
+    expect(vec).toBeNull();
   });
 
   it("uses default option values when called with only positional args", async () => {
