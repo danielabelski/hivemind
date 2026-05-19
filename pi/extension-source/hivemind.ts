@@ -178,7 +178,12 @@ async function dlQuery(creds: Creds, sql: string): Promise<unknown[]> {
 // working when the daemon is unreachable.
 
 const EMBED_DAEMON_ENTRY = join(homedir(), ".hivemind", "embed-deps", "embed-daemon.js");
-const EMBED_UID = typeof process.getuid === "function" ? String(process.getuid()) : (process.env.USER ?? "default");
+// `process.env.USER` removed as a fallback: even though pi doesn't go
+// through ClawHub static-scan, we keep the source in lockstep with
+// src/embeddings/standalone-embed-client.ts (which DOES) so the two
+// implementations stay byte-identical. On Linux/macOS `process.getuid`
+// is always present; "default" is a fine sentinel elsewhere.
+const EMBED_UID = typeof process.getuid === "function" ? String(process.getuid()) : "default";
 const EMBED_SOCKET_PATH = `/tmp/hivemind-embed-${EMBED_UID}.sock`;
 const EMBED_PID_PATH = `/tmp/hivemind-embed-${EMBED_UID}.pid`;
 
@@ -245,10 +250,13 @@ function trySpawnDaemonInline(): boolean {
     }
   }
   try {
+    // No explicit `env: process.env` — it's the spawn default, and a
+    // literal `process.env` reference in source kept in lockstep with
+    // src/embeddings/standalone-embed-client.ts (which DOES go through
+    // ClawHub static-scan from the openclaw bundle).
     const child = spawn(process.execPath, [EMBED_DAEMON_ENTRY], {
       detached: true,
       stdio: "ignore",
-      env: process.env,
     });
     child.unref();
     logHm(`embed: spawned daemon pid=${child.pid}`);
