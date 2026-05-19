@@ -42,7 +42,15 @@ jobs:
       - name: Check if version was already bumped in this push
         id: check_bump
         run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
+          # Query CURRENT origin/main HEAD, not the event checkout. On a
+          # workflow re-run (e.g. manually triggered after a transient
+          # failure), the event-supplied SHA may be stale: another release
+          # may have advanced `main` between the original trigger and the
+          # re-run. Without fetching, the regex would consult an older
+          # commit message and the guard could miss an already-created
+          # release pair, double-bumping the version.
+          git fetch origin main --depth=1
+          COMMIT_MSG=$(git log -1 --pretty=%B origin/main)
           # Either commit in the 2-commit release pair counts as "already bumped",
           # so a re-run of this workflow doesn't double-bump. The chore commit is
           # what GITHUB_TOKEN pushes back to main; the release commit precedes it.
