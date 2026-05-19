@@ -893,6 +893,59 @@ describe("state.tryClaim (per-notification atomic claim)", () => {
   });
 });
 
+describe("state.readState malformed-payload branches", () => {
+  it("treats a `false` JSON payload as empty (the !parsed branch)", async () => {
+    mkdirSync(join(TEMP_HOME, ".deeplake"), { recursive: true });
+    writeFileSync(statePath(), "false", "utf-8");
+    expect(readState()).toEqual({ shown: {} });
+  });
+
+  it("treats a number JSON payload as empty (typeof !== object branch)", async () => {
+    mkdirSync(join(TEMP_HOME, ".deeplake"), { recursive: true });
+    writeFileSync(statePath(), "42", "utf-8");
+    expect(readState()).toEqual({ shown: {} });
+  });
+
+  it("treats a missing shown key as empty (typeof shown !== object branch)", async () => {
+    mkdirSync(join(TEMP_HOME, ".deeplake"), { recursive: true });
+    writeFileSync(statePath(), JSON.stringify({ otherKey: "val" }), "utf-8");
+    expect(readState()).toEqual({ shown: {} });
+  });
+});
+
+describe("state.releaseClaim (transient notification cleanup)", () => {
+  it("unlinks the claim file so the next tryClaim with the same key succeeds", async () => {
+    const { tryClaim, releaseClaim } = await import("../../src/notifications/state.js");
+    const n: Notification = { id: "release-test", dedupKey: { v: 1 }, title: "t", body: "b" };
+    expect(tryClaim(n)).toBe(true);
+    // Without releaseClaim, the second claim would EEXIST → false.
+    releaseClaim(n);
+    expect(tryClaim(n)).toBe(true);
+  });
+
+  it("silent no-op when the claim file doesn't exist (ENOENT swallowed)", async () => {
+    const { releaseClaim } = await import("../../src/notifications/state.js");
+    const n: Notification = { id: "never-claimed", dedupKey: { v: 1 }, title: "t", body: "b" };
+    // Never tryClaim'd — no file on disk. Must not throw.
+    expect(() => releaseClaim(n)).not.toThrow();
+  });
+
+  it("logs and continues on non-ENOENT errors (e.g. claim path is a directory)", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const { releaseClaim } = await import("../../src/notifications/state.js");
+    const claimsDir = join(TEMP_HOME, ".deeplake", "notifications-claims");
+    mkdirSync(claimsDir, { recursive: true, mode: 0o700 });
+    // Make the claim path point at a DIRECTORY instead of a file —
+    // unlinkSync on a dir throws EISDIR (POSIX) or EPERM (Linux). Either
+    // way it's not ENOENT, so the fail-soft logging branch fires.
+    const n: Notification = { id: "release-test-2", dedupKey: { v: 2 }, title: "t", body: "b" };
+    const { createHash } = await import("node:crypto");
+    const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
+    mkdirSync(join(claimsDir, `release-test-2-${keyHash}`), { recursive: true });
+    expect(() => releaseClaim(n)).not.toThrow();
+  });
+});
+
 describe("drainSessionStart with per-notification claim", () => {
   it("two parallel drains emit the welcome banner exactly once total (not duplicated)", async () => {
     let stdoutWrites = 0;
