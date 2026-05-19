@@ -36,7 +36,7 @@ function writeJsonAt(root, relPath, obj) {
   writeFileSync(resolve(root, relPath), JSON.stringify(obj, null, 2) + "\n");
 }
 
-export function syncVersions({ root = process.cwd(), log = console.log } = {}) {
+export function syncVersions({ root = process.cwd(), log = (m) => console.error(m) } = {}) {
   const source = readJsonAt(root, SOURCE);
   const version = source.version;
   if (!version || typeof version !== "string") {
