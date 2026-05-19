@@ -49,6 +49,18 @@ const dlog = (msg: string) => _log("skillify-migrate", msg);
 const attemptedFor = new Set<string>();
 
 export function migrateLegacyStateDir(): void {
+  // Hard guard: when `HIVEMIND_STATE_DIR` is set we are explicitly NOT
+  // in the canonical home-based layout. The `skilify`-vs-`skillify`
+  // typo migration is a one-shot upgrade against the historical
+  // `~/.deeplake/state/` parent and has no meaning anywhere else.
+  // Without this guard, an override like `HIVEMIND_STATE_DIR=/tmp/foo`
+  // would still cause us to `existsSync('/tmp/skilify')` and — if some
+  // unrelated tool happened to have created that directory —
+  // `renameSync('/tmp/skilify', '/tmp/foo')` and move someone else's
+  // content into our state path. Tests (and any other caller that
+  // overrides) get a hard no-op here and a clean tmp-dir start.
+  if (process.env.HIVEMIND_STATE_DIR?.trim()) return;
+
   const current = getStateDir();
   if (attemptedFor.has(current)) return;
   attemptedFor.add(current);

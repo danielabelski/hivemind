@@ -380,6 +380,30 @@ describe("HIVEMIND_STATE_DIR routing", () => {
     expect(fs.existsSync(tmpLegacy)).toBe(false);
   });
 
+  it("migrateLegacyStateDir is a hard no-op when HIVEMIND_STATE_DIR is set, even if a sibling 'skilify' dir coincidentally exists", async () => {
+    // CodeRabbit (#2/#5/#6 on PR #181): without an env-set guard,
+    // an override like HIVEMIND_STATE_DIR=/tmp/foo would still cause
+    // the migration to `existsSync('/tmp/skilify')` and — if some
+    // unrelated tool happened to have created that dir — renameSync
+    // it into the state path. Stage that exact scenario and assert
+    // we leave the sibling alone.
+    const fs = require("node:fs");
+    const siblingLegacy = join(STATE_DIR, "..", "skilify");
+    fs.mkdirSync(siblingLegacy, { recursive: true });
+    const marker = join(siblingLegacy, "DO_NOT_TOUCH.txt");
+    fs.writeFileSync(marker, "unrelated content");
+    try {
+      vi.resetModules();
+      const { migrateLegacyStateDir } = await import("../../src/skillify/legacy-migration.js");
+      expect(() => migrateLegacyStateDir()).not.toThrow();
+      expect(fs.existsSync(siblingLegacy)).toBe(true);
+      expect(fs.existsSync(marker)).toBe(true);
+      expect(fs.readFileSync(marker, "utf-8")).toBe("unrelated content");
+    } finally {
+      try { fs.rmSync(siblingLegacy, { recursive: true, force: true }); } catch { /* nothing */ }
+    }
+  });
+
   it("empty/whitespace HIVEMIND_STATE_DIR is treated as unset", async () => {
     // Defensive: a `HIVEMIND_STATE_DIR=` or `HIVEMIND_STATE_DIR="   "`
     // (forgotten value in a shell script, accidental empty pass-through
