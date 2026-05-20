@@ -105,9 +105,8 @@ describe("hermes session-start hook — placeholder creation", () => {
     queryMock.mockResolvedValueOnce([]); // SELECT
     queryMock.mockResolvedValueOnce([]); // INSERT
     await runHook();
-    // 2 placeholder queries + 2 T6 renderer queries (listRules + listTasks
-    // return [] from the default mock — no events SELECT) = 4 total.
-    expect(queryMock).toHaveBeenCalledTimes(4);
+    // 2 placeholder + 3 T6 renderer (rules + team + mine) = 5.
+    expect(queryMock).toHaveBeenCalledTimes(5);
     const insertSql = queryMock.mock.calls[1][0] as string;
     expect(insertSql).toMatch(/INSERT INTO "memory"/);
     expect(insertSql).toContain("'hermes'");
@@ -117,9 +116,8 @@ describe("hermes session-start hook — placeholder creation", () => {
   it("skips INSERT when placeholder already exists", async () => {
     queryMock.mockResolvedValueOnce([{ path: "/summaries/alice/ses-1.md" }]);
     await runHook();
-    // 1 placeholder SELECT (returns row, no INSERT) + 2 T6 renderer
-    // queries (rules + tasks default to []) = 3 total.
-    expect(queryMock).toHaveBeenCalledTimes(3);
+    // 1 placeholder SELECT + 3 T6 renderer (rules + team + mine) = 4.
+    expect(queryMock).toHaveBeenCalledTimes(4);
   });
 
   it("skipped entirely when no token", async () => {

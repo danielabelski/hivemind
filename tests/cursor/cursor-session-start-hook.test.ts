@@ -107,10 +107,9 @@ describe("cursor session-start hook — placeholder creation", () => {
     await runHook();
     expect(ensureTableMock).toHaveBeenCalledTimes(1);
     expect(ensureSessionsTableMock).toHaveBeenCalledTimes(1);
-    // 2 placeholder queries + 2 T6 renderer queries (listRules + listTasks
-    // both return [] from the default mock, so computeAllForTasks is
-    // skipped — no events SELECT) = 4 total.
-    expect(queryMock).toHaveBeenCalledTimes(4);
+    // 2 placeholder + 3 T6 renderer (rules + team-tasks + mine-tasks)
+    // = 5. computeAllForTasks skipped because tasks lists empty.
+    expect(queryMock).toHaveBeenCalledTimes(5);
     const insertSql = queryMock.mock.calls[1][0] as string;
     expect(insertSql).toMatch(/INSERT INTO "memory"/);
     expect(insertSql).toContain("'cursor'");
@@ -120,9 +119,8 @@ describe("cursor session-start hook — placeholder creation", () => {
   it("skips INSERT when placeholder already exists", async () => {
     queryMock.mockResolvedValueOnce([{ path: "/summaries/alice/sid-1.md" }]);
     await runHook();
-    // 1 placeholder SELECT (returns row, no INSERT) + 2 T6 renderer
-    // queries (rules + tasks default to []) = 3 total.
-    expect(queryMock).toHaveBeenCalledTimes(3);
+    // 1 placeholder SELECT + 3 T6 renderer (rules + team + mine) = 4.
+    expect(queryMock).toHaveBeenCalledTimes(4);
   });
 
   it("skips placeholder when HIVEMIND_CAPTURE=false", async () => {

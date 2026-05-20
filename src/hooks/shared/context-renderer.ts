@@ -71,42 +71,62 @@ export async function renderContextBlock(
   const log = opts.log ?? (() => { /* nothing */ });
 
   try {
-    // Over-fetch rules + tasks so the "X more" truncation hint can
-    // give a useful count (not just "more"). 4× the display cap is a
-    // reasonable balance: enough to surface "this team has lots of
-    // rules" without unbounded reads on a giant org. The reported
-    // count is approximate at the high end (capped at over-fetch
-    // limit) — documented as a v1 limitation.
+    // Over-fetch rules so the "X more" truncation hint can give a
+    // useful count (not just "more"). 4× the display cap is a
+    // reasonable balance — surfaces "this team has lots of rules"
+    // without unbounded reads on a giant org. The reported count is
+    // approximate beyond the over-fetch window; documented as a v1
+    // limitation.
     const rules = await listRules(query, input.rulesTable, {
       status: "active",
       limit: Math.max(maxRules * 4, maxRules + 1),
     });
-    // listTasks scope='all' returns every active task across the org;
-    // we filter to (team OR assigned-to-me) in JS because the plan's
-    // visibility rule (A3b) doesn't map cleanly to a single scope
-    // value in listTasks' API. Over-fetching cap matches rules above.
-    const allTasks = await listTasks(query, input.tasksTable, {
-      scope: "all",
+
+    // Two SEPARATE listTasks queries — one for team-scope (any
+    // assignee) and one for me-scope (current user only) — then
+    // merge + dedup. The earlier "scope=all then filter in JS"
+    // approach silently dropped a user's visible tasks when there
+    // were enough newer private tasks assigned to OTHER users to
+    // push the visible one out of the cap window. Codex review on
+    // T6 surfaced this.
+    //
+    // The cost is one extra SELECT round-trip per SessionStart; the
+    // correctness gain (no silently-missing tasks) is worth it.
+    const teamTasks = await listTasks(query, input.tasksTable, {
+      scope: "team",
       status: "active",
       limit: Math.max(maxTasks * 4, maxTasks + 1),
     });
-    const visibleTasks = allTasks.filter(
-      t => t.scope === "team" || t.assigned_to === input.currentUser,
-    );
+    const myTasks = await listTasks(query, input.tasksTable, {
+      scope: "mine",
+      status: "active",
+      current_user: input.currentUser,
+      limit: Math.max(maxTasks * 4, maxTasks + 1),
+    });
+    const visibleTasks = mergeAndDedupTasks(teamTasks, myTasks);
 
     const rulesShown = rules.slice(0, maxRules);
     const rulesHidden = Math.max(0, rules.length - maxRules);
     const tasksShown = visibleTasks.slice(0, maxTasks);
     const tasksHidden = Math.max(0, visibleTasks.length - maxTasks);
 
-    // One round-trip for all displayed tasks' KPI totals — saves N-1
-    // queries vs the obvious per-task computeAllForTask loop.
+    // KPI totals: one round-trip for all displayed tasks (avoids the
+    // N+1 per-task computeAllForTask loop). The aggregate query is
+    // wrapped in its OWN try so a missing hivemind_task_events table
+    // (common on a fresh org — events table is lazy-created by
+    // `tasks progress` / capture's auto-extract, neither of which
+    // may have run yet) doesn't drop the WHOLE rules+tasks block.
+    // On aggregate failure we proceed with empty totals; KPIs render
+    // as 0/target which is the truthful state when no events exist.
     const taskIds = tasksShown.map(t => t.task_id);
-    const totals = await computeAllForTasks(
-      query,
-      input.taskEventsTable,
-      taskIds,
-    );
+    let totals: Record<string, Record<string, number>> = {};
+    try {
+      totals = await computeAllForTasks(query, input.taskEventsTable, taskIds);
+    } catch (aggErr: unknown) {
+      const aggMsg = aggErr instanceof Error ? aggErr.message : String(aggErr);
+      log(`render-context-block: aggregate failed (continuing with 0/target): ${aggMsg}`);
+      // totals stays {} — every KPI renders as 0/target.
+    }
 
     return formatBlock({
       rules: rulesShown,
@@ -120,10 +140,31 @@ export async function renderContextBlock(
     const msg = e instanceof Error ? e.message : String(e);
     log(`render-context-block: ${msg}`);
     // Missing-table is the most common "nothing to render" scenario
-    // on a fresh org (rules/tasks/events CLI never used yet). Any
+    // on a fresh org (rules / tasks tables never created yet). Any
     // other failure also returns "" so SessionStart keeps working.
     return "";
   }
+}
+
+/**
+ * Merge team-scope and me-scope task results into a single deduped
+ * list sorted newest-first by created_at. The two listTasks calls
+ * may return the same task_id (a team task assigned to current user
+ * shows up in both); the first occurrence wins.
+ */
+function mergeAndDedupTasks(
+  teamTasks: import("../../tasks/index.js").TaskRow[],
+  myTasks: import("../../tasks/index.js").TaskRow[],
+): import("../../tasks/index.js").TaskRow[] {
+  const seen = new Set<string>();
+  const merged: import("../../tasks/index.js").TaskRow[] = [];
+  for (const t of [...teamTasks, ...myTasks]) {
+    if (seen.has(t.task_id)) continue;
+    seen.add(t.task_id);
+    merged.push(t);
+  }
+  merged.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return merged;
 }
 
 interface FormatInput {
