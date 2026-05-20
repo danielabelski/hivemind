@@ -49,6 +49,11 @@ interface TSNode {
 
 // Singleton parser per language. tree-sitter Parser is stateless across .parse() calls
 // once the language is set, so reusing it is safe and saves the language-load cost.
+//
+// Native memory: in tree-sitter 0.21+, Tree objects do NOT expose a `.delete()` method;
+// native memory is reclaimed when the JS Tree wrapper is garbage-collected. We never
+// retain the Tree past the extractTypeScript() return, and FileExtraction holds only
+// plain strings (no Node references), so GC reclaims after each call without help.
 let _typescriptParser: Parser | null = null;
 
 function getTypescriptParser(): Parser {
@@ -235,16 +240,23 @@ function handleDeclaration(
           if (member.type === "method_definition") {
             const methodName = textOfField(member, "name");
             if (methodName === null) continue;
-            const methodId = `${classNode.label}.${methodName}`;
+            // Exported reachability: only public methods of an exported class are
+            // truly externally reachable. Private/protected methods may exist on an
+            // exported class but are not part of its external API. TS default is
+            // public when no modifier is present.
+            const accessibility = firstNamedChildOfTypes(member, ["accessibility_modifier"]);
+            const isPublic = accessibility === null || accessibility.text === "public";
+            const methodExported = exported && isPublic;
+            const methodKey = `${classNode.label}.${methodName}`;
             const methodNode = makeNodeWithExplicitLabel(
               relativePath,
-              methodId,
+              methodKey,
               methodName,
               "method",
               member,
-              exported, // method inherits class export visibility
+              methodExported,
             );
-            pushNode(result, declByName, methodNode);
+            pushNode(result, declByName, methodNode, methodKey);
             result.edges.push({
               source: classNode.id,
               target: methodNode.id,
@@ -406,15 +418,15 @@ function findEnclosingDeclaration(
         const n = declByName.get(`${className}.${methodName}`);
         if (n !== undefined) return n;
       }
-    } else if (cur.type === "lexical_declaration") {
-      // const foo = () => { ... } — caller is the const itself
-      const declarator = firstNamedChildOfTypes(cur, ["variable_declarator"]);
-      if (declarator !== null) {
-        const ident = declarator.childForFieldName("name");
-        if (ident !== null && ident.type === "identifier") {
-          const n = declByName.get(ident.text);
-          if (n !== undefined) return n;
-        }
+    } else if (cur.type === "variable_declarator") {
+      // const foo = () => { ... } or `const a = () => x(), b = () => y();`
+      // We walk to the NEAREST declarator (not the lexical_declaration that
+      // contains multiple declarators) so calls inside `b` resolve to `b`,
+      // not the first declarator.
+      const ident = cur.childForFieldName("name");
+      if (ident !== null && ident.type === "identifier") {
+        const n = declByName.get(ident.text);
+        if (n !== undefined) return n;
       }
     }
     cur = cur.parent;
@@ -484,22 +496,23 @@ function makeNodeWithExplicitLabel(
   };
 }
 
+/**
+ * Add `node` to the FileExtraction and register it in `declByName` under
+ * `lookupKey` so Pass 3 (calls) can resolve callees to it.
+ *
+ * Caller passes the exact key the resolver will use:
+ *   - top-level functions/classes/etc.: pass `node.label` (the symbol name)
+ *   - methods: pass `<ClassName>.<methodName>` so `this.foo` lookup hits
+ * Passing the key explicitly avoids re-parsing the node ID with split().
+ */
 function pushNode(
   result: FileExtraction,
   declByName: Map<string, GraphNode>,
   node: GraphNode,
+  lookupKey?: string,
 ): void {
   result.nodes.push(node);
-  // For call resolution, key by the LABEL+method-prefix used when resolving
-  // (the `findEnclosingDeclaration` walker looks up "Class.method" or "name").
-  // `id` is path-prefixed and not useful here.
-  if (node.kind === "method") {
-    // label is just the method name; id-name component is "Class.method"
-    const idName = node.id.split(":").slice(-2, -1)[0]; // re-extract "Class.method" piece
-    if (idName !== undefined) declByName.set(idName, node);
-  } else {
-    declByName.set(node.label, node);
-  }
+  declByName.set(lookupKey ?? node.label, node);
 }
 
 function nodeId(relativePath: string, name: string, kind: NodeKind): string {
@@ -507,11 +520,12 @@ function nodeId(relativePath: string, name: string, kind: NodeKind): string {
 }
 
 function nodeIdUnresolved(relativePath: string, name: string, kind: NodeKind): string {
-  // Cross-file unresolved targets are still expressed as full IDs so the format
-  // is uniform; the file part points to the unresolved kind (we don't know
-  // the real file yet — Phase 1.5 resolves these). The "unresolved:" sentinel
-  // distinguishes them clearly from real local refs.
-  return `unresolved:${name}:${kind}`;
+  // Scoped to the referring file: two files extending different `Base` classes
+  // must NOT collapse to the same target string during snapshot aggregation
+  // (NetworkX consumers would materialize one shared phantom node). Including
+  // relativePath makes the unresolved target per-file; Phase 1.5 resolves them
+  // and replaces with real cross-file IDs.
+  return `unresolved:${relativePath}:${name}:${kind}`;
 }
 
 function locationStr(node: TSNode): string {
