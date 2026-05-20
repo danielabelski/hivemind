@@ -39,10 +39,10 @@ Usage:
   hivemind install   [--only <platforms>] [--skip-auth] [--token <value>]
       Auto-detect assistants on this machine and install hivemind into each.
       --only takes a comma-separated list: ${allPlatformIds().join(",")}
-      --token, or env DEEPLAKE_API_TOKEN / HIVEMIND_TOKEN, signs in
-      non-interactively (useful for CI / scripted installs). Without it,
-      a TTY install shows a consent prompt; a headless install skips
-      auth and prints a hint for 'hivemind login'.
+      --token, or env HIVEMIND_TOKEN, signs in non-interactively (useful
+      for CI / scripted installs). Without it, a TTY install shows a
+      consent prompt; a headless install skips auth and prints a hint
+      for 'hivemind login'.
 
   hivemind uninstall [--only <platforms>]
       Auto-detect installed assistants and remove hivemind from each.
@@ -139,6 +139,10 @@ function parseToken(args: string[]): string | undefined {
   return raw && raw.length > 0 ? raw : undefined;
 }
 
+function hasEnvToken(): boolean {
+  return Boolean(process.env.HIVEMIND_TOKEN);
+}
+
 // Decide how to sign the user in before platform install runs. Three paths,
 // in priority order:
 //   1. A token is provided (flag or env). Validate via /me and save creds —
@@ -153,12 +157,15 @@ function parseToken(args: string[]): string | undefined {
 // behind the consent rollout: install ≠ auth.
 async function runAuthGate(args: string[]): Promise<void> {
   const flagToken = parseToken(args);
-  const hasEnvToken = Boolean(process.env.DEEPLAKE_API_TOKEN ?? process.env.HIVEMIND_TOKEN);
   const isTTY = Boolean(process.stdin.isTTY);
 
-  if (flagToken || hasEnvToken) {
-    await loginWithProvidedToken(flagToken);
-    return;
+  // If a token is supplied via flag or env, try it first — but on failure
+  // fall through to the next path (consent prompt in TTY, headless hint
+  // otherwise) so a typoed / revoked token doesn't dead-end the install
+  // with no recovery. Codex review on PR #190 surfaced this.
+  if (flagToken || hasEnvToken()) {
+    const ok = await loginWithProvidedToken(flagToken);
+    if (ok) return;
   }
 
   if (!isTTY) {
@@ -166,7 +173,7 @@ async function runAuthGate(args: string[]): Promise<void> {
     log("No TTY detected — continuing without sign-in.");
     log("To sign in:");
     log("  1) Visit https://app.deeplake.ai/api-keys to create an API key");
-    log("  2) Rerun: DEEPLAKE_API_TOKEN=<key> hivemind install");
+    log("  2) Rerun: HIVEMIND_TOKEN=<key> hivemind install");
     log("Or run `hivemind login` after install.");
     return;
   }
@@ -204,7 +211,7 @@ async function runAuthGate(args: string[]): Promise<void> {
     if (pasted) {
       signedIn = await loginWithProvidedToken(pasted);
       if (!signedIn) {
-        warn("Continuing install — sign in later with `hivemind login` or `DEEPLAKE_API_TOKEN=<key> hivemind install`.");
+        warn("Continuing install — sign in later with `hivemind login` or `HIVEMIND_TOKEN=<key> hivemind install`.");
       }
     } else {
       log("Skipping sign-in. You can sign in anytime with `hivemind login`.");

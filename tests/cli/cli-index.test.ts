@@ -115,7 +115,6 @@ beforeEach(() => {
   // care about the fallback don't accidentally try to validate a token.
   promptLineMock.mockReset().mockResolvedValue("");
   maybeShowOrgChoiceMock.mockReset().mockResolvedValue(undefined);
-  delete process.env.DEEPLAKE_API_TOKEN;
   delete process.env.HIVEMIND_TOKEN;
   runAuthCommandMock.mockReset().mockResolvedValue(undefined);
   detectPlatformsMock.mockReset().mockReturnValue([]);

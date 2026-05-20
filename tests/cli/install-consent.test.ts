@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *   6. Non-TTY + invalid token + /me 401 → warning, install continues, exit 0
  *   7. TTY + --token flag                → token honored, consent prompt NOT shown
  *
- * Plus a negative-pattern assertion (rule 8): "Signed in via DEEPLAKE_API_TOKEN"
+ * Plus a negative-pattern assertion (rule 8): "Signed in via HIVEMIND_TOKEN"
  * must NOT appear in the --token-flag log line.
  */
 
@@ -132,7 +132,6 @@ beforeEach(() => {
   stdoutMock.mockReset();
   stderrMock.mockReset();
   exitSpy.mockReset();
-  delete process.env.DEEPLAKE_API_TOKEN;
   delete process.env.HIVEMIND_TOKEN;
   vi.spyOn(process.stdout, "write").mockImplementation(((...a: unknown[]) => { stdoutMock(...a); return true; }) as any);
   vi.spyOn(process.stderr, "write").mockImplementation(((...a: unknown[]) => { stderrMock(...a); return true; }) as any);
@@ -234,6 +233,22 @@ describe("install consent gate — TTY paths", () => {
     expect(installs.installClaude).toHaveBeenCalledTimes(1);
   });
 
+  it("TTY + --token rejected → consent prompt STILL shown (codex review fix)", async () => {
+    setTTY(true);
+    loginWithProvidedTokenMock.mockResolvedValue(false); // typoed/revoked
+    confirmMock.mockResolvedValue(false); // user declines fallback consent
+    promptLineMock.mockResolvedValue(""); // skip paste
+
+    await runInstall(["--token", "bad-tok"]);
+
+    expect(loginWithProvidedTokenMock).toHaveBeenCalledWith("bad-tok");
+    // On rejection, runAuthGate must fall through — the consent prompt
+    // fires so the user has a recovery path in the same run.
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(promptLineMock).toHaveBeenCalledTimes(1);
+    expect(installs.installClaude).toHaveBeenCalledTimes(1);
+  });
+
   it("TTY + --token <value> → consent prompt NOT shown, token honored, no fallback", async () => {
     setTTY(true);
     loginWithProvidedTokenMock.mockResolvedValue(true);
@@ -261,14 +276,16 @@ describe("install consent gate — non-TTY paths", () => {
     expect(installs.installClaude).toHaveBeenCalledTimes(1);
     expect(stdoutText()).toContain("No TTY detected");
     expect(stdoutText()).toContain("https://app.deeplake.ai/api-keys");
-    expect(stdoutText()).toContain("DEEPLAKE_API_TOKEN=<key>");
+    expect(stdoutText()).toContain("HIVEMIND_TOKEN=<key>");
     expect(stdoutText()).toContain("hivemind login");
+    // DEEPLAKE_* env names were dropped per product feedback.
+    expect(stdoutText()).not.toContain("DEEPLAKE_API_TOKEN");
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
-  it("non-TTY + DEEPLAKE_API_TOKEN → loginWithProvidedToken once, no device flow, no confirm", async () => {
+  it("non-TTY + HIVEMIND_TOKEN → loginWithProvidedToken once, no device flow, no confirm", async () => {
     setTTY(false);
-    process.env.DEEPLAKE_API_TOKEN = "env-token";
+    process.env.HIVEMIND_TOKEN = "env-token";
     loginWithProvidedTokenMock.mockResolvedValue(true);
 
     await runInstall([]);
@@ -280,21 +297,9 @@ describe("install consent gate — non-TTY paths", () => {
     expect(installs.installClaude).toHaveBeenCalledTimes(1);
   });
 
-  it("non-TTY + HIVEMIND_TOKEN (no DEEPLAKE_API_TOKEN) → loginWithProvidedToken once", async () => {
-    setTTY(false);
-    process.env.HIVEMIND_TOKEN = "hm-token";
-    loginWithProvidedTokenMock.mockResolvedValue(true);
-
-    await runInstall([]);
-
-    expect(loginWithProvidedTokenMock).toHaveBeenCalledTimes(1);
-    expect(loginWithProvidedTokenMock).toHaveBeenCalledWith(undefined);
-    expect(installs.installClaude).toHaveBeenCalledTimes(1);
-  });
-
   it("non-TTY + --token flag → loginWithProvidedToken called with flag value (priority over env)", async () => {
     setTTY(false);
-    process.env.DEEPLAKE_API_TOKEN = "env-token";
+    process.env.HIVEMIND_TOKEN = "env-token";
     loginWithProvidedTokenMock.mockResolvedValue(true);
 
     await runInstall(["--token", "flag-token"]);
@@ -303,14 +308,19 @@ describe("install consent gate — non-TTY paths", () => {
     expect(loginWithProvidedTokenMock).toHaveBeenCalledWith("flag-token");
   });
 
-  it("non-TTY + invalid token (loginWithProvidedToken returns false) → install continues exit 0", async () => {
+  it("non-TTY + invalid token → falls through to headless hint, install continues exit 0", async () => {
     setTTY(false);
-    process.env.DEEPLAKE_API_TOKEN = "bad-token";
+    process.env.HIVEMIND_TOKEN = "bad-token";
     loginWithProvidedTokenMock.mockResolvedValue(false);
 
     await runInstall([]);
 
     expect(loginWithProvidedTokenMock).toHaveBeenCalledTimes(1);
+    // Codex fix: on token rejection, the non-TTY hint must STILL print so
+    // the user has a documented recovery path. Previously runAuthGate
+    // returned early and the install finished silently with no auth.
+    expect(stdoutText()).toContain("No TTY detected");
+    expect(stdoutText()).toContain("https://app.deeplake.ai/api-keys");
     expect(installs.installClaude).toHaveBeenCalledTimes(1);
     expect(exitSpy).not.toHaveBeenCalled();
   });
@@ -328,7 +338,7 @@ describe("install consent gate — non-TTY paths", () => {
 describe("install consent gate — short-circuit cases", () => {
   it("--skip-auth bypasses the entire gate even when no creds and TTY=true", async () => {
     setTTY(true);
-    process.env.DEEPLAKE_API_TOKEN = "env-token";
+    process.env.HIVEMIND_TOKEN = "env-token";
 
     await runInstall(["--skip-auth"]);
 

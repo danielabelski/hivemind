@@ -232,9 +232,32 @@ export async function saveCredentialsFromToken(
 
   const orgs = await listOrgs(token, apiUrl);
   if (orgs.length === 0) throw new Error("No organizations found for this account.");
+
+  // Pick the org the token is bound to, in priority order:
+  //   1. HIVEMIND_ORG_ID env var override (explicit user choice).
+  //   2. `org_id` claim baked into the API-token JWT (skipTokenMint=true
+  //      path: the token was minted server-side bound to this org, so
+  //      using anything else would route hooks at the wrong org).
+  //   3. Fall back to orgs[0] for the device-flow path (will be re-bound
+  //      by the upcoming /users/me/tokens mint anyway).
+  // Without these layers a multi-org user pasting an API key would
+  // silently bind to the wrong org and every later capture would land
+  // there. Codex review surfaced this on PR #190.
+  const envOrgId = process.env.HIVEMIND_ORG_ID;
+  let preferredOrgId: string | undefined = envOrgId;
+  if (!preferredOrgId && opts.skipTokenMint) {
+    const claims = decodeJwtPayload(token);
+    const claimOrg = claims && typeof claims.org_id === "string" ? claims.org_id : undefined;
+    if (claimOrg) preferredOrgId = claimOrg;
+  }
   let orgId: string;
   let orgName: string;
-  if (orgs.length === 1) {
+  const matched = preferredOrgId ? orgs.find(o => o.id === preferredOrgId) : undefined;
+  if (matched) {
+    orgId = matched.id;
+    orgName = matched.name;
+    process.stderr.write(`Organization: ${orgName}\n`);
+  } else if (orgs.length === 1) {
     orgId = orgs[0].id;
     orgName = orgs[0].name;
     process.stderr.write(`Organization: ${orgName}\n`);
@@ -243,7 +266,11 @@ export async function saveCredentialsFromToken(
     orgs.forEach((org, i) => process.stderr.write(`  ${i + 1}. ${org.name}\n`));
     orgId = orgs[0].id;
     orgName = orgs[0].name;
-    process.stderr.write(`\nUsing: ${orgName}\n`);
+    if (opts.skipTokenMint) {
+      process.stderr.write(`\nUsing: ${orgName} (set HIVEMIND_ORG_ID to override)\n`);
+    } else {
+      process.stderr.write(`\nUsing: ${orgName}\n`);
+    }
   }
 
   let apiToken = token;

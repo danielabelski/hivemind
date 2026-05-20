@@ -128,9 +128,8 @@ describe("ensureLoggedIn", () => {
     expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai");
   });
 
-  it("HIVEMIND_API_URL takes precedence over DEEPLAKE_API_URL and the default", async () => {
+  it("HIVEMIND_API_URL is used when set, otherwise default", async () => {
     process.env.HIVEMIND_API_URL = "https://hm.example";
-    process.env.DEEPLAKE_API_URL = "https://dl.example";
     loginMock.mockImplementation(async () => {
       writeCreds({ token: "t", orgId: "o", savedAt: "" });
     });
@@ -139,14 +138,14 @@ describe("ensureLoggedIn", () => {
     expect(loginMock).toHaveBeenCalledWith("https://hm.example");
   });
 
-  it("DEEPLAKE_API_URL is used when only it is set", async () => {
+  it("DEEPLAKE_API_URL env is NOT honored (legacy name removed)", async () => {
     process.env.DEEPLAKE_API_URL = "https://dl.example";
     loginMock.mockImplementation(async () => {
       writeCreds({ token: "t", orgId: "o", savedAt: "" });
     });
     const { ensureLoggedIn } = await importFresh();
     await ensureLoggedIn();
-    expect(loginMock).toHaveBeenCalledWith("https://dl.example");
+    expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai");
   });
 
   it("returns false (and writes to stderr) when login() rejects", async () => {
@@ -250,31 +249,31 @@ describe("loginWithProvidedToken", () => {
     expect(stdoutWriteMock.mock.calls.map(c => c[0]).join("")).toContain("Signed in via --token flag.");
   });
 
-  it("falls back to DEEPLAKE_API_TOKEN when no flag, logs 'DEEPLAKE_API_TOKEN'", async () => {
-    process.env.DEEPLAKE_API_TOKEN = "env-tok";
+  it("falls back to HIVEMIND_TOKEN when no flag, logs 'HIVEMIND_TOKEN'", async () => {
+    process.env.HIVEMIND_TOKEN = "env-tok";
     saveCredentialsFromTokenMock.mockResolvedValue(undefined);
     const { loginWithProvidedToken } = await importFresh();
     const ok = await loginWithProvidedToken();
     expect(ok).toBe(true);
     expect(saveCredentialsFromTokenMock).toHaveBeenCalledWith("env-tok", "https://api.deeplake.ai", { skipTokenMint: true });
-    expect(stdoutWriteMock.mock.calls.map(c => c[0]).join("")).toContain("Signed in via DEEPLAKE_API_TOKEN.");
-  });
-
-  it("HIVEMIND_TOKEN fallback when neither flag nor DEEPLAKE_API_TOKEN", async () => {
-    process.env.HIVEMIND_TOKEN = "hm-tok";
-    saveCredentialsFromTokenMock.mockResolvedValue(undefined);
-    const { loginWithProvidedToken } = await importFresh();
-    const ok = await loginWithProvidedToken();
-    expect(ok).toBe(true);
-    expect(saveCredentialsFromTokenMock).toHaveBeenCalledWith("hm-tok", "https://api.deeplake.ai", { skipTokenMint: true });
+    expect(stdoutWriteMock.mock.calls.map(c => c[0]).join("")).toContain("Signed in via HIVEMIND_TOKEN.");
   });
 
   it("flag value beats env value (priority)", async () => {
-    process.env.DEEPLAKE_API_TOKEN = "env-tok";
+    process.env.HIVEMIND_TOKEN = "env-tok";
     saveCredentialsFromTokenMock.mockResolvedValue(undefined);
     const { loginWithProvidedToken } = await importFresh();
     await loginWithProvidedToken("flag-tok");
     expect(saveCredentialsFromTokenMock).toHaveBeenCalledWith("flag-tok", "https://api.deeplake.ai", { skipTokenMint: true });
+  });
+
+  it("DEEPLAKE_API_TOKEN env is NOT recognized (legacy name removed)", async () => {
+    process.env.DEEPLAKE_API_TOKEN = "should-be-ignored";
+    saveCredentialsFromTokenMock.mockResolvedValue(undefined);
+    const { loginWithProvidedToken } = await importFresh();
+    const ok = await loginWithProvidedToken();
+    expect(ok).toBe(false);
+    expect(saveCredentialsFromTokenMock).not.toHaveBeenCalled();
   });
 
   it("HIVEMIND_API_URL takes precedence over default", async () => {

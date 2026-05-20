@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
  * Two cases:
  *   1. Closed stdin, no token configured → exits within 5s, prints the
  *      headless hint, exit code 0.
- *   2. Closed stdin, DEEPLAKE_API_TOKEN=invalid against a mock /me that
+ *   2. Closed stdin, HIVEMIND_TOKEN=invalid against a mock /me that
  *      returns 401 → exits within 5s, prints the "Token authentication
  *      failed" warning, exit code 0 (install continues).
  *
@@ -102,7 +102,7 @@ describe("bundle/cli.js install — non-TTY smoke", () => {
     const combined = stdout + stderr;
     expect(combined).toContain("No TTY detected");
     expect(combined).toContain("https://app.deeplake.ai/api-keys");
-    expect(combined).toContain("DEEPLAKE_API_TOKEN=<key>");
+    expect(combined).toContain("HIVEMIND_TOKEN=<key>");
     expect(combined).toContain("hivemind login");
     // Negative-pattern assertion (rule 8): the consent banner must NOT
     // appear in non-TTY mode — that would mean the gate routed to the
@@ -110,16 +110,19 @@ describe("bundle/cli.js install — non-TTY smoke", () => {
     expect(combined).not.toContain("🐝 One more step to unlock Hivemind");
   });
 
-  it("closed stdin + DEEPLAKE_API_TOKEN=invalid + /me 401 → warns, install continues exit 0", async () => {
+  it("closed stdin + HIVEMIND_TOKEN=invalid + /me 401 → warns, falls through to headless hint, exit 0", async () => {
     const { code, stdout, stderr } = await spawnInstall({
-      DEEPLAKE_API_TOKEN: "invalid-token",
+      HIVEMIND_TOKEN: "invalid-token",
       HIVEMIND_API_URL: mockUrl,
     });
     expect(code).toBe(0);
     const combined = stdout + stderr;
     expect(combined).toContain("Token authentication failed");
     expect(combined).toContain("Continuing install");
-    // Headless hint must NOT print when a token was attempted (rule 8).
-    expect(combined).not.toContain("No TTY detected");
+    // Codex review fix: after a rejected token, the headless hint MUST
+    // also fire so the user has a documented recovery path. Previously
+    // runAuthGate returned early and the install finished silently.
+    expect(combined).toContain("No TTY detected");
+    expect(combined).toContain("HIVEMIND_TOKEN=<key>");
   });
 });
