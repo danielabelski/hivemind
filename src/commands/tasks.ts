@@ -3,8 +3,18 @@
 /**
  * CLI surface for `hivemind tasks`.
  *
+ * Identity contract: every `<user>` value in this CLI must match the
+ * target user's `cfg.userName` (what they see in `hivemind whoami`).
+ * The string IS the identifier — comparisons are exact. If your org's
+ * login persists `userName` as the email local-part ("alice"), passing
+ * "alice@activeloop.ai" to `--assign` will silently break the assignee's
+ * `tasks list --mine` view because the filter is an `===` against
+ * `cfg.userName`. A proper `userEmail` field on Config (with login
+ * backfill) is tracked as a v1.1 follow-up; v1 keeps the contract
+ * stable as "match whoami exactly".
+ *
  * Usage:
- *   hivemind tasks add "<text>" [--scope me|team] [--assign <user_email>]
+ *   hivemind tasks add "<text>" [--scope me|team] [--assign <user>]
  *       Add a new task. Defaults: --scope me, --assign self. KPIs are
  *       stored as `[]` in T3 — T4 will plug in an LLM call that fills
  *       them from the task text on insert.
@@ -17,8 +27,10 @@
  *       (T4 will add a `regen-kpis` flag for re-LLM-ing on edit).
  *   hivemind tasks done <task-id>
  *       Mark a task done (status='done').
- *   hivemind tasks assign <task-id> <user_email>
+ *   hivemind tasks assign <task-id> <user>
  *       Reassign the task to another user. Preserves text, scope, status.
+ *       `<user>` must match the target's `cfg.userName` (see identity
+ *       contract above).
  *   hivemind tasks report [<task-id>]
  *       (stub in T3) — KPI progress summary. The aggregation depends on
  *       the events table which lands in T5. Today this prints a deferred
@@ -44,12 +56,15 @@ const USAGE = `
 hivemind tasks — manage personal + team tasks
 
 Usage:
-  hivemind tasks add "<text>" [--scope me|team] [--assign <user_email>]
+  hivemind tasks add "<text>" [--scope me|team] [--assign <user>]
   hivemind tasks list [--mine|--team|--all] [--status active|done|all] [--limit N]
   hivemind tasks edit <task-id> "<new text>"
   hivemind tasks done <task-id>
-  hivemind tasks assign <task-id> <user_email>
+  hivemind tasks assign <task-id> <user>
   hivemind tasks report [<task-id>]    (T5: events / KPI aggregation)
+
+Identity: <user> must match what \`hivemind whoami\` shows for the
+target user. Comparisons are exact (no fuzzy / email matching in v1).
 `.trim();
 
 function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
@@ -197,7 +212,7 @@ export async function runTasksCommand(args: string[]): Promise<void> {
     const positional = stripKnownFlags(args.slice(1));
     const text = positional[0];
     if (!text) {
-      console.error("Missing task text. Usage: hivemind tasks add \"<text>\" [--scope me|team] [--assign <user_email>]");
+      console.error("Missing task text. Usage: hivemind tasks add \"<text>\" [--scope me|team] [--assign <user>]");
       process.exit(1);
       throw new Error("unreachable");
     }
@@ -292,7 +307,7 @@ export async function runTasksCommand(args: string[]): Promise<void> {
     const taskId = positional[0];
     const newAssignee = positional[1];
     if (!taskId || !newAssignee) {
-      console.error("Usage: hivemind tasks assign <task-id> <user_email>");
+      console.error("Usage: hivemind tasks assign <task-id> <user>");
       process.exit(1);
       throw new Error("unreachable");
     }

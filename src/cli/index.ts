@@ -105,16 +105,17 @@ Team-wide rules (SessionStart injection wired in a follow-up):
   lands in a follow-up commit (T6 of the rules-and-tasks-kpis plan).
 
 Personal + team tasks (SessionStart injection + KPI gen in follow-ups):
-  hivemind tasks add "<text>" [--scope me|team] [--assign <user_email>]
+  hivemind tasks add "<text>" [--scope me|team] [--assign <user>]
                                                Add a task (default --scope me, self-assigned).
   hivemind tasks list [--mine|--team|--all] [--status active|done|all] [--limit N]
                                                List tasks. Default --mine + active + 10 newest.
   hivemind tasks edit <task-id> "<new text>"   Edit a task (bumps version).
   hivemind tasks done <task-id>                Mark a task done.
-  hivemind tasks assign <task-id> <user_email> Reassign a task.
+  hivemind tasks assign <task-id> <user>       Reassign a task.
   hivemind tasks report [<task-id>]            (T5) KPI progress aggregation.
   Note: KPIs land empty in T3; T4 adds LLM-driven generation. SessionStart
-  injection of relevant tasks lands in T6.
+  injection of relevant tasks lands in T6. <user> values must match the
+  target user's 'hivemind whoami' output exactly (no fuzzy email matching in v1).
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.

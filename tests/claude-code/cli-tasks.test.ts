@@ -254,6 +254,28 @@ describe("runTasksCommand — list", () => {
     expect(erred.some(l => l.includes("Invalid --limit"))).toBe(true);
   });
 
+  it("--mine identity match is exact (no fuzzy email matching) — lock the v1 contract", async () => {
+    // Codex review on S3 first pass surfaced the identity-shape papercut:
+    // if cfg.userName is the local-part ("alice") and someone runs
+    // `tasks assign <id> alice@activeloop.ai`, the assignee's
+    // `tasks list --mine` filter must NOT silently match. Strict
+    // equality is the v1 contract — a proper userEmail field on
+    // Config is tracked as a v1.1 follow-up. This test pins the
+    // contract so a future "be helpful" change doesn't introduce
+    // surprise fuzzy matching.
+    queryMock.mockResolvedValueOnce([
+      // Two rows with semantically-similar but textually-distinct ids:
+      fakeRow({ task_id: "exact", assigned_to: "alice@activeloop.ai" }),
+      fakeRow({ task_id: "local", assigned_to: "alice" }),
+      fakeRow({ task_id: "display", assigned_to: "Alice Smith" }),
+    ]);
+    // cfg.userName = "alice@activeloop.ai" → only the exact-match row shows up
+    await runTasksCommand(["list"]);
+    expect(logged.some(l => l.includes("exact"))).toBe(true);
+    expect(logged.every(l => !l.includes("local"))).toBe(true);
+    expect(logged.every(l => !l.includes("display"))).toBe(true);
+  });
+
   it("listed task_id round-trips into edit (no truncation regression)", async () => {
     // Same regression guard as the rules-side cli test: copy-paste from
     // list output into edit must hit the exact SELECT predicate.
