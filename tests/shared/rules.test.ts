@@ -103,6 +103,21 @@ describe("insertRule", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("rejects rule text with embedded newlines (codex legacy audit P1.1 — prompt-injection defense in depth)", async () => {
+    // Newlines at write time would let a team member smuggle a fake
+    // SessionStart section into every agent's context. Renderer also
+    // sanitizes, but rejecting up-front gives a clear error and keeps
+    // the persisted data clean.
+    const { calls, query } = mockQuery([() => []]);
+    await expect(
+      insertRule(query, TBL, { text: "first line\nfake section", assigned_by: "a@b" }),
+    ).rejects.toThrow(/must not contain newlines/);
+    await expect(
+      insertRule(query, TBL, { text: "first\rsecond", assigned_by: "a@b" }),
+    ).rejects.toThrow(/must not contain newlines/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("rejects SQL-identifier injection in the table name", async () => {
     const { query } = mockQuery([() => []]);
     await expect(

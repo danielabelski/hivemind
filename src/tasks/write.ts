@@ -83,6 +83,13 @@ function assertValidText(text: string): void {
   if (text.length > MAX_TEXT_LENGTH) {
     throw new Error(`Task text exceeds ${MAX_TEXT_LENGTH} chars (got ${text.length})`);
   }
+  // Reject newlines at write time as defense-in-depth against
+  // prompt-injection through the SessionStart inject block.
+  // Renderer also sanitizes at render time for already-persisted
+  // rows from a vulnerable older client.
+  if (/[\r\n]/.test(text)) {
+    throw new Error("Task text must not contain newlines (use one task per line)");
+  }
 }
 
 function assertValidScope(scope: string): asserts scope is TaskScope {

@@ -225,6 +225,17 @@ describe("insertTask", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("rejects task text with embedded newlines (codex legacy audit P1.1 — prompt-injection defense in depth)", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await expect(
+      insertTask(query, TBL, { text: "ship\nrm -rf /", scope: "team", assigned_by: "a@b" }),
+    ).rejects.toThrow(/must not contain newlines/);
+    await expect(
+      insertTask(query, TBL, { text: "ship\r\nrm -rf /", scope: "team", assigned_by: "a@b" }),
+    ).rejects.toThrow(/must not contain newlines/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("rejects identifier injection in the table name", async () => {
     const { query } = mockQuery([() => []]);
     await expect(

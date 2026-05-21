@@ -50,11 +50,25 @@ export interface WriteResult {
 
 const MAX_TEXT_LENGTH = 2000;
 
-/** Validate the text field. Throws on empty input or over-cap length. */
+/**
+ * Validate the text field. Throws on empty input, over-cap length,
+ * or embedded newlines.
+ *
+ * Newlines are rejected at write time as defense-in-depth against
+ * the prompt-injection class: a rule body with `\n` followed by
+ * fake "=== HIVEMIND HOW-TO ===" content would inject a section
+ * into every SessionStart context. The renderer also sanitizes at
+ * render time (handles already-persisted rows) but rejecting up
+ * front means users see a clear error instead of silently-mangled
+ * output. Codex legacy audit pass 2 flagged this.
+ */
 function assertValidText(text: string): void {
   if (text.length === 0) throw new Error("Rule text must not be empty");
   if (text.length > MAX_TEXT_LENGTH) {
     throw new Error(`Rule text exceeds ${MAX_TEXT_LENGTH} chars (got ${text.length})`);
+  }
+  if (/[\r\n]/.test(text)) {
+    throw new Error("Rule text must not contain newlines (use one rule per line)");
   }
 }
 
