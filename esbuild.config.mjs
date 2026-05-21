@@ -23,6 +23,11 @@ const ccHooks = [
   // Filename keeps the "on-stop" suffix for backward-compat with prior
   // builds; the hook itself is registered under SessionEnd, not Stop.
   { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
+  // codebase-graph Phase 3 v1.1: async auto-pull on SessionStart.
+  // Spawned detached via nohup from each agent's SessionStart hook;
+  // pulls the freshest cloud snapshot for HEAD if newer than local.
+  // See src/hooks/graph-pull-worker.ts.
+  { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
 ];
 
 const ccShell = [
@@ -78,6 +83,7 @@ const codexHooks = [
   { entry: "dist/src/hooks/codex/stop.js", out: "stop" },
   { entry: "dist/src/hooks/codex/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
+  { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
 ];
 
 const codexShell = [
@@ -127,6 +133,7 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/cursor/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
+  { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -138,6 +145,7 @@ const hermesHooks = [
   { entry: "dist/src/hooks/hermes/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/hermes/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
+  { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
 ];
 
 const cursorShell = [

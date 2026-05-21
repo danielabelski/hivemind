@@ -23,6 +23,7 @@ import { renderSkillifyCommands } from "../cli/skillify-spec.js";
 import { countLocalManifestEntries } from "../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
 import { graphContextLine } from "../graph/session-context.js";
+import { spawnGraphPullWorker } from "../graph/spawn-pull-worker.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -229,6 +230,13 @@ async function main(): Promise<void> {
   // the ~1 MB snapshot. Returns null when no graph exists for this repo, in
   // which case we add nothing (avoids a misleading "graph: 0 nodes" line
   // for users who've never run a build).
+  //
+  // Fire the async graph-pull worker BEFORE composing the inject. The
+  // worker runs detached and will not affect THIS session's inject (the
+  // pulled bytes land for the NEXT SessionStart to pick up). Putting the
+  // spawn here is purely organizational — order doesn't matter because
+  // the worker is fully detached.
+  spawnGraphPullWorker(input.cwd ?? process.cwd(), __bundleDir);
   const graphLine = graphContextLine(input.cwd ?? process.cwd());
   const graphNote = graphLine ?? "";
 

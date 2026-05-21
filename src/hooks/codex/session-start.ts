@@ -20,6 +20,7 @@ import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoPullSkills } from "../../skillify/auto-pull.js";
+import { spawnGraphPullWorker } from "../../graph/spawn-pull-worker.js";
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,11 @@ async function main(): Promise<void> {
   // memory tiers via `hivemind --help` and `ls ~/.deeplake/memory/` on demand.
   // We therefore emit only login-state + version here, and trust the model
   // to bootstrap the rest.
+  // Async auto-pull of the latest cloud snapshot for HEAD. Detached and
+  // truly fire-and-forget — see src/graph/spawn-pull-worker.ts and
+  // src/hooks/graph-pull-worker.ts. Lands for the NEXT SessionStart.
+  spawnGraphPullWorker(input.cwd, __bundleDir);
+
   const additionalContext = creds?.token
     ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${versionNotice}`
     : `Hivemind: not logged in. Run \`hivemind login\` to enable shared memory + skill sharing.${versionNotice}`;
