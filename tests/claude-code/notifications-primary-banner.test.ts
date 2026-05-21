@@ -159,6 +159,75 @@ describe("pickPrimaryBanner — savings recap (when org savings > 1k)", () => {
     expect(n!.body).toContain("1 session");
     expect(n!.body).toContain("200 memory searches");
   });
+
+  // The ONLINE recap pluralizes recall/session at lines 167-168 of
+  // primary-banner.ts. The happy-path test above uses 42_000 / 187, which
+  // only exercises the plural branch. This guards the singular path so a
+  // future refactor that breaks "1 recall" / "1 session" rendering fails
+  // here instead of slipping through coverage. Also exercises the
+  // singular "1 skill generated" form via a single seeded skill dir, and
+  // the `skillsGenerated > 0` path which the other tests don't trigger
+  // (their tmp HOME has no .claude/skills dir at all).
+  it("renders singular recall/session/skill when counts are exactly 1", async () => {
+    // One skill dir owned by FRESH_CREDS.userName ("ada"). The function
+    // matches `--<userName>` suffix, so naming the dir `something--ada`
+    // makes countUserGeneratedSkills return 1.
+    mkdirSync(join(TEMP_HOME, ".claude", "skills", "demo-skill--ada"), { recursive: true });
+
+    orgStatsMock.mockResolvedValue({
+      org:  { sessionsCount: 1, memoryRecallCount: 1, memorySearchBytes: 6_000_000 },
+      user: { sessionsCount: 1, memoryRecallCount: 1, memorySearchBytes: 4_000 },
+    });
+    const n = await pickPrimaryBanner("s-1", FRESH_CREDS);
+    expect(n!.id).toBe("savings-recap");
+    expect(n!.body).toContain("1 memory recall");
+    expect(n!.body).not.toContain("1 memory recalls");
+    expect(n!.body).toContain("across 1 session");
+    expect(n!.body).not.toContain("across 1 sessions");
+    expect(n!.body).toContain("1 skill generated");
+    expect(n!.body).not.toContain("1 skills generated");
+  });
+
+  // Counterpart to the singular case: with 3 seeded skill dirs the body
+  // must say "3 skills" (plural). Guards the skillsGenerated === 1 ?
+  // "skill" : "skills" branch on the > 1 side, which no test exercises
+  // explicitly because the other recap tests have 0 skill dirs.
+  it("renders plural skills when more than one skill is generated", async () => {
+    for (const name of ["a--ada", "b--ada", "c--ada"]) {
+      mkdirSync(join(TEMP_HOME, ".claude", "skills", name), { recursive: true });
+    }
+    orgStatsMock.mockResolvedValue({
+      org:  { sessionsCount: 5, memoryRecallCount: 5, memorySearchBytes: 6_000_000 },
+      user: { sessionsCount: 1, memoryRecallCount: 1, memorySearchBytes: 4_000 },
+    });
+    const n = await pickPrimaryBanner("s-1", FRESH_CREDS);
+    expect(n!.body).toContain("3 skills generated");
+  });
+
+  // OFFLINE counterpart: the existing offline test has sessionCount=1
+  // (singular path) and memorySearchCount=200 (plural). This adds the
+  // mirror case so both branches at lines 210/211 of primary-banner.ts
+  // are covered.
+  it("OFFLINE renders plural sessions and singular memory search", async () => {
+    appendUsageRecord({
+      endedAt: "2026-05-18T00:00:00Z",
+      sessionId: "s-A",
+      memorySearchBytes: 3_500_000,
+      memorySearchCount: 1,
+    });
+    appendUsageRecord({
+      endedAt: "2026-05-18T01:00:00Z",
+      sessionId: "s-B",
+      memorySearchBytes: 3_500_000,
+      memorySearchCount: 0,
+    });
+    orgStatsMock.mockResolvedValue(null);
+    const n = await pickPrimaryBanner("s-1", FRESH_CREDS);
+    expect(n!.id).toBe("savings-recap");
+    expect(n!.body).toContain("2 sessions");
+    expect(n!.body).toContain("1 memory search");
+    expect(n!.body).not.toContain("1 memory searches");
+  });
 });
 
 describe("formatTokens", () => {
