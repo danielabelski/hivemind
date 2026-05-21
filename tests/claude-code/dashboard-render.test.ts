@@ -67,19 +67,32 @@ describe("safeJsonForScript", () => {
     expect(out).not.toContain("</script>");
     expect(out).toContain("<\\/script>");
   });
-  it("escapes HTML comments to avoid script-block confusion", () => {
+  it("escapes HTML comments to avoid script-block confusion (no literal bytes)", () => {
     const out = safeJsonForScript({ a: "<!-- evil -->" });
     expect(out).not.toContain("<!--");
     expect(out).not.toContain("-->");
   });
-  it("round-trips through JSON.parse after unwinding the escape", () => {
-    const value = { a: "</nope>", b: 1, c: ["nested", null] };
+  it("produces JSON that the browser's JSON.parse(textContent) can read directly", () => {
+    // The browser-side path is JSON.parse(scriptEl.textContent). textContent
+    // returns the literal bytes of the element, so JSON.parse must accept
+    // the output as-is. The earlier '<\!--' / '--\>' escapes were not
+    // valid JSON; codex caught that.
+    const value = {
+      a: "</nope>",
+      b: "<!-- comment -->",
+      c: ["before -->", "<!-- between", "after"],
+      d: 1,
+    };
     const escaped = safeJsonForScript(value);
-    // The browser-side parse is JSON.parse(textContent); textContent
-    // returns the literal characters, NOT the escape sequences. So we
-    // emulate by replacing `<\/` with `</` and parsing.
-    const decoded = JSON.parse(escaped.replace(/<\\\//g, "</").replace(/<\\!--/g, "<!--").replace(/--\\>/g, "-->"));
+    const decoded = JSON.parse(escaped); // must NOT throw
     expect(decoded).toEqual(value);
+  });
+  it("preserves the original string values through encode+parse for `<!--` and `-->`", () => {
+    const value = { weird: "x <!-- y --> z" };
+    const escaped = safeJsonForScript(value);
+    expect(escaped).not.toContain("<!--");
+    expect(escaped).not.toContain("-->");
+    expect(JSON.parse(escaped).weird).toBe("x <!-- y --> z");
   });
 });
 
@@ -174,6 +187,35 @@ describe("transformSnapshotToVis", () => {
     const out = transformSnapshotToVis(snapshot);
     expect(out.edges).toHaveLength(1);
     expect(out.edges[0].to).toBe("external");
+  });
+  it("HTML-escapes node tooltip text (vis renders title as HTML)", () => {
+    // If the snapshot is built from a file path / id with HTML in it,
+    // and we pass the raw string to vis as `title`, the hover tooltip
+    // would render the markup. Codex review on commit 2 flagged this.
+    const snapshot = {
+      nodes: [{
+        id: "<img src=x onerror=alert(1)>",
+        label: "ok",
+        kind: "function",
+        source_file: "src/<bad>.ts",
+        source_location: "L1",
+      }],
+      links: [],
+    };
+    const out = transformSnapshotToVis(snapshot);
+    expect(out.nodes[0].title).not.toContain("<img");
+    expect(out.nodes[0].title).not.toContain("<bad>");
+    expect(out.nodes[0].title).toContain("&lt;bad&gt;.ts");
+  });
+  it("HTML-escapes edge tooltip text", () => {
+    const snapshot = {
+      nodes: [{ id: "<x>" }, { id: "<y>" }],
+      links: [{ source: "<x>", target: "<y>" }], // no relation/confidence => fallback title path
+    };
+    const out = transformSnapshotToVis(snapshot);
+    expect(out.edges[0].title).not.toContain("<x>");
+    expect(out.edges[0].title).toContain("&lt;x&gt;");
+    expect(out.edges[0].title).toContain("&lt;y&gt;");
   });
 });
 

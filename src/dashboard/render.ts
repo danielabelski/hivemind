@@ -123,10 +123,17 @@ export function transformSnapshotToVis(snapshot: unknown): { nodes: VisNode[]; e
         titleParts.push(loc);
       }
       const color = kind && KIND_COLORS[kind] ? KIND_COLORS[kind] : DEFAULT_NODE_COLOR;
+      // vis-network renders `title` as HTML, NOT text — so any markup
+      // in a snapshot id / source_file / source_location would execute
+      // on hover. Pre-escape every component that lands in a tooltip
+      // string. Labels are passed to the canvas-rendered node face
+      // and are text-only by vis design, so they don't need this.
       visNodes.push({
         id,
         label,
-        title: titleParts.length > 0 ? titleParts.join(" · ") : id,
+        title: titleParts.length > 0
+          ? titleParts.map(escHtml).join(" · ")
+          : escHtml(id),
         group: kind ?? undefined,
         color: { background: color, border: color },
       });
@@ -150,10 +157,15 @@ export function transformSnapshotToVis(snapshot: unknown): { nodes: VisNode[]; e
       const titleParts: string[] = [];
       if (relation) titleParts.push(relation);
       if (confidence) titleParts.push(`[${confidence}]`);
+      // Same HTML-in-tooltip concern as nodes; escape every component
+      // that ends up in vis-network's `title`. The fallback string
+      // includes node ids, which are also potentially attacker-controlled.
       visEdges.push({
         from,
         to,
-        title: titleParts.length > 0 ? titleParts.join(" ") : `${from} → ${to}`,
+        title: titleParts.length > 0
+          ? titleParts.map(escHtml).join(" ")
+          : `${escHtml(from)} → ${escHtml(to)}`,
       });
     }
   }
@@ -174,15 +186,26 @@ export function escHtml(s: string): string {
 
 /** Serialize a value for embedding inside
  *  `<script type="application/json">...</script>`. The standard JSON
- *  output is HTML-safe EXCEPT for the literal substring `</`, which
- *  would close the script tag prematurely. Replace it with `<\/` —
- *  still valid JSON, no longer breaks out. Also escape `<!--` and
- *  `-->` as defense against HTML comment confusion. */
+ *  output is HTML-safe EXCEPT for three substrings the HTML parser
+ *  can latch onto:
+ *
+ *    - `</` could close the script tag → escape to `<\/` (a valid
+ *      JSON string escape that parses back to "</")
+ *    - `<!--` and `-->` could be reinterpreted as an HTML comment
+ *      inside the script element by legacy / lenient parsers → use
+ *      `!` and `>` (unicode escapes; valid JSON; parse back
+ *      to literal `<!--` and `-->` so callers see the original
+ *      string)
+ *
+ *  Earlier version used `<\!--` and `--\>` literals; those are NOT
+ *  valid JSON escapes (`\!` and `\>` aren't defined) so any snapshot
+ *  string containing `<!--` or `-->` made JSON.parse fail in the
+ *  browser. Codex review on this commit caught it. */
 export function safeJsonForScript(value: unknown): string {
   return JSON.stringify(value)
     .replace(/<\//g, "<\\/")
-    .replace(/<!--/g, "<\\!--")
-    .replace(/-->/g, "--\\>");
+    .replace(/<!--/g, "<\\u0021--")
+    .replace(/-->/g, "--\\u003e");
 }
 
 /** 1234 → "1.2k", 12345 → "12.3k", 1234567 → "1.2M". Caller decides
