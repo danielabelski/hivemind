@@ -35,6 +35,18 @@
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
 
+## Benchmarks
+
+On the [LoCoMo](https://arxiv.org/abs/2402.17753) long-context memory benchmark (100 QA pairs, Claude Haiku via `claude -p`, hybrid lexical + semantic retrieval), Hivemind cuts cost, tokens, and turns versus a no-memory baseline:
+
+| Metric            | Baseline | Hivemind | Improvement      |
+|-------------------|----------|----------|------------------|
+| Cost / 100 QA     | $8.94    | $6.65    | **25% cheaper**  |
+| Tokens / question | 1,700    | 1,008    | **1.7× fewer**   |
+| Turns / question  | 8.9      | 6.2      | **31% fewer**    |
+
+The agent reaches the answer in fewer turns with less context, because the prior work is already in scope at recall time — not re-derived per session.
+
 ## Quick start
 
 One command, all your agents:
@@ -296,13 +308,35 @@ Per-agent integration mechanisms (marketplace plugin, hooks, skills, native exte
 - **Skill versioning and review.** Pre-release human review for codified skills before they propagate org-wide, for teams that want a curation step.
 - **More agents.** If your team uses an agent that isn't on the supported-assistants list above, open an issue.
 
-## Security
+## Security & storage
+
+### Tenant isolation & encryption
+
+- TLS between every agent and Deep Lake. AES-256 on the bytes once they land. Your cloud credentials live in Deep Lake's vault — Hivemind never sees the raw keys.
+- Org and workspace boundaries enforced at the storage layer, not just the API. Sessions never share a row, a partition, or an index with another workspace.
+- Disable capture per session with `HIVEMIND_CAPTURE=false`. Delete a workspace and the underlying objects go with it.
+
+### Code-level controls
 
 - SQL values escaped with `sqlStr()`, `sqlLike()`, `sqlIdent()`
 - ~70 allowlisted builtins run in the virtual FS; unrecognized commands are denied
 - Credentials stored with mode `0600`, config dir with mode `0700`
 - Device flow login: no tokens in environment or code
-- `HIVEMIND_CAPTURE=false` fully disables data collection
+
+### Bring your own cloud (BYOC)
+
+Hivemind Cloud is the default. When that isn't enough, point Hivemind at storage in your own cloud — we handle the orchestration, data never leaves your perimeter.
+
+| Provider                   | Status     | Setup                                                |
+|----------------------------|------------|------------------------------------------------------|
+| Google Cloud Storage       | Available  | [docs](https://docs.deeplake.ai/latest/guide/gcs/)   |
+| Azure Blob Storage         | Available  | [docs](https://docs.deeplake.ai/latest/guide/azure/) |
+| Amazon S3                  | Available  | [docs](https://docs.deeplake.ai/latest/guide/s3/)    |
+| S3-compatible on-prem      | On request | hello@activeloop.ai                                  |
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=activeloopai/hivemind&type=Date)](https://star-history.com/#activeloopai/hivemind&Date)
 
 ## Development
 
