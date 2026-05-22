@@ -38,6 +38,25 @@ export interface Notification {
    * behavior used by welcome, savings recap, backend pushes, etc.
    */
   transient?: boolean;
+  /**
+   * When true, the notification is delivered ONLY to the user-visible
+   * channel (Claude Code's `systemMessage`, surfacing as the
+   * `SessionStart:startup says:` terminal block) and is suppressed from
+   * the model-visible `additionalContext`.
+   *
+   * Use for notifications whose body carries content derived from
+   * untrusted LLM output that we don't want re-injected into a future
+   * session's system prompt — e.g. the concrete-insight banner whose
+   * `insight` field comes from haiku's gate output. Without this flag,
+   * an adversarial session could influence haiku into emitting
+   * imperative prose that then prompt-injects subsequent sessions.
+   *
+   * Default (omitted/false) preserves the existing dual-channel
+   * behavior (additionalContext + systemMessage carry the same text)
+   * used by static-copy rules like welcome and savings recap, where
+   * the body is hard-coded and safe to model-inject.
+   */
+  userVisibleOnly?: boolean;
 }
 
 export interface NotificationContext {

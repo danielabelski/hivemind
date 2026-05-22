@@ -75,6 +75,13 @@ export const localMinedRule: Rule = {
         // Dedup on the entry's identity so a new insight refires next
         // session, while a re-run with the same entry still dedupes.
         dedupKey: { skill_name: name, created_at: latestInsightEntry.created_at },
+        // The body carries LLM-derived insight prose: keep it OUT of
+        // the model-visible additionalContext channel. Without this
+        // flag, an adversarial session could influence haiku into
+        // emitting imperative text that prompt-injects future sessions
+        // (codex P1). The user still sees this notification in their
+        // terminal via systemMessage; the model just doesn't.
+        userVisibleOnly: true,
       };
     }
 

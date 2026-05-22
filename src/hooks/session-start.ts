@@ -20,7 +20,7 @@ import { makeWikiLogger } from "../utils/wiki-log.js";
 import { autoUpdate } from "./shared/autoupdate.js";
 import { autoPullSkills } from "../skillify/auto-pull.js";
 import { renderSkillifyCommands } from "../cli/skillify-spec.js";
-import { countLocalManifestEntries, getLatestInsightEntry } from "../skillify/local-manifest.js";
+import { countLocalManifestEntries } from "../skillify/local-manifest.js";
 import { renderLocalMinedNote } from "../skillify/local-mined-banner.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
 const log = (msg: string) => _log("session-start", msg);
@@ -216,17 +216,15 @@ async function main(): Promise<void> {
   // No placeholder substitution needed — inject uses bare `hivemind <sub>` form.
   const resolvedContext = context;
   // When the user hasn't signed in but has mined skills locally with
-  // `hivemind skillify mine-local`, surface either a concrete finding (when
-  // the gate emitted a quantified insight string for a recent entry) or
-  // fall back to the generic count surface. Stays empty (and silent) when
-  // no manifest exists, so first-time non-mined users don't see an
-  // unhelpful "0 skills" line. Both branches are inside renderLocalMinedNote
-  // so the conditional copy lives in one unit-testable place.
+  // `hivemind skillify mine-local`, surface a count + sign-in CTA in
+  // the model-visible context. The rich concrete-insight banner is
+  // delivered on the user-visible systemMessage channel by the
+  // notifications rule (src/notifications/rules/local-mined.ts) — it
+  // is intentionally NOT rendered here because `insight` originates
+  // from haiku's gate output and feeding LLM-derived prose back into
+  // `additionalContext` is a prompt-injection vector (codex P1).
   const localMined = countLocalManifestEntries();
-  const localMinedNote = renderLocalMinedNote({
-    insightEntry: getLatestInsightEntry(),
-    totalCount: localMined,
-  });
+  const localMinedNote = renderLocalMinedNote({ totalCount: localMined });
   const additionalContext = creds?.token
     ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
     : `${resolvedContext}\n\n⚠️ Not logged in to Deeplake. Memory search will not work. Ask the user to run /hivemind:login to authenticate.${localMinedNote}${updateNotice}`;

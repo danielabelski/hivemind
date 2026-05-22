@@ -166,6 +166,10 @@ describe("localMinedRule", () => {
     expect(result!.title).toContain("5 skills");
     expect(result!.body).toContain("hivemind login");
     expect(result!.dedupKey).toEqual({ count: 5 });
+    // Fallback count branch uses fully static copy — safe for both
+    // channels, so userVisibleOnly stays absent (default = false).
+    // The model can know "5 skills exist" without security risk.
+    expect(result!.userVisibleOnly).toBeUndefined();
   });
 
   it("fires with singular noun when count === 1", () => {
@@ -219,6 +223,13 @@ describe("localMinedRule", () => {
     // Title MUST NOT carry the bee — format.ts prepends the severity icon
     // (info → 🐝), so double-bee output is the bug we're guarding against.
     expect(result!.title).not.toContain("🐝");
+    // SECURITY INVARIANT (codex P1): this body carries LLM-derived
+    // prose, so the notification framework MUST keep it off the
+    // model-visible additionalContext channel. The rule signals that
+    // by setting userVisibleOnly. Without this flag the delivery
+    // adapter would push the insight into both channels and create a
+    // self-prompt-injection vector.
+    expect(result!.userVisibleOnly).toBe(true);
     // Three-line structured body: each line independently scannable with
     // its own emoji prefix.
     expect(result!.body).toContain("📌");
