@@ -710,3 +710,113 @@ describe("renderContextBlock — HOW-TO footer", () => {
     expect(out).toBe("");
   });
 });
+
+// ── branch coverage: dedup version/created_at tie-breaks + non-Error throw ──
+
+describe("renderContextBlock — mergeAndDedupTasks branch coverage", () => {
+  // The dedup helper has three resolution paths when the same task_id
+  // appears in both team and mine results:
+  //   (A) t.version > prev.version                        → t wins
+  //   (B) t.version === prev.version &&
+  //       t.created_at > prev.created_at                  → t wins
+  //   (C) otherwise                                       → prev wins
+  //
+  // Existing "merges team + mine" test only exercises (C) with
+  // identical objects. The two cases below cover (A) and (B), which
+  // were the uncovered branches reported by the coverage gate at
+  // src/hooks/shared/context-renderer.ts:217-220.
+
+  it("dedup picks the higher-version row when the same task_id appears in both lists", async () => {
+    // Team query saw v1 (scope='team'); mine query saw v2 (scope='me'
+    // — same task_id but the rows are constructed for branch coverage,
+    // listTasks's own JS filter requires scope match per bucket).
+    // The dedup helper itself doesn't look at scope, only task_id /
+    // version / created_at, so v2 must win.
+    const stale = fakeTask({
+      task_id: "edited-id", version: 1, text: "OLD text",
+      scope: "team", assigned_to: "alice@activeloop.ai",
+    });
+    const fresh = fakeTask({
+      task_id: "edited-id", version: 2, text: "NEW text",
+      scope: "me", assigned_to: "alice@activeloop.ai",
+    });
+    const { query } = mockQuery([
+      () => [],          // rules
+      () => [stale],     // team query (filter: scope='team') — stale passes
+      () => [fresh],     // mine query (filter: scope='me') — fresh passes
+      () => [],          // events
+    ]);
+    const out = await renderContextBlock(query, { ...TABLES, currentUser: "alice@activeloop.ai" });
+    expect(out).toContain("NEW text");
+    expect(out).not.toContain("OLD text");
+    expect((out.match(/edited-id/g) ?? []).length).toBe(1);
+  });
+
+  it("dedup tie-breaks on newer created_at when versions are equal", async () => {
+    // Same task_id, same version, different created_at — pick the
+    // newer-created_at row. Mirrors the listRules / listTasks ORDER BY
+    // secondary key so the renderer agrees with what the read helpers
+    // would have picked. Like the version-tie test above, scope is
+    // split to satisfy listTasks's JS bucket filter; mergeAndDedupTasks
+    // ignores scope.
+    const older = fakeTask({
+      task_id: "tie-id", version: 1, text: "older copy",
+      created_at: "2026-05-20T10:00:00Z",
+      scope: "team", assigned_to: "alice@activeloop.ai",
+    });
+    const newer = fakeTask({
+      task_id: "tie-id", version: 1, text: "newer copy",
+      created_at: "2026-05-20T11:00:00Z",
+      scope: "me", assigned_to: "alice@activeloop.ai",
+    });
+    const { query } = mockQuery([
+      () => [],
+      () => [older],
+      () => [newer],
+      () => [],
+    ]);
+    const out = await renderContextBlock(query, { ...TABLES, currentUser: "alice@activeloop.ai" });
+    expect(out).toContain("newer copy");
+    expect(out).not.toContain("older copy");
+  });
+});
+
+describe("renderContextBlock — non-Error thrown reaches the outer catch", () => {
+  // The outer catch at context-renderer.ts:174-180 has
+  //   const msg = e instanceof Error ? e.message : String(e);
+  // Every existing failure-mode test throws an Error, so only the
+  // `e.message` branch was exercised. To hit the `String(e)` branch
+  // we need a non-Error to escape ALL sub-tries. The sub-tries
+  // themselves swallow query failures, so the path is: have the
+  // SUB-TRY'S OWN log() throw a non-Error inside its catch handler —
+  // that escapes the sub-try and lands in the outer catch.
+  //
+  // Net effect: the outer catch sees a string, takes the String(e)
+  // branch, calls log() again (which by now succeeds), and returns "".
+
+  it("returns '' and coerces a non-Error via String() when one escapes the sub-tries", async () => {
+    let logCalls = 0;
+    const seen: string[] = [];
+    const log = (msg: string) => {
+      logCalls++;
+      seen.push(msg);
+      // First log call comes from the rules sub-try's catch handler.
+      // Throw a plain string there so it escapes into the outer catch.
+      if (logCalls === 1) throw "kaboom-string";
+    };
+    // Make the rules SELECT fail so the rules sub-try catches and
+    // tries to log — which throws our string.
+    const query = vi.fn(async () => { throw new Error("rules-fail"); });
+    const out = await renderContextBlock(
+      query,
+      { ...TABLES, currentUser: "alice@activeloop.ai" },
+      { log },
+    );
+    expect(out).toBe("");
+    // First call was the sub-try's; the second call (now from the
+    // outer catch with String(e)) must carry the coerced string.
+    expect(logCalls).toBe(2);
+    expect(seen[1]).toContain("kaboom-string");
+    expect(seen[1]).not.toContain("[object");  // proves it isn't `String({})`-style coercion
+  });
+});
