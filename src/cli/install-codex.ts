@@ -170,12 +170,20 @@ function tryEnableCodexHooks(): void {
   // key still works but prints a deprecation warning on every startup, so we
   // enable the new name and strip the legacy key if it lingers from an older
   // install of this plugin.
+  //
+  // The strip is gated on a successful enable: on pre-0.130 codex (or if the
+  // codex CLI isn't on PATH) the `hooks` feature is unknown and the call
+  // throws — in that case we must leave any existing `codex_hooks = true`
+  // entry alone, otherwise we'd silently disable hooks on the user's box.
+  let enabled = false;
   try {
     execFileSync("codex", ["features", "enable", "hooks"], { stdio: "ignore" });
+    enabled = true;
   } catch {
-    // codex CLI may not be on PATH (e.g., running under a separate user); not fatal.
+    // codex CLI may not be on PATH (e.g., running under a separate user) or
+    // the codex version pre-dates the rename; not fatal.
   }
-  stripLegacyCodexHooksKey();
+  if (enabled) stripLegacyCodexHooksKey();
 }
 
 function stripLegacyCodexHooksKey(): void {

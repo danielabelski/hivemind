@@ -124,6 +124,20 @@ describe("installCodex — happy path", () => {
     );
   });
 
+  it("does NOT strip the legacy `codex_hooks` key when `codex features enable hooks` fails", async () => {
+    // Regression guard: on pre-0.130 codex (or when the codex CLI isn't on
+    // PATH at all) the enable call throws. Stripping the legacy key in that
+    // case would silently disable hooks for users whose only working entry is
+    // `codex_hooks = true`.
+    execFileSyncMock.mockImplementation(() => { throw new Error("codex not installed"); });
+    const cfgPath = join(tmpHome, ".codex", "config.toml");
+    const body = ["[features]", "codex_hooks = true", ""].join("\n");
+    writeFileSync(cfgPath, body);
+    const { installCodex } = await importInstaller();
+    installCodex();
+    expect(readFileSync(cfgPath, "utf-8")).toBe(body);
+  });
+
   it("strips a legacy `codex_hooks = ...` line from ~/.codex/config.toml on install", async () => {
     const cfgPath = join(tmpHome, ".codex", "config.toml");
     writeFileSync(
