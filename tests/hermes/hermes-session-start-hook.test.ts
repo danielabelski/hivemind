@@ -131,6 +131,12 @@ describe("hermes session-start hook — placeholder creation", () => {
     // ensure*Table are DDL writes gated on captureEnabled; renderer
     // is read-only and runs regardless.
     await runHook({ HIVEMIND_CAPTURE: "false" });
+    // Explicit negative assertion: a regression that re-enables DDL on
+    // the read-only path would silently re-introduce CREATE TABLE /
+    // CREATE INDEX from the capture-disabled hook. CodeRabbit on PR
+    // #193 flagged the original count-only check as insufficient.
+    expect(ensureTableMock).not.toHaveBeenCalled();
+    expect(ensureSessionsTableMock).not.toHaveBeenCalled();
     expect(queryMock).toHaveBeenCalledTimes(3); // rules + team + mine
     expect(queryMock.mock.calls[0][0]).toMatch(/^SELECT .* FROM "hivemind_rules"/);
   });
