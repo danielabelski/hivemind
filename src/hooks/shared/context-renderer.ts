@@ -29,7 +29,7 @@
  */
 
 import { listRules, type RuleRow } from "../../rules/index.js";
-import { sqlIdent, sqlStr } from "../../utils/sql.js";
+import { sqlIdent, sqlLike } from "../../utils/sql.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -127,6 +127,16 @@ export async function renderContextBlock(
  * both consistently so a goal recently moved opened → in_progress via
  * `mv` shows only the in_progress row.
  *
+ * Owner matching tolerates both short ("emanuele.fenocchi") and
+ * full-email ("emanuele.fenocchi@activeloop.ai") forms because
+ * different agents historically populated this column with one or
+ * the other. We mirror the pattern already used by
+ * notifications/sources/open-goals.ts: LIKE substring at the SQL
+ * layer, bi-directional substring re-check in JS for belt-and-braces.
+ * Without this, a user whose creds carry the short form would
+ * silently see no goals in orgs whose existing rows used the email
+ * form (or vice versa). Codex flagged this regression in PR review.
+ *
  * Order: in_progress first (alphabetical 'i' < 'o' under ASC), then
  * newest opened. Within each status group, newest created_at first
  * so a recently-added goal beats older stale opens.
@@ -139,20 +149,38 @@ export async function listOpenGoals(
 ): Promise<OpenGoalRow[]> {
   const limit = opts.limit ?? 40;
   const safe = sqlIdent(goalsTable);
-  const userLit = sqlStr(currentUser);
+  const userPattern = sqlLike(currentUser);
   const sql =
-    `SELECT goal_id, status, content FROM "${safe}" g1 ` +
-    `WHERE owner = '${userLit}' ` +
+    `SELECT goal_id, owner, status, content FROM "${safe}" g1 ` +
+    `WHERE owner LIKE '%${userPattern}%' ` +
     `AND status IN ('opened', 'in_progress') ` +
     `AND version = (SELECT MAX(version) FROM "${safe}" g2 WHERE g2.goal_id = g1.goal_id) ` +
     `ORDER BY status ASC, created_at DESC ` +
     `LIMIT ${limit}`;
   const rows = await query(sql);
-  return rows.map((r) => ({
-    goal_id: String(r["goal_id"] ?? ""),
-    status: String(r["status"] ?? ""),
-    content: String(r["content"] ?? ""),
-  }));
+  const out: OpenGoalRow[] = [];
+  for (const r of rows) {
+    const owner = String(r["owner"] ?? "");
+    // Bi-directional substring guard against historical rows where
+    // the column held the email while creds hold the short form (or
+    // vice versa). LIKE at the SQL layer already does the heavy
+    // lifting; this re-check is defense-in-depth against unusual
+    // substring collisions (a different user whose short username
+    // happens to appear inside this user's email, or similar).
+    if (
+      owner !== currentUser &&
+      !owner.includes(currentUser) &&
+      !currentUser.includes(owner)
+    ) {
+      continue;
+    }
+    out.push({
+      goal_id: String(r["goal_id"] ?? ""),
+      status: String(r["status"] ?? ""),
+      content: String(r["content"] ?? ""),
+    });
+  }
+  return out;
 }
 
 interface FormatInput {

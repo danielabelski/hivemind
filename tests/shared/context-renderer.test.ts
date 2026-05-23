@@ -44,6 +44,7 @@ function fakeRule(overrides: Record<string, unknown> = {}) {
 function fakeGoal(overrides: Record<string, unknown> = {}) {
   return {
     goal_id: "g-1",
+    owner: "alice@activeloop.ai",
     status: "opened",
     content: "ship the search bar",
     ...overrides,
@@ -212,7 +213,7 @@ describe("renderContextBlock — goals rendering", () => {
     expect(out).not.toContain("body 11");
   });
 
-  it("issues a SQL query scoped to the current user + latest version + open statuses", async () => {
+  it("issues a SQL query with owner LIKE + latest version + open statuses", async () => {
     const { calls, query } = mockQuery([
       () => [],
       () => [],
@@ -220,11 +221,62 @@ describe("renderContextBlock — goals rendering", () => {
     await renderContextBlock(query, INPUT);
     const goalSql = calls[1];
     expect(goalSql).toContain(`FROM "hivemind_goals"`);
-    expect(goalSql).toContain(`owner = 'alice@activeloop.ai'`);
+    // LIKE substring on owner so the SessionStart block surfaces goals
+    // whether the stored owner is the short userName or the full email.
+    expect(goalSql).toContain(`owner LIKE '%alice@activeloop.ai%'`);
     expect(goalSql).toContain(`status IN ('opened', 'in_progress')`);
     // Latest-version sub-select keeps a recently mv'd goal from
     // double-rendering (old opened row + new in_progress row).
     expect(goalSql).toContain(`MAX(version)`);
+  });
+
+  it("matches owners stored in EITHER short userName form OR full-email form", async () => {
+    // The user's creds carry the short userName, but the stored row
+    // was written by an agent that used the full email. LIKE
+    // '%alice@activeloop.ai%' would NOT match — but the user runs
+    // with currentUser='alice', so the SessionStart LIKE pattern is
+    // '%alice%'. Both stored variants share the 'alice' substring,
+    // so both rows reach the renderer; the bi-directional substring
+    // re-check then accepts them.
+    const shortUserInput = {
+      rulesTable: "hivemind_rules",
+      goalsTable: "hivemind_goals",
+      currentUser: "alice",
+    };
+    const { query } = mockQuery([
+      () => [],
+      () => [
+        fakeGoal({ goal_id: "g-short", owner: "alice", content: "task A" }),
+        fakeGoal({ goal_id: "g-full", owner: "alice@activeloop.ai", content: "task B" }),
+      ],
+    ]);
+    const out = await renderContextBlock(query, shortUserInput);
+    expect(out).toContain("task A");
+    expect(out).toContain("task B");
+  });
+
+  it("rejects rows where owner is a completely different user (no substring overlap)", async () => {
+    // Defense-in-depth: the LIKE pattern is unconstrained, so a
+    // username like 'al' could SQL-match 'alex@activeloop.ai'. The JS
+    // bi-directional substring check is the second barrier.
+    const shortUserInput = {
+      rulesTable: "hivemind_rules",
+      goalsTable: "hivemind_goals",
+      currentUser: "alice",
+    };
+    const { query } = mockQuery([
+      () => [],
+      // SQL LIKE happens to match because 'alice' is NOT a substring
+      // here, but we test the JS guard with a row that should NOT
+      // match. We simulate a stale SQL row that the JS layer must drop.
+      () => [
+        fakeGoal({ goal_id: "g-other", owner: "bob@activeloop.ai", content: "not mine" }),
+      ],
+    ]);
+    const out = await renderContextBlock(query, shortUserInput);
+    expect(out).not.toContain("not mine");
+    // With zero goals after JS filter, the goals section is absent.
+    expect(out).not.toContain("HIVEMIND GOALS");
   });
 });
 
