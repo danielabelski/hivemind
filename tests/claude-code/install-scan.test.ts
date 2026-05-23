@@ -81,8 +81,9 @@ vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
 // behavior. The advisor itself is tested in advisor.test.ts. Without this
 // mock, every install-scan test would also exercise the advisor's spawn,
 // inflating spawnCalls and breaking length assertions.
+let nextAdvisorResult: any = null;
 vi.mock("../../src/skillify/advisor.js", () => ({
-  runAdvisor: vi.fn(async () => null),
+  runAdvisor: vi.fn(async () => nextAdvisorResult),
 }));
 
 import {
@@ -106,6 +107,7 @@ beforeEach(() => {
   findAgentBinReturn = FAKE_BIN;
   nextInsightEntry = null;
   nextSkillsCount = 0;
+  nextAdvisorResult = null;
   // Each test starts with a clean tmp HOME: no sessions, no manifest.
   rmSync(TMP_HOME, { recursive: true, force: true });
   mkdirSync(TMP_HOME, { recursive: true });
@@ -210,6 +212,44 @@ describe("runInstallScan", () => {
     expect(result.insight).toBeNull();
     // Manifest is gone — background auto-mine can retry.
     expect(existsSyncReal(manifestPath)).toBe(false);
+  });
+
+  it("suppresses insight when advisor REJECT_ALLs even if a recency-pick would otherwise exist (codex P2)", async () => {
+    // Regression guard for codex's third-round P2: if sonnet returns
+    // REJECT_ALL, runAdvisor's pickedSkillName is null. Without the
+    // suppression check, runInstallScan would still fall through to
+    // getLatestInsightEntry() and surface the exact candidate the
+    // advisor just rejected — defeating the advisor pass entirely.
+    nextChildBehavior = { exitCode: 0 };
+    nextInsightEntry = {
+      skill_name: "rejected-meta-noise",
+      insight: "User explicitly requested this rule be saved.",
+      created_at: "2026-05-22T00:00:00.000Z",
+    };
+    nextSkillsCount = 3;
+    nextAdvisorResult = { pickedSkillName: null, reason: "REJECT_ALL: all meta-noise", rawOutput: "" };
+    const result = await runInstallScan();
+    expect(result.insight).toBeNull();
+    // Skills count still surfaces — the caller can show "mined N skills"
+    // copy instead of either the rejected insight or "no patterns found."
+    expect(result.skillsCount).toBe(3);
+  });
+
+  it("uses the recency pick when advisor returns null (no candidates / no CLI / no manifest)", async () => {
+    // Distinguishes the REJECT_ALL case (advisor evaluated and said no)
+    // from the no-opinion case (advisor didn't run). When advisor itself
+    // returned null, we trust the recency tiebreak.
+    nextChildBehavior = { exitCode: 0 };
+    nextInsightEntry = {
+      skill_name: "concrete-pattern",
+      insight: "You hit X twice last week.",
+      created_at: "2026-05-22T00:00:00.000Z",
+    };
+    nextSkillsCount = 1;
+    nextAdvisorResult = null;  // advisor didn't run at all
+    const result = await runInstallScan();
+    expect(result.insight).not.toBeNull();
+    expect(result.insight!.skill_name).toBe("concrete-pattern");
   });
 
   it("returns skillsCount > 0 when mine-local wrote skills but no insight surfaced (codex P3)", async () => {

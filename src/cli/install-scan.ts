@@ -32,7 +32,7 @@ import {
   readLocalManifest,
   type LocalManifestEntry,
 } from "../skillify/local-manifest.js";
-import { runAdvisor } from "../skillify/advisor.js";
+import { runAdvisor, type AdvisorResult } from "../skillify/advisor.js";
 
 /**
  * Distinguish the THREE outcomes of an install-time scan so the caller
@@ -236,13 +236,27 @@ export function runInstallScan(): Promise<InstallScanResult> {
       // mark the BEST one as primary. The A/B comparison showed a
       // significant jump in surfaced-insight quality with the advisor
       // pass: it consistently rejects meta-noise / vague candidates
-      // and picks the most concrete + counted finding. Falls through
-      // silently on any advisor error (timeout, no claude CLI, sonnet
-      // rejects all) — getLatestInsightEntry just uses the recency
-      // tiebreak.
-      try { await runAdvisor(); } catch { /* fall through to recency pick */ }
+      // and picks the most concrete + counted finding.
+      //
+      // Three outcomes:
+      //   1. advisorResult === null: advisor didn't run (no CLI, no
+      //      candidates, no manifest). Fall through to recency pick.
+      //   2. advisorResult.pickedSkillName !== null: advisor picked
+      //      a winner and marked it primary. getLatestInsightEntry
+      //      will return that primary entry.
+      //   3. advisorResult.pickedSkillName === null: advisor evaluated
+      //      candidates and REJECTED them all (or returned an
+      //      unparseable verdict). DO NOT surface any insight — that
+      //      would show exactly the candidate sonnet just rejected,
+      //      defeating the entire advisor pass (codex PR #198 P2).
+      //      Fall through to count-only branch in the caller.
+      let advisorResult: AdvisorResult | null = null;
+      try { advisorResult = await runAdvisor(); } catch { /* keep null */ }
+      const advisorRejected = advisorResult !== null && advisorResult.pickedSkillName === null;
       let entry: LocalManifestEntry | null = null;
-      try { entry = getLatestInsightEntry(); } catch { /* keep null */ }
+      if (!advisorRejected) {
+        try { entry = getLatestInsightEntry(); } catch { /* keep null */ }
+      }
       // Count is read AFTER the advisor pass — it gives the caller
       // accurate "skills exist even without a banner-quality insight"
       // signal so the UX copy doesn't lie (codex PR #198 P3).
