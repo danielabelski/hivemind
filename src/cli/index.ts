@@ -203,13 +203,20 @@ async function runAuthGate(args: string[]): Promise<void> {
     if (scanOk) {
       log("");
       log("Scanning your 20 most-recent sessions (up to 5 min). Be patient — haiku is running in the background.");
-      const entry = await runInstallScan();
-      if (entry && entry.insight && entry.insight.trim().length > 0) {
-        log("");
-        log(formatScanResult(entry));
-        foundInsight = { skill_name: entry.skill_name };
+      const { insight, skillsCount } = await runInstallScan();
+      log("");
+      if (insight && insight.insight && insight.insight.trim().length > 0) {
+        log(formatScanResult(insight));
+        foundInsight = { skill_name: insight.skill_name };
+      } else if (skillsCount > 0) {
+        // Codex PR #198 P3: don't lie about "no patterns found" when
+        // mine-local actually wrote skills to disk. They just lacked
+        // a banner-quality one-liner. The skills are real and the
+        // user benefits from them on next SessionStart even without
+        // the install-time banner.
+        log(`Mined ${skillsCount} skill${skillsCount === 1 ? "" : "s"} locally — they'll be available in your next claude session.`);
+        log("(No banner-quality insight to surface here — the gate is conservative on what gets the top-line.)");
       } else {
-        log("");
         log("No repeatable patterns found in this scan. (That's OK — the gate is conservative.)");
       }
     }

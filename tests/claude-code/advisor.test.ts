@@ -47,7 +47,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-let findAgentBinReturn: string | null = "/tmp/fake-claude-bin";
+let findAgentBinReturn: string | null = null;  // set in beforeEach after TMP_HOME is computed
 vi.mock("../../src/skillify/gate-runner.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/skillify/gate-runner.js")>();
   return {
@@ -60,7 +60,9 @@ import { parseAdvisorOutput, runAdvisor } from "../../src/skillify/advisor.js";
 import { readLocalManifest, writeLocalManifest, type LocalManifestEntry } from "../../src/skillify/local-manifest.js";
 
 const TMP_HOME = mkdtempSync(join(tmpdir(), "advisor-test-"));
-const FAKE_BIN = "/tmp/fake-claude-bin";
+// Per-suite fake-bin path under TMP_HOME so parallel test files can't
+// race on a shared /tmp/fake-claude-bin (coderabbit on PR #198).
+const FAKE_BIN = join(TMP_HOME, "fake-claude-bin");
 const MANIFEST = join(TMP_HOME, "manifest.json");
 const writeM = (m: import("../../src/skillify/local-manifest.js").LocalManifest) => writeLocalManifest(m, MANIFEST);
 

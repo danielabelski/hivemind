@@ -48,7 +48,7 @@ vi.mock("node:child_process", () => ({
 
 // findAgentBin returns a path that may or may not exist on disk — we
 // drive it directly so tests don't depend on the developer's PATH.
-let findAgentBinReturn: string | null = "/tmp/fake-claude-bin";
+let findAgentBinReturn: string | null = null;  // set in beforeEach
 vi.mock("../../src/skillify/gate-runner.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/skillify/gate-runner.js")>();
   return {
@@ -57,14 +57,20 @@ vi.mock("../../src/skillify/gate-runner.js", async (importOriginal) => {
   };
 });
 
-// getLatestInsightEntry is mocked so the runInstallScan path doesn't
-// read the developer's real ~/.claude/hivemind/local-mined.json.
+// getLatestInsightEntry + countLocalManifestEntries are mocked so the
+// runInstallScan path doesn't read the developer's real
+// ~/.claude/hivemind/local-mined.json. Both accessors capture
+// LOCAL_MANIFEST_PATH at module-load (homedir() at import time), so
+// without these mocks tests would observe whatever is in the
+// developer's real manifest.
 let nextInsightEntry: any = null;
+let nextSkillsCount = 0;
 vi.mock("../../src/skillify/local-manifest.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/skillify/local-manifest.js")>();
   return {
     ...actual,
     getLatestInsightEntry: () => nextInsightEntry,
+    countLocalManifestEntries: () => nextSkillsCount,
     // canOfferInstallScan reads LOCAL_MANIFEST_PATH existence directly;
     // we keep the real export so tests can choose a tmp manifest path
     // by setting HOME via process.env.HOME below.
@@ -89,13 +95,17 @@ const TMP_HOME = mkdtempSync(join(tmpdir(), "install-scan-test-"));
 const originalHome = process.env.HOME;
 const originalArgv1 = process.argv[1];
 const FAKE_CLI = join(TMP_HOME, "fake-cli.js");
+// Per-suite fake-bin path under TMP_HOME so parallel test files can't
+// race on a shared /tmp/fake-claude-bin (coderabbit on PR #198).
+const FAKE_BIN = join(TMP_HOME, "fake-claude-bin");
 
 beforeEach(() => {
   // Reset state between tests.
   spawnCalls.length = 0;
   nextChildBehavior = { exitCode: 0 };
-  findAgentBinReturn = "/tmp/fake-claude-bin";
+  findAgentBinReturn = FAKE_BIN;
   nextInsightEntry = null;
+  nextSkillsCount = 0;
   // Each test starts with a clean tmp HOME: no sessions, no manifest.
   rmSync(TMP_HOME, { recursive: true, force: true });
   mkdirSync(TMP_HOME, { recursive: true });
@@ -106,13 +116,13 @@ beforeEach(() => {
   writeFileSync(FAKE_CLI, "// fake cli", "utf-8");
   process.argv[1] = FAKE_CLI;
   // Also ensure the mocked "claude bin" exists on disk for the guard.
-  writeFileSync("/tmp/fake-claude-bin", "// fake claude", "utf-8");
+  writeFileSync(FAKE_BIN, "// fake claude", "utf-8");
 });
 
 afterEach(() => {
   process.env.HOME = originalHome;
   process.argv[1] = originalArgv1;
-  try { rmSync("/tmp/fake-claude-bin"); } catch { /* best-effort */ }
+  try { rmSync(FAKE_BIN); } catch { /* best-effort */ }
 });
 
 describe("canOfferInstallScan", () => {
@@ -197,8 +207,47 @@ describe("runInstallScan", () => {
     nextChildBehavior = { exitCode: 0 };
     nextInsightEntry = null;
     const result = await runInstallScan();
-    expect(result).toBeNull();
+    expect(result.insight).toBeNull();
     // Manifest is gone — background auto-mine can retry.
+    expect(existsSyncReal(manifestPath)).toBe(false);
+  });
+
+  it("returns skillsCount > 0 when mine-local wrote skills but no insight surfaced (codex P3)", async () => {
+    // Regression guard for codex P3: caller used to see `null` from
+    // runInstallScan and print "No repeatable patterns found" even
+    // when skills WERE mined. The new shape carries skillsCount so
+    // the caller can distinguish "scan failed" from "skills mined
+    // but no banner-quality insight."
+    const manifestPath = join(TMP_HOME, ".claude", "hivemind", "local-mined.json");
+    mkdirSync(join(TMP_HOME, ".claude", "hivemind"), { recursive: true });
+    writeFileSync(manifestPath, JSON.stringify({
+      created_at: "x",
+      entries: [
+        { skill_name: "a", canonical_path: "/x", symlinks: [], source_session_ids: [], source_session_paths: [], source_agent: "claude_code", gate_agent: "claude_code", created_at: "2026-05-22T00:00:00.000Z", uploaded: false },
+        { skill_name: "b", canonical_path: "/x", symlinks: [], source_session_ids: [], source_session_paths: [], source_agent: "claude_code", gate_agent: "claude_code", created_at: "2026-05-22T00:00:01.000Z", uploaded: false },
+      ],
+    }));
+    nextChildBehavior = { exitCode: 0 };
+    nextInsightEntry = null;
+    nextSkillsCount = 2;
+    const result = await runInstallScan();
+    expect(result.insight).toBeNull();
+    expect(result.skillsCount).toBe(2);
+  });
+
+  it("unlinks a corrupt/truncated manifest left behind on timeout (codex P2)", async () => {
+    // Regression guard for codex P2: a timeout/crash mid-write can
+    // leave the manifest unparseable. Both canOfferInstallScan and
+    // maybeAutoMineLocal treat presence as "already mined", so a
+    // corrupt sentinel would permanently disable retries.
+    const manifestPath = join(TMP_HOME, ".claude", "hivemind", "local-mined.json");
+    mkdirSync(join(TMP_HOME, ".claude", "hivemind"), { recursive: true });
+    writeFileSync(manifestPath, "{ truncated json — not closed");
+    nextChildBehavior = { exitCode: 1 };  // simulate child crash
+    nextInsightEntry = null;
+    const result = await runInstallScan();
+    expect(result.insight).toBeNull();
+    // Corrupt manifest unlinked — future retries can fire.
     expect(existsSyncReal(manifestPath)).toBe(false);
   });
 
@@ -221,7 +270,7 @@ describe("runInstallScan", () => {
     nextChildBehavior = { exitCode: 0 };
     nextInsightEntry = null;  // no insight produced, but skills exist
     const result = await runInstallScan();
-    expect(result).toBeNull();
+    expect(result.insight).toBeNull();
     expect(existsSyncReal(manifestPath)).toBe(true);
   });
 
@@ -235,7 +284,7 @@ describe("runInstallScan", () => {
     nextChildBehavior = { exitCode: 0 };
     nextInsightEntry = { skill_name: "k", insight: "i", created_at: "z" };
     const result = await runInstallScan();
-    expect(result).not.toBeNull();
+    expect(result.insight).not.toBeNull();
     expect(existsSyncReal(manifestPath)).toBe(true);
   });
 
@@ -247,8 +296,8 @@ describe("runInstallScan", () => {
     };
     nextChildBehavior = { exitCode: 0 };
     const result = await runInstallScan();
-    expect(result).not.toBeNull();
-    expect(result!.skill_name).toBe("verify-before-done");
+    expect(result.insight).not.toBeNull();
+    expect(result.insight!.skill_name).toBe("verify-before-done");
   });
 
   it("resolves with null on non-zero exit", async () => {
@@ -258,13 +307,13 @@ describe("runInstallScan", () => {
     // surface its (possibly stale) output. We treat non-zero exit as
     // "scan failed → fall through silently".
     const result = await runInstallScan();
-    expect(result).toBeNull();
+    expect(result.insight).toBeNull();
   });
 
   it("resolves with null on spawn error", async () => {
     nextChildBehavior = { emitError: new Error("ENOENT") };
     const result = await runInstallScan();
-    expect(result).toBeNull();
+    expect(result.insight).toBeNull();
   });
 
   it("resolves with null when process.argv[1] points at a missing file (safety guard)", async () => {
@@ -272,7 +321,7 @@ describe("runInstallScan", () => {
     const result = await runInstallScan();
     // Spawn should NOT have been called — we bail out at the
     // existsSync check rather than letting node fail mid-spawn.
-    expect(result).toBeNull();
+    expect(result.insight).toBeNull();
     expect(spawnCalls).toHaveLength(0);
   });
 
@@ -280,7 +329,7 @@ describe("runInstallScan", () => {
     nextChildBehavior = { exitCode: 0 };
     nextInsightEntry = null;
     const result = await runInstallScan();
-    expect(result).toBeNull();
+    expect(result.insight).toBeNull();
   });
 });
 

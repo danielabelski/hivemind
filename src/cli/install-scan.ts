@@ -27,10 +27,29 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { findAgentBin } from "../skillify/gate-runner.js";
 import {
+  countLocalManifestEntries,
   getLatestInsightEntry,
+  readLocalManifest,
   type LocalManifestEntry,
 } from "../skillify/local-manifest.js";
 import { runAdvisor } from "../skillify/advisor.js";
+
+/**
+ * Distinguish the THREE outcomes of an install-time scan so the caller
+ * can give accurate feedback to the user (codex PR #198 P3):
+ *   1. `insight` is set: surface the value-show banner.
+ *   2. `insight` null, `skillsCount > 0`: mining succeeded but none of
+ *      the candidates had a banner-quality insight. Skills ARE on disk;
+ *      the unlock copy can mention them. "No patterns found" would be
+ *      a lie.
+ *   3. `insight` null, `skillsCount === 0`: nothing was produced. The
+ *      manifest was either truly empty (entries: []) and got unlinked,
+ *      or never written. Fall through to standard unlock copy.
+ */
+export interface InstallScanResult {
+  insight: LocalManifestEntry | null;
+  skillsCount: number;
+}
 
 /**
  * Path roots are resolved at CALL time, not module-load time, so the
@@ -140,11 +159,27 @@ export function canOfferInstallScan(): boolean {
  * one, or null for every failure path (timeout, non-zero exit, no
  * insight in the manifest).
  */
-export function runInstallScan(): Promise<LocalManifestEntry | null> {
+/**
+ * If the manifest is present but unreadable (truncated by a killed
+ * mid-write, malformed JSON), unlink it so future canOfferInstallScan
+ * and maybeAutoMineLocal calls can retry. Without this guard, one
+ * timed-out or crashed scan would permanently disable both the
+ * install-time offer AND the SessionStart auto-mine path until the
+ * user manually deletes the file (codex PR #198 P2).
+ */
+function unlinkManifestIfCorrupt(): void {
+  const p = manifestPath();
+  if (!existsSync(p)) return;
+  if (readLocalManifest(p) === null) {
+    try { unlinkSync(p); } catch { /* best-effort */ }
+  }
+}
+
+export function runInstallScan(): Promise<InstallScanResult> {
   return new Promise((resolve) => {
     const cliPath = process.argv[1];
     if (!cliPath || !existsSync(cliPath)) {
-      resolve(null);
+      resolve({ insight: null, skillsCount: 0 });
       return;
     }
     const child = spawn(
@@ -173,7 +208,7 @@ export function runInstallScan(): Promise<LocalManifestEntry | null> {
     );
 
     let settled = false;
-    const finish = (result: LocalManifestEntry | null): void => {
+    const finish = (result: InstallScanResult): void => {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -181,12 +216,21 @@ export function runInstallScan(): Promise<LocalManifestEntry | null> {
 
     const timer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* best-effort */ }
-      finish(null);
+      // Mining was interrupted mid-write — the on-disk manifest may
+      // be truncated. Clean it up so a future install or auto-mine
+      // can retry without seeing a corrupt sentinel.
+      unlinkManifestIfCorrupt();
+      finish({ insight: null, skillsCount: 0 });
     }, SCAN_TIMEOUT_MS);
 
     child.on("close", async (code: number | null) => {
       clearTimeout(timer);
-      if (code !== 0) { finish(null); return; }
+      if (code !== 0) {
+        // Non-zero exit may also have left a partial manifest behind.
+        unlinkManifestIfCorrupt();
+        finish({ insight: null, skillsCount: 0 });
+        return;
+      }
       // After mine-local exits cleanly, the manifest is written. Run
       // the advisor (sonnet) over all insight-bearing candidates to
       // mark the BEST one as primary. The A/B comparison showed a
@@ -199,6 +243,11 @@ export function runInstallScan(): Promise<LocalManifestEntry | null> {
       try { await runAdvisor(); } catch { /* fall through to recency pick */ }
       let entry: LocalManifestEntry | null = null;
       try { entry = getLatestInsightEntry(); } catch { /* keep null */ }
+      // Count is read AFTER the advisor pass — it gives the caller
+      // accurate "skills exist even without a banner-quality insight"
+      // signal so the UX copy doesn't lie (codex PR #198 P3).
+      let skillsCount = 0;
+      try { skillsCount = countLocalManifestEntries(); } catch { /* keep 0 */ }
       if (!entry && manifestIsTrulyEmpty()) {
         // ONLY delete the manifest when mine-local wrote a literal
         // empty sentinel (entries: []). When mine-local DID produce
@@ -213,13 +262,18 @@ export function runInstallScan(): Promise<LocalManifestEntry | null> {
         // guarantees there was no pre-existing manifest, so an empty
         // sentinel here is definitively from THIS spawn.
         try { unlinkSync(manifestPath()); } catch { /* best-effort */ }
+        skillsCount = 0;  // we just removed the manifest
       }
-      finish(entry);
+      finish({ insight: entry, skillsCount });
     });
 
     child.on("error", () => {
       clearTimeout(timer);
-      finish(null);
+      // A spawn error means mine-local never started — manifest state
+      // unchanged. Still validate in case a previous interrupted run
+      // left debris.
+      unlinkManifestIfCorrupt();
+      finish({ insight: null, skillsCount: 0 });
     });
   });
 }
