@@ -3,8 +3,8 @@
 /**
  * CLI surface for `hivemind context`.
  *
- * Prints the same rules + HOW-TO block that the SessionStart forks
- * inject into agent context. Two consumers:
+ * Prints the same rules + open-goals + HOW-TO block that the
+ * SessionStart forks inject into agent context. Two consumers:
  *
  *   1. pi / openclaw agents — these platforms don't have a SessionStart
  *      hook in v1, so they invoke `hivemind context` from the model to
@@ -19,7 +19,7 @@
  *
  * The CLI is thin: load config → construct DeeplakeApi → call
  * renderContextBlock → print. No flags in v1 (the renderer's
- * maxRules default of 10 is the v1 contract).
+ * maxRules / maxGoals defaults of 10 are the v1 contract).
  */
 
 import { loadConfig } from "../config.js";
@@ -27,15 +27,17 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { renderContextBlock } from "../hooks/shared/context-renderer.js";
 
 const USAGE = `
-hivemind context — print the rules block on demand
+hivemind context — print the rules + open-goals block on demand
 
 Usage:
   hivemind context
 
 Same output that SessionStart auto-injects for claude-code / cursor /
-hermes. Use from pi / openclaw agents (which have no SessionStart
-hook in v1) to pull the block manually, or anywhere as a read-only
-diagnostic to see what the renderer would produce right now.
+hermes: active org rules + the current user's open goals (status
+opened or in_progress). Use from pi / openclaw agents (which have no
+SessionStart hook in v1) to pull the block manually, or anywhere as
+a read-only diagnostic to see what the renderer would produce right
+now.
 `.trim();
 
 export async function runContextCommand(args: string[]): Promise<void> {

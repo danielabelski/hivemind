@@ -127,6 +127,10 @@ describe("runContextCommand — output", () => {
     queryMock.mockResolvedValueOnce([]); // rules empty
     queryMock.mockResolvedValueOnce([{
       goal_id: "g-1",
+      // Owner must match VALID_CONFIG.userName ("alice@activeloop.ai")
+      // via the canonical-forms guard in listOpenGoals — full / short /
+      // short@%-prefix. Full email here is the exact-match form.
+      owner: "alice@activeloop.ai",
       status: "in_progress",
       content: "ship the search bar",
     }]);

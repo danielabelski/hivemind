@@ -29,7 +29,7 @@
  */
 
 import { listRules, type RuleRow } from "../../rules/index.js";
-import { sqlIdent, sqlLike } from "../../utils/sql.js";
+import { sqlIdent, sqlLike, sqlStr } from "../../utils/sql.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -130,12 +130,22 @@ export async function renderContextBlock(
  * Owner matching tolerates both short ("emanuele.fenocchi") and
  * full-email ("emanuele.fenocchi@activeloop.ai") forms because
  * different agents historically populated this column with one or
- * the other. We mirror the pattern already used by
- * notifications/sources/open-goals.ts: LIKE substring at the SQL
- * layer, bi-directional substring re-check in JS for belt-and-braces.
- * Without this, a user whose creds carry the short form would
- * silently see no goals in orgs whose existing rows used the email
- * form (or vice versa). Codex flagged this regression in PR review.
+ * the other. We use canonical-form matches (exact full / exact short
+ * / `short@%` prefix) instead of the broader `LIKE '%user%'` pattern
+ * the codebase used elsewhere, because the broad form has two real
+ * failure modes CodeRabbit flagged on PR #203:
+ *
+ *   1. Substring collision: `LIKE '%ali%'` would match `malice@...`
+ *      and leak another user's goals into the current user's
+ *      SessionStart inject.
+ *   2. Reverse-alias miss: when `currentUser` is the full email and
+ *      the stored owner is the short form, `LIKE '%alice@activeloop.ai%'`
+ *      never matches the row whose owner column holds just `alice`.
+ *
+ * The canonical-forms triple closes both: `owner = full` AND
+ * `owner = short` AND `owner LIKE short@%` together cover every
+ * legitimate alias variant without admitting collisions. The JS
+ * guard below mirrors the same logic as defense-in-depth.
  *
  * Order: in_progress first (alphabetical 'i' < 'o' under ASC), then
  * newest opened. Within each status group, newest created_at first
@@ -149,10 +159,14 @@ export async function listOpenGoals(
 ): Promise<OpenGoalRow[]> {
   const limit = opts.limit ?? 40;
   const safe = sqlIdent(goalsTable);
-  const userPattern = sqlLike(currentUser);
+  const fullUser = currentUser.trim();
+  const shortUser = fullUser.split("@")[0] ?? fullUser;
+  const fullEq = sqlStr(fullUser);
+  const shortEq = sqlStr(shortUser);
+  const shortLike = sqlLike(shortUser);
   const sql =
     `SELECT goal_id, owner, status, content FROM "${safe}" g1 ` +
-    `WHERE owner LIKE '%${userPattern}%' ` +
+    `WHERE (owner = '${fullEq}' OR owner = '${shortEq}' OR owner LIKE '${shortLike}@%') ` +
     `AND status IN ('opened', 'in_progress') ` +
     `AND version = (SELECT MAX(version) FROM "${safe}" g2 WHERE g2.goal_id = g1.goal_id) ` +
     `ORDER BY status ASC, created_at DESC ` +
@@ -160,17 +174,15 @@ export async function listOpenGoals(
   const rows = await query(sql);
   const out: OpenGoalRow[] = [];
   for (const r of rows) {
-    const owner = String(r["owner"] ?? "");
-    // Bi-directional substring guard against historical rows where
-    // the column held the email while creds hold the short form (or
-    // vice versa). LIKE at the SQL layer already does the heavy
-    // lifting; this re-check is defense-in-depth against unusual
-    // substring collisions (a different user whose short username
-    // happens to appear inside this user's email, or similar).
+    const ownerNorm = String(r["owner"] ?? "").trim();
+    // Mirror the SQL canonical-forms gate in JS as defense-in-depth.
+    // Accept the row iff the stored owner is the full form, the short
+    // form, or has the short form as the left side of an `@` split.
+    const ownerShort = ownerNorm.split("@")[0] ?? ownerNorm;
     if (
-      owner !== currentUser &&
-      !owner.includes(currentUser) &&
-      !currentUser.includes(owner)
+      ownerNorm !== fullUser &&
+      ownerNorm !== shortUser &&
+      ownerShort !== shortUser
     ) {
       continue;
     }

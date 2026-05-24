@@ -213,7 +213,7 @@ describe("renderContextBlock — goals rendering", () => {
     expect(out).not.toContain("body 11");
   });
 
-  it("issues a SQL query with owner LIKE + latest version + open statuses", async () => {
+  it("issues a SQL query with canonical-form owner match + latest version + open statuses", async () => {
     const { calls, query } = mockQuery([
       () => [],
       () => [],
@@ -221,9 +221,15 @@ describe("renderContextBlock — goals rendering", () => {
     await renderContextBlock(query, INPUT);
     const goalSql = calls[1];
     expect(goalSql).toContain(`FROM "hivemind_goals"`);
-    // LIKE substring on owner so the SessionStart block surfaces goals
-    // whether the stored owner is the short userName or the full email.
-    expect(goalSql).toContain(`owner LIKE '%alice@activeloop.ai%'`);
+    // Canonical-form match: exact full email OR exact short OR
+    // short@anything-suffix. Avoids substring collisions (e.g. user
+    // 'ali' matching 'malice@activeloop.ai') AND handles the alias
+    // case both ways (currentUser short vs stored full, and vice
+    // versa). CodeRabbit P1 #4 on PR #203 flagged the prior broader
+    // LIKE '%user%' pattern.
+    expect(goalSql).toContain(`owner = 'alice@activeloop.ai'`);
+    expect(goalSql).toContain(`owner = 'alice'`);
+    expect(goalSql).toContain(`owner LIKE 'alice@%'`);
     expect(goalSql).toContain(`status IN ('opened', 'in_progress')`);
     // Latest-version sub-select keeps a recently mv'd goal from
     // double-rendering (old opened row + new in_progress row).
@@ -255,10 +261,11 @@ describe("renderContextBlock — goals rendering", () => {
     expect(out).toContain("task B");
   });
 
-  it("rejects rows where owner is a completely different user (no substring overlap)", async () => {
-    // Defense-in-depth: the LIKE pattern is unconstrained, so a
-    // username like 'al' could SQL-match 'alex@activeloop.ai'. The JS
-    // bi-directional substring check is the second barrier.
+  it("rejects rows where owner is a completely different user (defense-in-depth JS guard)", async () => {
+    // Canonical-form gate at the SQL layer should already drop these,
+    // but a stale row that slipped through (e.g., via a different
+    // pipeline that wrote with relaxed matching) must still be
+    // filtered by the JS guard.
     const shortUserInput = {
       rulesTable: "hivemind_rules",
       goalsTable: "hivemind_goals",
@@ -266,9 +273,6 @@ describe("renderContextBlock — goals rendering", () => {
     };
     const { query } = mockQuery([
       () => [],
-      // SQL LIKE happens to match because 'alice' is NOT a substring
-      // here, but we test the JS guard with a row that should NOT
-      // match. We simulate a stale SQL row that the JS layer must drop.
       () => [
         fakeGoal({ goal_id: "g-other", owner: "bob@activeloop.ai", content: "not mine" }),
       ],
@@ -277,6 +281,46 @@ describe("renderContextBlock — goals rendering", () => {
     expect(out).not.toContain("not mine");
     // With zero goals after JS filter, the goals section is absent.
     expect(out).not.toContain("HIVEMIND GOALS");
+  });
+
+  it("rejects substring collision: user 'ali' must NOT see 'malice@...' goals", async () => {
+    // The prior LIKE '%user%' pattern would have matched 'malice' for
+    // user 'ali' — the very collision CodeRabbit flagged. The
+    // canonical-forms gate (exact full / exact short / short@%)
+    // closes this leak.
+    const aliInput = {
+      rulesTable: "hivemind_rules",
+      goalsTable: "hivemind_goals",
+      currentUser: "ali",
+    };
+    const { query } = mockQuery([
+      () => [],
+      () => [
+        fakeGoal({ goal_id: "g-leak", owner: "malice@activeloop.ai", content: "DO NOT LEAK" }),
+      ],
+    ]);
+    const out = await renderContextBlock(query, aliInput);
+    expect(out).not.toContain("DO NOT LEAK");
+  });
+
+  it("reverse alias: full-email user matches a row stored as the short form", async () => {
+    // The prior LIKE '%alice@activeloop.ai%' would NEVER match a row
+    // whose owner is just 'alice' — silently hiding the user's goals.
+    // Canonical-forms gate accepts ownerShort === shortUser so the
+    // row is surfaced.
+    const fullUserInput = {
+      rulesTable: "hivemind_rules",
+      goalsTable: "hivemind_goals",
+      currentUser: "alice@activeloop.ai",
+    };
+    const { query } = mockQuery([
+      () => [],
+      () => [
+        fakeGoal({ goal_id: "g-short", owner: "alice", content: "stored as short form" }),
+      ],
+    ]);
+    const out = await renderContextBlock(query, fullUserInput);
+    expect(out).toContain("stored as short form");
   });
 });
 
