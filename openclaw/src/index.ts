@@ -20,7 +20,7 @@ function loadSetupConfig(): Promise<SetupConfigModule> {
 // Network-only helpers stay as static imports — auth.js no longer touches fs
 // (its credential IO moved to ../../src/commands/auth-creds.js, which we load
 // lazily below so esbuild emits it as a separate chunk).
-import { requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace } from "../../src/commands/auth.js";
+import { requestDeviceCode, pollForToken, listOrgs, switchOrg, listWorkspaces, switchWorkspace, healDriftedOrgToken } from "../../src/commands/auth.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
 
 // Lazy-loaders for the fs-touching shared modules. Each becomes its own
@@ -299,6 +299,11 @@ async function checkForUpdate(logger: PluginLogger): Promise<void> {
 // --- Auth state ---
 let authPending = false;
 let authUrl: string | null = null;
+// Heal the legacy `org switch` regression at most once per process: if
+// creds.token's JWT org_id claim differs from creds.orgId, re-mint a
+// token bound to the destination org and rewrite ~/.deeplake/credentials.json.
+// Sentinel prevents re-running on every getApi() invocation.
+let driftHealAttempted = false;
 // Set by the background version check in register() when a newer version is
 // available on ClawHub. Read by before_prompt_build to inject an
 // agent-facing directive nudging it to install via its own exec tool.
@@ -667,6 +672,17 @@ function normalizeVirtualPath(p: string | undefined | null): string {
 
 async function getApi(): Promise<DeeplakeApi | null> {
   if (api) return api;
+
+  // Heal token/org drift before loadConfig reads credentials.json. Heal is
+  // a no-op when claim matches orgId or when the JWT carries no claim, so
+  // the only added cost on the steady-state path is a base64 decode.
+  if (!driftHealAttempted) {
+    driftHealAttempted = true;
+    try {
+      const creds = await loadCredentials();
+      if (creds?.token) await healDriftedOrgToken(creds);
+    } catch { /* heal never throws; this catch is belt + braces */ }
+  }
 
   const config = await loadConfig();
   if (!config) {
