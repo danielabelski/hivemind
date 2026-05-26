@@ -89,6 +89,11 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
 
   // Build the query function. Tests inject one; real callers get the API client.
   let query: QueryFn;
+  // Existence predicate from a trusted table list — lets runPull skip the
+  // SELECT (and the server-side 42P01) when `skills` doesn't exist yet on a
+  // fresh workspace. Undefined when the list can't be fetched or a test
+  // injects its own query, in which case runPull falls back to its catch.
+  let tableExists: ((name: string) => boolean) | undefined;
   if (deps.queryFn) {
     query = deps.queryFn;
   } else {
@@ -100,6 +105,8 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
       config.skillsTableName,
     );
     query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
+    const known = await api.knownTablesOrNull();
+    if (known) tableExists = (name: string) => known.includes(name);
   }
 
   const install = deps.install ?? "global";
@@ -115,6 +122,7 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
         users: [],
         dryRun: false,
         force: false,
+        tableExists,
       }),
       timeoutMs,
     );

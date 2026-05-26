@@ -23,6 +23,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
       _tableName: string,
     ) { /* nothing */ }
     query(sql: string) { return queryMock(sql); }
+    async knownTablesOrNull() { return null; }
   },
 }));
 

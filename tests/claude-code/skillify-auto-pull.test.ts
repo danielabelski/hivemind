@@ -25,6 +25,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
   // `vi.fn().mockImplementation(arrow)` won't work as a constructor.
   DeeplakeApi: class {
     query(sql: string) { return apiQueryMock(sql); }
+    async knownTablesOrNull() { return null; }
   },
 }));
 

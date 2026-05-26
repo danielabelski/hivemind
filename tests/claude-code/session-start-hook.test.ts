@@ -39,6 +39,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
     ensureTable() { return ensureTableMock(); }
     ensureSessionsTable(t: string) { return ensureSessionsTableMock(t); }
     query(sql: string) { return queryMock(sql); }
+    async knownTablesOrNull() { return null; }
   },
 }));
 // autoUpdate mocked at the boundary (CLAUDE.md rule 5) — the helper
