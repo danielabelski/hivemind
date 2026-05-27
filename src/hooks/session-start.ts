@@ -205,7 +205,10 @@ async function main(): Promise<void> {
           await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          log("placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
+          const reason = process.env.HIVEMIND_CAPTURE === "false"
+            ? "HIVEMIND_CAPTURE=false"
+            : "HIVEMIND_CAPTURE_ONLY_CLI gate";
+          log(`placeholder + schema ensure skipped (${reason})`);
         }
         // Renderer is read-only and runs regardless of captureEnabled.
         // It absorbs its own errors (missing table, network, etc.)
