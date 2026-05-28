@@ -55,7 +55,7 @@ function traceSql(msg: string): void {
 let _signalledBalanceExhausted = false;
 
 // Process-local once-only flag for the "approaching empty" warning.
-// Symmetrical with _signalledBalanceExhausted — see maybeSignalLowBalance.
+// Symmetrical with _signalledBalanceExhausted — see signalLowBalanceFromHeader.
 let _signalledLowBalance = false;
 
 // Mirror of the backend's billing.LowBalanceThresholdCents. Hardcoded
@@ -124,7 +124,7 @@ function maybeSignalBalanceExhausted(status: number, bodyText: string): void {
  *    after a top-up, subsequent requests stop carrying the low-balance
  *    header (because balance is now ≥ threshold), so this function no-ops.
  */
-function maybeSignalLowBalance(resp: Response): void {
+function signalLowBalanceFromHeader(resp: Response): void {
   if (_signalledLowBalance) return;
   // Best-effort side-effect: never throw into the query path. Some callers
   // (and test fakes) hand back a minimal Response-like object without a
@@ -326,7 +326,7 @@ export class DeeplakeApi {
       // paths so users get warned BEFORE their balance hits zero. The
       // function is process-local-deduped, so it's cheap to call on every
       // response.
-      maybeSignalLowBalance(resp);
+      signalLowBalanceFromHeader(resp);
       if (resp.ok) {
         const raw = await resp.json() as { columns?: string[]; rows?: unknown[][]; row_count?: number } | null;
         if (!raw?.rows || !raw?.columns) return [];
@@ -509,7 +509,7 @@ export class DeeplakeApi {
             ...deeplakeClientHeader(),
           },
         });
-        maybeSignalLowBalance(resp);
+        signalLowBalanceFromHeader(resp);
         if (resp.ok) {
           const data = await resp.json() as { tables?: { table_name: string }[] };
           return {
