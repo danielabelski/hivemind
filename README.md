@@ -17,6 +17,8 @@
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg" alt="Node"></a>
   <a href="https://deeplake.ai"><img src="https://img.shields.io/badge/Powered%20by-Deeplake-orange.svg" alt="Deeplake"></a>
   <a href="https://www.ycombinator.com"><img src="https://img.shields.io/badge/Y%20Combinator-backed-ff6600.svg" alt="Y Combinator backed"></a>
+  <a href="https://discord.gg/EeGjnyDBx"><img src="https://img.shields.io/badge/Discord-chat-5865F2?logo=discord&logoColor=white" alt="Join us on Discord"></a>
+  <a href="https://join.slack.com/t/hubdb/shared_invite/zt-35zr0yil0-lnzJcQhACsBlB7~3lufrCg"><img src="https://img.shields.io/badge/Slack-chat-4A154B?logo=slack&logoColor=white" alt="Join us on Slack"></a>
 </p>
 
 <p align="center">
@@ -50,12 +52,6 @@ On the [LoCoMo](https://arxiv.org/abs/2402.17753) long-context memory benchmark 
 | Turns / question  | 8.9      | 6.2      | **31% fewer**    |
 
 The agent reaches the answer in fewer turns with less context, because the prior work is already in scope at recall time — not re-derived per session.
-
-<p align="center">
-  <a href="https://star-history.com/#activeloopai/hivemind&Date">
-    <img src="https://api.star-history.com/svg?repos=activeloopai/hivemind&type=Date" alt="Star History Chart" width="600">
-  </a>
-</p>
 
 ## Quick start
 
