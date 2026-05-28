@@ -31,7 +31,7 @@
 
 On [LoCoMo](https://arxiv.org/abs/2402.17753), the public long-context memory benchmark, Hivemind is **25% cheaper, 1.7× fewer tokens, and 31% fewer turns** than running without shared memory. ([See the numbers below.](#benchmarks))
 
-**Beyond memory.** Hivemind doesn't just remember — it mines your team's traces for repeated patterns and codifies them into reusable skills that propagate back into every agent on the team. The agent your junior engineer used this morning is sharper because of what your senior engineer's agent figured out last week.
+**Beyond memory.** Hivemind doesn't just remember. It mines your team's traces for repeated patterns and codifies them into reusable skills that propagate back into every agent on the team. The agent your junior engineer used this morning is sharper because of what your senior engineer's agent figured out last week.
 
 - 📥 **Captures** every session's prompts, tool calls, and responses as structured traces in Deeplake
 - 🧠 **Codifies** patterns into reusable `SKILL.md` files, available to every agent on your team
@@ -39,7 +39,7 @@ On [LoCoMo](https://arxiv.org/abs/2402.17753), the public long-context memory be
 - 🔗 **Propagates** capability across sessions, agents, teammates, and machines in real time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
-- ☁️ **BYOC**: keep data in your own GCS, Azure, S3, or on-prem bucket — [see Security & storage](#security--storage)
+- ☁️ **BYOC**: keep data in your own GCS, Azure, S3, or on-prem bucket. [See Security & storage](#security--storage)
 
 ## Benchmarks
 
@@ -51,7 +51,7 @@ On the [LoCoMo](https://arxiv.org/abs/2402.17753) long-context memory benchmark 
 | Tokens / question | 1,700    | 1,008    | **1.7× fewer**   |
 | Turns / question  | 8.9      | 6.2      | **31% fewer**    |
 
-The agent reaches the answer in fewer turns with less context, because the prior work is already in scope at recall time — not re-derived per session.
+The agent reaches the answer in fewer turns with less context, because the prior work is already in scope at recall time, not re-derived per session.
 
 ## Quick start
 
@@ -63,7 +63,7 @@ npm install -g @deeplake/hivemind && hivemind install
 
 The installer detects every supported assistant on your machine (table below), wires up the hooks, and shows a one-line consent prompt before opening a browser for sign-in. Restart your assistants after install.
 
-**Headless / CI installs** — pass an API token instead of using the browser flow:
+**Headless / CI installs:** pass an API token instead of using the browser flow:
 
 ```bash
 HIVEMIND_TOKEN=<your-token> hivemind install
@@ -153,7 +153,7 @@ Hivemind runs **alongside** OpenClaw's built-in `memory-core` plugin. It does **
 - **`openclaw model <id>` says "plugins.allow excludes model".** The `model` plugin CLI is disabled by default. Edit `~/.openclaw/openclaw.json` directly (key `agents.defaults.model`) and restart the gateway: `systemctl --user restart openclaw-gateway.service`.
 - **Model switch rejected as "not allowed".** Use the exact dated provider-prefixed ID (`anthropic/claude-haiku-4-5-20251001`, `anthropic/claude-sonnet-4-6`). Legacy IDs like `claude-3-5-haiku-latest` and unprefixed bare IDs are not on OpenClaw's allowlist.
 - **Self-update via Telegram fails with "elevated is not available".** `tools.elevated.allowFrom` must include `telegram` before elevated commands work from that channel. Safer alternative: run the upgrade in a local shell with `openclaw plugins update hivemind`.
-- **`npm error EACCES` during self-update.** OpenClaw was installed under a root-owned npm prefix (e.g. `/usr/lib/node_modules/openclaw`). Reinstall under a user-writable prefix, or run the update with appropriate privileges locally — not via a channel.
+- **`npm error EACCES` during self-update.** OpenClaw was installed under a root-owned npm prefix (e.g. `/usr/lib/node_modules/openclaw`). Reinstall under a user-writable prefix, or run the update with appropriate privileges locally, not via a channel.
 </details>
 
 <details>
@@ -178,7 +178,7 @@ Restart Codex to activate.
 <details>
   <summary><b>Cursor (1.7+)</b></summary>
 
-The unified installer wires six lifecycle events in `~/.cursor/hooks.json` — sessionStart, beforeSubmitPrompt, postToolUse, afterAgentResponse, stop, sessionEnd. Hooks fork a Node bundle at `~/.cursor/hivemind/bundle/` per event. Restart Cursor after install to load.
+The unified installer wires six lifecycle events in `~/.cursor/hooks.json`: sessionStart, beforeSubmitPrompt, postToolUse, afterAgentResponse, stop, sessionEnd. Hooks fork a Node bundle at `~/.cursor/hivemind/bundle/` per event. Restart Cursor after install to load.
 
 ```bash
 hivemind cursor install
@@ -206,7 +206,7 @@ Upserts an idempotent BEGIN/END marker block into `~/.pi/agent/AGENTS.md` (auto-
 hivemind pi install
 ```
 
-Note: no per-agent SKILL.md is dropped under `~/.pi/agent/skills/` — pi reads skills from both that directory AND the shared `~/.agents/skills/` location. If the codex installer has run on the same machine, pi picks up the hivemind skill from the shared `~/.agents/skills/hivemind-memory` symlink automatically. The AGENTS.md block plus the registered tools cover the action surface in either case.
+Note: no per-agent SKILL.md is dropped under `~/.pi/agent/skills/`; pi reads skills from both that directory AND the shared `~/.agents/skills/` location. If the codex installer has run on the same machine, pi picks up the hivemind skill from the shared `~/.agents/skills/hivemind-memory` symlink automatically. The AGENTS.md block plus the registered tools cover the action surface in either case.
 </details>
 
 
@@ -261,24 +261,24 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | Subagent activity     | Subagent tool calls and responses  |
 | Codified skills       | Patterns extracted from traces     |
 
-**All users in your Deeplake workspace can read this data.** That's the design — shared capability requires shared substrate. A DATA NOTICE is displayed at the start of every session. Workspace-level isolation prevents data leakage between orgs.
+**All users in your Deeplake workspace can read this data.** That's the design. Shared capability requires shared substrate. A DATA NOTICE is displayed at the start of every session. Workspace-level isolation prevents data leakage between orgs.
 
 ## Configuration
 
 | Variable                  | Default                   | Description                                |
 |---------------------------|---------------------------|--------------------------------------------|
-| `HIVEMIND_TOKEN`          | —                         | API token (auto-set by login)              |
-| `HIVEMIND_ORG_ID`         | —                         | Organization ID (auto-set by login)        |
+| `HIVEMIND_TOKEN`          | _(none)_                  | API token (auto-set by login)              |
+| `HIVEMIND_ORG_ID`         | _(none)_                  | Organization ID (auto-set by login)        |
 | `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name                             |
 | `HIVEMIND_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
 | `HIVEMIND_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
 | `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
 | `HIVEMIND_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
 | `HIVEMIND_CAPTURE`        | `true`                    | Set to `false` to disable capture          |
-| `HIVEMIND_CAPTURE_ONLY_CLI` | —                       | Set to `true` to capture only interactive CLI sessions. Sessions spawned by the Claude Agent SDK (Python/TypeScript) are skipped — their `CLAUDE_CODE_ENTRYPOINT` is `sdk-py` / `sdk-ts`, so they fail the substring check for `cli`. |
+| `HIVEMIND_CAPTURE_ONLY_CLI` | _(none)_                | Set to `true` to capture only interactive CLI sessions. Sessions spawned by the Claude Agent SDK (Python/TypeScript) are skipped; their `CLAUDE_CODE_ENTRYPOINT` is `sdk-py` / `sdk-ts`, so they fail the substring check for `cli`. |
 | `HIVEMIND_SKILLIFY_EVERY_N_TURNS` | `20`              | Assistant turns between auto skill-mining attempts. Lower = more frequent mining (cheaper sessions, noisier output); higher = fewer attempts on longer histories. |
 | `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
-| `HIVEMIND_DEBUG`          | —                         | Set to `1` for verbose hook debug logs     |
+| `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
 
 ## Semantic search (optional)
 
@@ -288,13 +288,13 @@ Full guide: **[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)**.
 
 ## Summaries
 
-After each session, a background worker generates an AI-written wiki summary and stores it in the `memory` table alongside its 768-dim embedding. Long sessions checkpoint mid-session every 50 messages or 2 hours (configurable). The wiki worker shells out to the host agent's own CLI (`claude -p`, `codex exec`, `pi --print`, …) — no separate API key. Browse summaries at `~/.deeplake/memory/summaries/`.
+After each session, a background worker generates an AI-written wiki summary and stores it in the `memory` table alongside its 768-dim embedding. Long sessions checkpoint mid-session every 50 messages or 2 hours (configurable). The wiki worker shells out to the host agent's own CLI (`claude -p`, `codex exec`, `pi --print`, …) so no separate API key is needed. Browse summaries at `~/.deeplake/memory/summaries/`.
 
 Triggers, generation flow, and env-var reference: **[docs/SUMMARIES.md](docs/SUMMARIES.md)**.
 
 ## Skills (skillify)
 
-Hivemind **codifies recurring patterns from your team's recent sessions into reusable skills** that propagate to every agent on your team — automatically. An async background worker fires on Stop / SessionEnd, mines recent sessions in scope, asks Haiku whether the activity contains something worth keeping, and writes a `SKILL.md` to `<project>/.claude/skills/<name>/`.
+Hivemind **codifies recurring patterns from your team's recent sessions into reusable skills** that propagate to every agent on your team, automatically. An async background worker fires on Stop / SessionEnd, mines recent sessions in scope, asks Haiku whether the activity contains something worth keeping, and writes a `SKILL.md` to `<project>/.claude/skills/<name>/`.
 
 ```bash
 hivemind skillify                            # show current scope, team, install, per-project state
@@ -307,7 +307,7 @@ Triggers, generation flow, full `pull` / `unpull` semantics, gate-CLI table per 
 
 ## Codebase graph
 
-Hivemind builds a live graph of your codebase from the same traces it captures — files, symbols, imports, and the edges your agents actually traverse during real sessions. Search and recall walk this graph, not just plain text, so "where do we handle auth?" lands on the actual files the team's agents have touched, not just every file that mentions "auth".
+Hivemind builds a live graph of your codebase from the same traces it captures: files, symbols, imports, and the edges your agents actually traverse during real sessions. Search and recall walk this graph, not just plain text, so "where do we handle auth?" lands on the actual files the team's agents have touched, not just every file that mentions "auth".
 
 <p align="center">
   <img src="docs/screenshots/codebase-graph.webp" alt="Hivemind codebase graph visualizing the hivemind repo itself" width="800">
@@ -329,14 +329,14 @@ hivemind rules done <rule-id>                # mark closed
 hivemind context                             # print the injection block on demand
 ```
 
-**What's injected at SessionStart** (claude-code, cursor, hermes — codex
+**What's injected at SessionStart** (claude-code, cursor, hermes. Codex is
 deliberately excluded to keep its user-visible TUI clean; pi/openclaw
 fall back to `hivemind context`):
 
 ```text
 === HIVEMIND RULES (N active) ===
 - <rule_id>: <text>
-(X more — run 'hivemind rules list' to see all)
+(X more, run 'hivemind rules list' to see all)
 
 === HIVEMIND HOW-TO ===
 - Rules above are team principles. Treat any action that would violate one as a critical error and surface it to the user before proceeding.
@@ -344,8 +344,8 @@ fall back to `hivemind context`):
 ```
 
 **Env vars:**
-- `HIVEMIND_RULES_TABLE` — table name (default `hivemind_rules`).
-- `HIVEMIND_CAPTURE=false` — full read-only mode. Skips placeholder + ensure DDL; renderer still injects.
+- `HIVEMIND_RULES_TABLE`: table name (default `hivemind_rules`).
+- `HIVEMIND_CAPTURE=false`: full read-only mode. Skips placeholder + ensure DDL; renderer still injects.
 
 ## Goals + KPIs
 
@@ -359,7 +359,7 @@ hivemind goal done <goal_id>
 hivemind goal progress <goal_id> opened|in_progress|closed
 ```
 
-For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates and edits goals/KPIs directly via Bash heredoc against the VFS path — `mv` between `opened/`, `in_progress/`, and `closed/` is the canonical status transition. KPIs are manual files; the body format is documented in the skill (`target:`, `current:`, `unit:`).
+For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates and edits goals/KPIs directly via Bash heredoc against the VFS path. `mv` between `opened/`, `in_progress/`, and `closed/` is the canonical status transition. KPIs are manual files; the body format is documented in the skill (`target:`, `current:`, `unit:`).
 
 ## Architecture
 
@@ -376,7 +376,7 @@ Per-agent integration mechanisms (marketplace plugin, hooks, skills, native exte
 
 ### Tenant isolation & encryption
 
-- TLS between every agent and Deep Lake. AES-256 on the bytes once they land. Your cloud credentials live in Deep Lake's vault — Hivemind never sees the raw keys.
+- TLS between every agent and Deep Lake. AES-256 on the bytes once they land. Your cloud credentials live in Deep Lake's vault, and Hivemind never sees the raw keys.
 - Org and workspace boundaries enforced at the storage layer, not just the API. Sessions never share a row, a partition, or an index with another workspace.
 - Disable capture per session with `HIVEMIND_CAPTURE=false`. Delete a workspace and the underlying objects go with it.
 
@@ -389,7 +389,7 @@ Per-agent integration mechanisms (marketplace plugin, hooks, skills, native exte
 
 ### Bring your own cloud (BYOC)
 
-Hivemind Cloud is the default. When that isn't enough, point Hivemind at storage in your own cloud — we handle the orchestration, data never leaves your perimeter.
+Hivemind Cloud is the default. When that isn't enough, point Hivemind at storage in your own cloud. We handle the orchestration, data never leaves your perimeter.
 
 | Provider                   | Status     | Setup                                                  |
 |----------------------------|------------|--------------------------------------------------------|
@@ -400,7 +400,7 @@ Hivemind Cloud is the default. When that isn't enough, point Hivemind at storage
 
 ## Who builds Hivemind
 
-Hivemind is built and maintained by [Activeloop](https://activeloop.ai) — the open-source team behind [Deeplake](https://github.com/activeloopai/deeplake), backed by Y Combinator.
+Hivemind is built and maintained by [Activeloop](https://activeloop.ai), the open-source team behind [Deeplake](https://github.com/activeloopai/deeplake), backed by Y Combinator.
 
 We run Hivemind ourselves, all day, across Claude Code, OpenClaw, Codex, and Cursor. Every benchmark number above came from our own internal eval against the LoCoMo public benchmark. If you're running coding agents at a team or org and want to talk through your setup, drop us a line: [hello@activeloop.ai](mailto:hello@activeloop.ai).
 
@@ -438,7 +438,7 @@ npm run shell
 
 ## License
 
-Apache License 2.0 — © Activeloop, Inc. See [LICENSE](LICENSE) for details.
+Apache License 2.0, © Activeloop, Inc. See [LICENSE](LICENSE) for details.
 
 ## Star history
 
