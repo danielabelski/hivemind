@@ -305,6 +305,16 @@ hivemind skillify unpull                     # remove pulled skills
 
 Triggers, generation flow, full `pull` / `unpull` semantics, gate-CLI table per agent, env vars, logs: **[docs/SKILLIFY.md](docs/SKILLIFY.md)**.
 
+## Codebase graph
+
+Hivemind builds a live graph of your codebase from the same traces it captures — files, symbols, imports, and the edges your agents actually traverse during real sessions. Search and recall walk this graph, not just plain text, so "where do we handle auth?" lands on the actual files the team's agents have touched, not just every file that mentions "auth".
+
+<p align="center">
+  <img src="docs/screenshots/codebase-graph.gif" alt="Hivemind codebase graph visualizing the hivemind repo itself" width="800">
+</p>
+
+Above: the Hivemind codebase rendered through its own graph feature.
+
 ## Rules (cross-agent team principles)
 
 Hivemind **shares team rules across every agent in the org**, injected at SessionStart so every claude-code / cursor / hermes session starts knowing them. For personal or team work items with progress tracking, use [Goals + KPIs](#goals--kpis) (VFS-backed) instead.
@@ -419,4 +429,12 @@ npm run shell
 ## License
 
 Apache License 2.0 — © Activeloop, Inc. See [LICENSE](LICENSE) for details.
+
+## Star history
+
+<p align="center">
+  <a href="https://star-history.com/#activeloopai/hivemind&Date">
+    <img src="https://api.star-history.com/svg?repos=activeloopai/hivemind&type=Date" alt="Star History Chart" width="600">
+  </a>
+</p>
 
