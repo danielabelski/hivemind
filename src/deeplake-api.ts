@@ -126,7 +126,10 @@ function maybeSignalBalanceExhausted(status: number, bodyText: string): void {
  */
 function maybeSignalLowBalance(resp: Response): void {
   if (_signalledLowBalance) return;
-  const raw = resp.headers.get(BALANCE_HEADER);
+  // Best-effort side-effect: never throw into the query path. Some callers
+  // (and test fakes) hand back a minimal Response-like object without a
+  // standard `headers` getter, so guard the access rather than assume it.
+  const raw = resp.headers?.get?.(BALANCE_HEADER);
   if (!raw) return;
   const balance = Number.parseInt(raw, 10);
   if (!Number.isFinite(balance)) return;

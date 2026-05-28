@@ -153,4 +153,23 @@ describe("DeeplakeApi — X-Activeloop-Balance-Cents low-balance warning", () =>
     expect(rows).toEqual([{ x: 1 }]);
     await new Promise(resolve => setImmediate(resolve));
   });
+
+  it("does NOT throw when the response has no headers object (minimal Response-like fake)", async () => {
+    // Other suites (deeplake-api.test.ts) mock fetch with a bare
+    // { ok, status, json, text } object — no `headers` getter. The
+    // low-balance probe must treat that as 'no header present' and return,
+    // never crash the query path. Regression guard for the optional-chain
+    // on resp.headers?.get — removing it reintroduces a TypeError that
+    // fails 69 unrelated tests.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ columns: ["x"], rows: [[1]] }),
+      text: async () => "",
+    });
+    const api = await makeApi();
+    const rows = await api.query("SELECT 1");
+    expect(rows).toEqual([{ x: 1 }]);
+    expect(enqueueNotificationMock).not.toHaveBeenCalled();
+  });
 });
