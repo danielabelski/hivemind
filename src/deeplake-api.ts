@@ -146,7 +146,7 @@ function maybeSignalLowBalance(resp: Response): void {
     id: "low-balance-warning",
     severity: "warn",
     transient: true,
-    title: "Hivemind balance is running low — top up before it runs out",
+    title: "Hivemind balance is running low. Top up before it runs out",
     body: `Only $${(balance / 100).toFixed(2)} of prepaid balance remains. Top up at ${billingUrl()} to avoid interruption when requests start failing.`,
     dedupKey: { reason: "low-balance" },
   }).catch((e: unknown) => {
