@@ -436,10 +436,6 @@ Interactive shell against Deeplake:
 npm run shell
 ```
 
-## License
-
-Apache License 2.0, © Activeloop, Inc. See [LICENSE](LICENSE) for details.
-
 ## Star history
 
 <p align="center">
@@ -447,4 +443,8 @@ Apache License 2.0, © Activeloop, Inc. See [LICENSE](LICENSE) for details.
     <img src="https://api.star-history.com/svg?repos=activeloopai/hivemind&type=Date" alt="Star History Chart" width="600">
   </a>
 </p>
+
+## License
+
+Apache License 2.0, © Activeloop, Inc. See [LICENSE](LICENSE) for details.
 
