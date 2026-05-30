@@ -911,9 +911,12 @@ describe("backend source (GET /me/notifications)", () => {
     expect((fetchCalls[0].init?.headers as any)?.Authorization).toBe(`Bearer ${FRESH_CREDS.token}`);
 
     expect(writes.length).toBe(1);
-    const ctx = JSON.parse(writes[0]).hookSpecificOutput.additionalContext;
-    expect(ctx).toContain("Maintenance window");
-    expect(ctx).toContain("API will be paused");
+    // Backend pushes are userVisibleOnly — user channel, never the model's
+    // additionalContext (server-controlled body = prompt-injection surface).
+    const parsed = JSON.parse(writes[0]);
+    expect(parsed.systemMessage).toContain("Maintenance window");
+    expect(parsed.systemMessage).toContain("API will be paused");
+    expect(parsed.hookSpecificOutput.additionalContext).toBeUndefined();
 
     // Second drain returns the same notification — should be dedup'd.
     writes.length = 0;
@@ -921,6 +924,22 @@ describe("backend source (GET /me/notifications)", () => {
     mockFetchOnce({ notifications: [serverNotification] });
     await drainSessionStart({ agent: "claude-code", creds: FRESH_CREDS });
     expect(writes.length).toBe(0);
+  });
+
+  it("a billing-class backend push reaches systemMessage but NEVER additionalContext", async () => {
+    // Regression for the server-pushed injection gap: a deeplake-api
+    // low-balance "top up" row must not land in the model's prompt.
+    mockFetchOnce({ notifications: [{
+      id: "low_balance_warning_x", severity: "warn",
+      title: "Low Deeplake balance",
+      body: "Top up to avoid service interruption.",
+      dedup_key: "lb1", created_at: "2026-05-30T00:00:00Z",
+    }] });
+    await drainSessionStart({ agent: "claude-code", creds: FRESH_CREDS });
+    expect(writes.length).toBe(1);
+    const parsed = JSON.parse(writes[0]);
+    expect(parsed.systemMessage).toContain("Top up to avoid service interruption");
+    expect(parsed.hookSpecificOutput.additionalContext).toBeUndefined();
   });
 
   it("re-emits when server reuses the id but bumps dedup_key", async () => {
@@ -939,7 +958,7 @@ describe("backend source (GET /me/notifications)", () => {
 
     await drainSessionStart({ agent: "claude-code", creds: FRESH_CREDS });
     expect(writes.length).toBe(1);
-    expect(JSON.parse(writes[0]).hookSpecificOutput.additionalContext).toContain("B2");
+    expect(JSON.parse(writes[0]).systemMessage).toContain("B2");
   });
 
   it("a 500 response degrades to no backend notifications, primary banner still fires", async () => {
@@ -979,11 +998,14 @@ describe("backend source (GET /me/notifications)", () => {
     });
     await drainSessionStart({ agent: "claude-code", creds: FRESH_CREDS });
     expect(writes.length).toBe(1);
-    const ctx = JSON.parse(writes[0]).hookSpecificOutput.additionalContext;
+    const parsed = JSON.parse(writes[0]);
+    // Backend pushes are userVisibleOnly → systemMessage, not the model channel.
+    const ctx = parsed.systemMessage;
     expect(ctx).toContain("Good");
     expect(ctx).toContain("Yes");
     expect(ctx).not.toContain("bad-no-title");
     expect(ctx).not.toContain("bad-no-body");
+    expect(parsed.hookSpecificOutput.additionalContext).toBeUndefined();
   });
 });
 
