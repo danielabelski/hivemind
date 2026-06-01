@@ -107,7 +107,13 @@ const EMPTY_SECTION = /^(none|n\/?a|n\.a\.|nothing|nothing pending|tbd|—|-)\.?
  */
 export function extractNextSteps(summary: string): string {
   const s = sections(summary);
-  const body = s.get("next steps") || s.get("open questions / todo") || s.get("open questions") || "";
+  // `## Next Steps` is authoritative when present — an empty/`none` body means
+  // "wrapped clean", so do NOT fall back to the older sections (which could
+  // surface a stale TODO). Only fall back when the section is absent entirely
+  // (summaries that predate the Next Steps contract).
+  const body = s.has("next steps")
+    ? (s.get("next steps") ?? "")
+    : (s.get("open questions / todo") || s.get("open questions") || "");
   if (!body) return "";
   for (const raw of body.split(/\r?\n/)) {
     const line = raw.replace(/^[\s>]*[-*]?\s*/, "").replace(/^#+\s*/, "").replace(/[`*_]/g, "").trim();

@@ -65,6 +65,19 @@ describe("extractNextSteps", () => {
     expect(extractNextSteps(s)).toBe("Check the Windows path");
   });
 
+  it("treats a present-but-blank ## Next Steps as wrapped-clean — does NOT fall back to a stale TODO", () => {
+    // New-format summary: the heading exists but the worker wrote no body.
+    // Next Steps is authoritative when present, so this must resolve to "" even
+    // though there's a stale Open Questions / TODO underneath.
+    const s = summary({ next: "", open: "- stale: re-run the old migration" });
+    expect(extractNextSteps(s)).toBe("");
+  });
+
+  it("still falls back to ## Open Questions / TODO only when ## Next Steps is absent", () => {
+    const s = summary({ open: "- Verify header parse on Windows" }); // no Next Steps section at all
+    expect(extractNextSteps(s)).toBe("Verify header parse on Windows");
+  });
+
   it("returns '' for an empty section body", () => {
     expect(extractNextSteps(summary({ next: "" }))).toBe("");
   });
