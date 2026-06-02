@@ -13,8 +13,9 @@
  * recent unfinished work as a "pick up where you left off" pointer.
  *
  * Resolution (newest-first over the last LOOKBACK summaries):
- *   1. First session with real open work → "you left off here: <next step>"
- *      + the owning session id + a pick-it-up call to action.
+ *   1. Up to MAX_BRIEF_SESSIONS sessions with real open work → "where you left
+ *      off: <next step>" per session, each with its id + age, then one
+ *      pick-it-up call to action.
  *   2. Otherwise (no open work anywhere, or no summaries at all) → null; the
  *      caller renders the plain welcome. We stay silent rather than surface a
  *      "nothing pending" line, and never reach back to an older stale TODO.
@@ -46,6 +47,11 @@ const MAX_LINE_CHARS = 120;
  *  recent session that left open work. A project untouched for a while
  *  resuming on an older-but-real TODO is fine. */
 const LOOKBACK = 5;
+
+/** How many sessions with open work to surface in the brief, newest-first.
+ *  More than one so a glance shows the last couple of threads, not just the
+ *  very latest. */
+const MAX_BRIEF_SESSIONS = 2;
 
 /** How many raw rows to pull before filtering. The memory table carries a
  *  SessionStart *placeholder* row per session (a skeleton with no `##`
@@ -215,11 +221,13 @@ export function selectRealSummaries(
   return out;
 }
 
-/** A one-line session-id pointer for the brief (trailing newline included), or
- *  "" when we have no id. The full id is shown so it's copy-pasteable straight
- *  into `claude --resume <id>`. */
-function sidLine(sid: string): string {
-  return sid ? `   ↳ session ${sid}\n` : "";
+/** One session's block in the brief: the open-work pointer plus a session-id +
+ *  age line (full id, copy-pasteable into `claude --resume <id>`). Trailing
+ *  newline included. */
+function sessionBlock(next: string, sid: string, date: string | undefined): string {
+  const age = relativeAge(date);
+  const meta = [sid ? `session ${sid}` : "", age].filter(Boolean).join(" · ");
+  return `   📌 ${next}\n` + (meta ? `   ↳ ${meta}\n` : "");
 }
 
 function truncate(s: string, max = MAX_LINE_CHARS): string {
@@ -314,21 +322,25 @@ export async function pickResumeBrief(
       return null; // no real summary yet — don't claim "wrapped clean"
     }
 
-    // Walk newest-first for the most recent session with real open work.
+    // Walk newest-first, collecting up to MAX_BRIEF_SESSIONS sessions that
+    // still have real open work.
+    const blocks: string[] = [];
     for (const r of reals) {
       const next = extractNextSteps(r.summary);
       if (next.length >= 4) {
-        const age = relativeAge(r.date);
-        const when = age ? ` (${age})` : "";
-        log(`fired (project=${project}, open work)`);
-        return {
-          brief:
-            `Picking up on ${project}${when} — you left off here:\n` +
-            `   📌 ${next}\n` +
-            sidLine(r.sid) +
-            `   Ask me for the full thread whenever you're ready.`,
-        }; // outcome 1 — with CTA
+        blocks.push(sessionBlock(next, r.sid, r.date));
+        if (blocks.length >= MAX_BRIEF_SESSIONS) break;
       }
+    }
+
+    if (blocks.length > 0) {
+      log(`fired (project=${project}, ${blocks.length} session(s) with open work)`);
+      return {
+        brief:
+          `Picking up on ${project} — where you left off:\n` +
+          blocks.join("") +
+          `   Ask me for the full thread whenever you're ready.`,
+      };
     }
 
     // Every recent session wrapped clean (no open work): stay silent — the

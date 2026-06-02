@@ -274,7 +274,7 @@ describe("pickResumeBrief", () => {
     ]);
     const b = await pickResumeBrief(CREDS);
     expect(b?.brief).toContain("Picking up on proj");
-    expect(b?.brief).toContain("you left off here");
+    expect(b?.brief).toContain("where you left off");
     expect(b?.brief).toContain("Wire the fallback and run tests");
   });
 
@@ -308,6 +308,26 @@ describe("pickResumeBrief", () => {
       { summary: real("B"), path: "/summaries/u/live2.md", last_update_date: "2026-05-31" },
     ]);
     expect(await pickResumeBrief(CREDS, "current")).toBeNull();
+  });
+
+  it("surfaces up to two sessions with open work, newest-first, each with its id", async () => {
+    queryMock.mockResolvedValue([
+      { summary: real("Finish the parser"), path: "/summaries/u/sid-A.md", last_update_date: "2026-05-31" },
+      { summary: real("none"), path: "/summaries/u/clean.md", last_update_date: "2026-05-30" }, // skipped (clean)
+      { summary: real("Wire the CLI"), path: "/summaries/u/sid-B.md", last_update_date: "2026-05-29" },
+      { summary: real("Write the docs"), path: "/summaries/u/sid-C.md", last_update_date: "2026-05-28" }, // beyond cap
+    ]);
+    const b = await pickResumeBrief(CREDS);
+    expect(b?.brief).toContain("Finish the parser");
+    expect(b?.brief).toContain("session sid-A");
+    expect(b?.brief).toContain("Wire the CLI");
+    expect(b?.brief).toContain("session sid-B");
+    // capped at two — the third open-work session is not shown
+    expect(b?.brief).not.toContain("Write the docs");
+    expect(b?.brief).not.toContain("session sid-C");
+    // one CTA, two pins
+    expect((b!.brief.match(/📌/g) ?? []).length).toBe(2);
+    expect((b!.brief.match(/Ask me for the full thread/g) ?? []).length).toBe(1);
   });
 
   it("shows the session id of the surfaced summary (copy-pasteable for --resume)", async () => {
@@ -364,7 +384,7 @@ describe("pickResumeBrief", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     const b = await p;
     expect(b?.brief).toContain("Wire the resume fallback");
-    expect(b?.brief).toContain("you left off here");
+    expect(b?.brief).toContain("where you left off");
   });
 
   it("still degrades to a plain welcome when the backend is truly unreachable (slower than the 3s cap)", async () => {
@@ -390,16 +410,17 @@ describe("pickResumeBrief", () => {
   });
 
   it("drops the age clause when the date is missing or unparseable", async () => {
-    // missing date → relativeAge sees undefined
+    // missing date → relativeAge sees undefined; no " · <age>" appended to the id line
     queryMock.mockResolvedValue([{ summary: real("Resume A"), path: "/s/a.md" }]);
     let b = await pickResumeBrief(CREDS);
-    expect(b?.brief).toContain("Picking up on proj — you left off here");
-    expect(b?.brief).not.toContain("(");
+    expect(b?.brief).toContain("Picking up on proj — where you left off");
+    expect(b?.brief).toContain("session a");
+    expect(b?.brief).not.toContain(" · ");
     // unparseable date → relativeAge sees NaN
     queryMock.mockResolvedValue([{ summary: real("Resume B"), path: "/s/b.md", last_update_date: "not-a-date" }]);
     b = await pickResumeBrief(CREDS);
-    expect(b?.brief).toContain("you left off here");
-    expect(b?.brief).not.toContain("(");
+    expect(b?.brief).toContain("where you left off");
+    expect(b?.brief).not.toContain(" · ");
   });
 
   it("renders each relative-age bucket", async () => {
