@@ -101,7 +101,7 @@ export function buildDenyDecision(reason: string, description: string): ClaudePr
 
 const MEMORY_RETRY_GUIDANCE =
   "[RETRY REQUIRED] The command you tried is not available for ~/.deeplake/memory/. " +
-  "This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
+  "This virtual filesystem only supports bash builtins: cat, ls, grep, echo, jq, head, tail, wc, sort, find, etc. " +
   "python, python3, node, and curl are NOT available. " +
   "You MUST rewrite your command using only the bash tools listed above and try again. " +
   "For example, to parse JSON use: cat file.json | jq '.key'. To count keys: cat file.json | jq 'keys | length'.";

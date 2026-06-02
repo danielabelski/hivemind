@@ -57,7 +57,7 @@ export interface CodexPreToolDecision {
 
 export function buildUnsupportedGuidance(): string {
   return "This command is not supported for ~/.deeplake/memory/ operations. " +
-    "Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find, etc. " +
+    "Only bash builtins are available: cat, ls, grep, echo, jq, head, tail, wc, sort, find, etc. " +
     "Do NOT use python, python3, node, curl, or other interpreters. " +
     "Rewrite your command using only bash tools and retry.";
 }
