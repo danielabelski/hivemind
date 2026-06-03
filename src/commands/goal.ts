@@ -185,7 +185,11 @@ async function goalProgress(goalId: string, status: string): Promise<void> {
   }
   const cfg = loadConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
-  const { query } = loadApiOrDie(cfg.goalsTableName);
+  const { api, query } = loadApiOrDie(cfg.goalsTableName);
+  // Heal the schema before the UPDATE: an upgraded workspace's preexisting
+  // table may lack the `updated_at` column, and this path (unlike `goal add`)
+  // is the only thing that runs before the write.
+  await api.ensureGoalsTable(cfg.goalsTableName);
   const safe = sqlIdent(cfg.goalsTableName);
   const ts = new Date().toISOString();
   await query(
@@ -264,7 +268,10 @@ async function kpiBump(goalId: string, kpiId: string, deltaStr: string): Promise
   }
   const cfg = loadConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
-  const { query } = loadApiOrDie(cfg.kpisTableName);
+  const { api, query } = loadApiOrDie(cfg.kpisTableName);
+  // Heal the schema before the UPDATE — same reason as goalProgress: a
+  // preexisting KPIs table may not yet have the `updated_at` column.
+  await api.ensureKpisTable(cfg.kpisTableName);
   const safe = sqlIdent(cfg.kpisTableName);
   // Read current content
   const rows = await query(
