@@ -486,7 +486,9 @@ export class DeeplakeFs implements IFileSystem {
     if (!this.goalsTable) throw new Error("goalsTable not configured");
     const parts = decomposeGoalPath(r.path);
     const safe = this.goalsTable;
-    const ts = r.lastUpdateDate ?? r.creationDate ?? new Date().toISOString();
+    const now = new Date().toISOString();
+    const createdAt = r.creationDate ?? now;
+    const updatedAt = r.lastUpdateDate ?? createdAt;
     const existing = await this.client.query(
       `SELECT id FROM "${safe}" WHERE goal_id = '${esc(parts.goal_id)}' LIMIT 1`
     );
@@ -500,7 +502,7 @@ export class DeeplakeFs implements IFileSystem {
         `owner = '${esc(parts.owner)}', ` +
         `status = '${esc(parts.status)}', ` +
         `content = E'${esc(r.contentText)}', ` +
-        `updated_at = '${esc(ts)}' ` +
+        `updated_at = '${esc(updatedAt)}' ` +
         `WHERE goal_id = '${esc(parts.goal_id)}'`
       );
     } else {
@@ -513,8 +515,8 @@ export class DeeplakeFs implements IFileSystem {
         `'${esc(parts.status)}', ` +
         `E'${esc(r.contentText)}', ` +
         `1, ` +
-        `'${esc(ts)}', ` +
-        `'${esc(ts)}', ` +
+        `'${esc(createdAt)}', ` +
+        `'${esc(updatedAt)}', ` +
         `'manual', ` +
         `''` +
         `)`
@@ -533,7 +535,9 @@ export class DeeplakeFs implements IFileSystem {
     if (!this.kpisTable) throw new Error("kpisTable not configured");
     const parts = decomposeKpiPath(r.path);
     const safe = this.kpisTable;
-    const ts = r.lastUpdateDate ?? r.creationDate ?? new Date().toISOString();
+    const now = new Date().toISOString();
+    const createdAt = r.creationDate ?? now;
+    const updatedAt = r.lastUpdateDate ?? createdAt;
     const existing = await this.client.query(
       `SELECT id FROM "${safe}" ` +
       `WHERE goal_id = '${esc(parts.goal_id)}' AND kpi_id = '${esc(parts.kpi_id)}' LIMIT 1`
@@ -545,7 +549,7 @@ export class DeeplakeFs implements IFileSystem {
       await this.client.query(
         `UPDATE "${safe}" SET ` +
         `content = E'${esc(r.contentText)}', ` +
-        `updated_at = '${esc(ts)}' ` +
+        `updated_at = '${esc(updatedAt)}' ` +
         `WHERE goal_id = '${esc(parts.goal_id)}' AND kpi_id = '${esc(parts.kpi_id)}'`
       );
     } else {
@@ -557,8 +561,8 @@ export class DeeplakeFs implements IFileSystem {
         `'${esc(parts.kpi_id)}', ` +
         `E'${esc(r.contentText)}', ` +
         `1, ` +
-        `'${esc(ts)}', ` +
-        `'${esc(ts)}', ` +
+        `'${esc(createdAt)}', ` +
+        `'${esc(updatedAt)}', ` +
         `'manual', ` +
         `''` +
         `)`

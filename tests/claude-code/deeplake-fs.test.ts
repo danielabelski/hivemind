@@ -310,6 +310,37 @@ describe("DeeplakeFs goal/kpi namespace isolation", () => {
     expect(update).toContain("updated_at =");   // edit time recorded here
     expect(update).not.toContain("created_at ="); // creation time left untouched
   });
+
+  it("keeps created_at and updated_at independent on a fresh goal INSERT", async () => {
+    const sql: string[] = [];
+    const client = {
+      applyStorageCreds: vi.fn().mockResolvedValue(undefined),
+      ensureTable: vi.fn().mockResolvedValue(undefined),
+      ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
+      ensureKpisTable: vi.fn().mockResolvedValue(undefined),
+      listTables: vi.fn().mockResolvedValue(["memory", "goals", "kpis"]),
+      query: vi.fn().mockImplementation(async (q: string) => {
+        sql.push(q);
+        // upsertGoalRow existence check → no row, take the INSERT branch.
+        return [];
+      }),
+    };
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
+      goalsTable: "goals",
+      kpisTable: "kpis",
+    });
+
+    await fs.writeFileWithMeta("/goal/alice/opened/g2.md", "do it later", {
+      creationDate: "2026-01-01T00:00:00.000Z",
+      lastUpdateDate: "2026-02-02T00:00:00.000Z",
+    });
+    await fs.flush();
+
+    const insert = sql.find(q => q.startsWith("INSERT") && q.includes('"goals"'));
+    expect(insert).toBeDefined();
+    expect(insert).toContain("'2026-01-01T00:00:00.000Z'"); // created_at
+    expect(insert).toContain("'2026-02-02T00:00:00.000Z'"); // updated_at — distinct, not clobbered
+  });
 });
 
 describe("guessMime", () => {
