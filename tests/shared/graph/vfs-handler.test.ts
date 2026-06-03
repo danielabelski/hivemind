@@ -293,11 +293,46 @@ describe("handleGraphVfs", () => {
       expect(r.body).toContain("find/");
       expect(r.body).toContain("show/");
       // M-render endpoints advertised in the listing
+      expect(r.body).toContain("query/");
       expect(r.body).toContain("neighborhood/");
       expect(r.body).toContain("layers");
       expect(r.body).toContain("tour");
       expect(r.body).toContain("path/");
     }
+  });
+
+  // ── query/ one-shot (C1) ──────────────────────────────────────────────
+
+  it("query/<pattern> expands top matches with 1-hop neighbors", () => {
+    seed();
+    const r = handleGraphVfs("query/foo", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain('Query "foo"');
+      expect(r.body).toContain("src/a.ts:foo:function");
+      // foo calls bar in the fixture → an OUT calls hop is shown
+      expect(r.body).toMatch(/--calls-->/);
+    }
+  });
+
+  it("query/ with no pattern → not-found", () => {
+    const r = handleGraphVfs("query/", cwd);
+    expect(r.kind).toBe("not-found");
+  });
+
+  it("query/ saves handles so a follow-up show/<N> resolves", () => {
+    seed();
+    handleGraphVfs("query/foo", cwd);
+    const r = handleGraphVfs("show/1", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("Node:");
+  });
+
+  it("query/ on no match returns a friendly message", () => {
+    seed();
+    const r = handleGraphVfs("query/zzznomatch", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("No matches");
   });
 
   // ── render endpoints (team graph-render) ──────────────────────────────

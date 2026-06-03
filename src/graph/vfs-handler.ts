@@ -95,6 +95,18 @@ export function handleGraphVfs(subpath: string, cwd: string): GraphVfsResult {
     }));
   }
 
+  // query/<pattern> — 2-in-1: find + 1-hop expand of the top matches.
+  if (path.startsWith("query/")) {
+    const pattern = path.slice("query/".length);
+    if (pattern === "") {
+      return { kind: "not-found", message: "query/ requires a pattern: cat memory/graph/query/<keyword>" };
+    }
+    return loadSnapshotOrError(cwd, (snap, baseDir) => ({
+      kind: "ok",
+      body: renderQuery(snap, pattern, baseDir, workTreeIdFor(cwd)),
+    }));
+  }
+
   // neighborhood/<file> — symbols in a file + its cross-file neighbors.
   if (path.startsWith("neighborhood/")) {
     const file = path.slice("neighborhood/".length);
@@ -133,7 +145,7 @@ export function handleGraphVfs(subpath: string, cwd: string): GraphVfsResult {
 
   return {
     kind: "not-found",
-    message: `Unknown endpoint: graph/${path}\nAvailable: index.md, find/<pattern>, show/<handle-or-pattern>, neighborhood/<file>, layers, tour, path/<from>/<to>`,
+    message: `Unknown endpoint: graph/${path}\nAvailable: index.md, find/<pattern>, query/<pattern>, show/<handle-or-pattern>, neighborhood/<file>, layers, tour, path/<from>/<to>`,
   };
 }
 
@@ -199,6 +211,7 @@ function dirListing(): string {
   return [
     "index.md",
     "find/",
+    "query/",
     "show/",
     "neighborhood/",
     "layers",
@@ -276,19 +289,16 @@ function renderIndex(snap: GraphSnapshot, baseDir: string, cwd: string): string 
   return lines.join("\n");
 }
 
-function renderFind(snap: GraphSnapshot, pattern: string, baseDir: string, worktreeId: string): string {
+/**
+ * Substring search on node id + label, ranked (exact label > prefix > id
+ * contains > label contains), tie-broken by id. Shared by find/ and query/.
+ * Returns ALL matches sorted; callers cap as needed.
+ */
+function findMatches(snap: GraphSnapshot, pattern: string): GraphNode[] {
   const needle = pattern.toLowerCase();
-  // Match on full id (file:symbol:kind) AND on label alone. We rank by:
-  //   1. exact label match
-  //   2. label starts with needle
-  //   3. id contains needle
-  //   4. label contains needle
-  // Caps at 50 results to keep output short.
   const matches: GraphNode[] = [];
   for (const n of snap.nodes) {
-    const id = n.id.toLowerCase();
-    const lbl = n.label.toLowerCase();
-    if (id.includes(needle) || lbl.includes(needle)) matches.push(n);
+    if (n.id.toLowerCase().includes(needle) || n.label.toLowerCase().includes(needle)) matches.push(n);
   }
   matches.sort((a, b) => {
     const ra = rank(a, needle);
@@ -296,6 +306,12 @@ function renderFind(snap: GraphSnapshot, pattern: string, baseDir: string, workt
     if (ra !== rb) return ra - rb;
     return a.id.localeCompare(b.id);
   });
+  return matches;
+}
+
+function renderFind(snap: GraphSnapshot, pattern: string, baseDir: string, worktreeId: string): string {
+  // Caps at 50 results to keep output short.
+  const matches = findMatches(snap, pattern);
   const capped = matches.slice(0, 50);
 
   if (capped.length === 0) {
@@ -316,6 +332,77 @@ function renderFind(snap: GraphSnapshot, pattern: string, baseDir: string, workt
   lines.push("");
   lines.push("Use: cat ~/.deeplake/memory/graph/show/<N> to see node + 1-hop neighbors");
   return lines.join("\n");
+}
+
+/** Max matches expanded by query/ in one shot. */
+const QUERY_TOP_N = 5;
+/** Max neighbors shown per relation per match. */
+const QUERY_NEIGHBOR_CAP = 8;
+
+/**
+ * query/<pattern> — the 2-in-1: find + show in a single read. Searches like
+ * find/, takes the top matches, and expands each with its 1-hop neighborhood
+ * (callers/callees/imports/heritage) grouped by relation. Saves handles so a
+ * follow-up show/<N> works exactly like after find/.
+ */
+function renderQuery(snap: GraphSnapshot, pattern: string, baseDir: string, worktreeId: string): string {
+  const matches = findMatches(snap, pattern);
+  if (matches.length === 0) {
+    return `No matches for "${pattern}" in ${snap.nodes.length} nodes.\nTry a shorter or different substring, or cat memory/graph/find/<pattern>.`;
+  }
+  const top = matches.slice(0, QUERY_TOP_N);
+  saveHandles(baseDir, worktreeId, top.map((n) => n.id), pattern);
+
+  // Single pass over links: collect incoming/outgoing for the top node ids.
+  const topIds = new Set(top.map((n) => n.id));
+  const outByNode = new Map<string, GraphEdge[]>();
+  const inByNode = new Map<string, GraphEdge[]>();
+  for (const e of snap.links) {
+    if (topIds.has(e.source)) (outByNode.get(e.source) ?? setGet(outByNode, e.source)).push(e);
+    if (topIds.has(e.target)) (inByNode.get(e.target) ?? setGet(inByNode, e.target)).push(e);
+  }
+
+  const lines: string[] = [];
+  lines.push(`Query "${pattern}" — ${matches.length} match${matches.length === 1 ? "" : "es"}, expanded top ${top.length} (1 hop)`);
+  lines.push("");
+
+  for (let i = 0; i < top.length; i++) {
+    const n = top[i]!;
+    const tags = [n.exported ? "exported" : "internal"];
+    if (n.is_entrypoint) tags.push("entrypoint");
+    if (n.fan_in !== undefined) tags.push(`fan_in=${n.fan_in}`);
+    if (n.fan_out !== undefined) tags.push(`fan_out=${n.fan_out}`);
+    lines.push(`[${i + 1}] ${n.id}  ${n.kind} (${tags.join(", ")})`);
+    if (n.signature) lines.push(`      ${n.signature}`);
+    renderHopGroup(lines, outByNode.get(n.id) ?? [], "OUT", "target");
+    renderHopGroup(lines, inByNode.get(n.id) ?? [], "IN", "source");
+    lines.push("");
+  }
+  lines.push("Use: cat ~/.deeplake/memory/graph/show/<N> for full detail on a match.");
+  return lines.join("\n");
+}
+
+function setGet(m: Map<string, GraphEdge[]>, key: string): GraphEdge[] {
+  const list: GraphEdge[] = [];
+  m.set(key, list);
+  return list;
+}
+
+/** Render one direction's edges grouped by relation, bounded. */
+function renderHopGroup(lines: string[], edges: GraphEdge[], dir: "IN" | "OUT", otherField: "source" | "target"): void {
+  if (edges.length === 0) return;
+  const byRel = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = byRel.get(e.relation) ?? [];
+    list.push(e[otherField]);
+    byRel.set(e.relation, list);
+  }
+  for (const [rel, others] of [...byRel.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const arrow = dir === "OUT" ? `--${rel}-->` : `<--${rel}--`;
+    const shown = others.slice(0, QUERY_NEIGHBOR_CAP);
+    const more = others.length > shown.length ? `  (+${others.length - shown.length} more)` : "";
+    lines.push(`      ${arrow} ${shown.join(", ")}${more}`);
+  }
 }
 
 function renderShow(snap: GraphSnapshot, key: string, baseDir: string, worktreeId: string): string {
