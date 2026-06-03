@@ -32,6 +32,7 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { touchesMemory, rewritePaths } from "../memory-path-utils.js";
+import { tryGraphRead } from "../../graph/graph-command.js";
 const log = (msg: string) => _log("cursor-pre-tool-use", msg);
 
 interface CursorShellToolInput {
@@ -59,6 +60,24 @@ async function main(): Promise<void> {
   // Translate host paths (~/.deeplake/memory, $HOME/..., absolute) to the
   // virtual mount root "/" before parsing — same step Claude / Codex run.
   const rewritten = rewritePaths(command);
+
+  // Graph VFS dispatch — a cat/head/tail/ls on the `/graph/*` subtree is
+  // answered from the local snapshot (synthesized text), no SQL, no disk.
+  // Must run BEFORE parseBashGrep: a `cat /graph/find/foo` isn't a grep and
+  // would otherwise fall through and leave Cursor blind to the graph (the
+  // exact gap that made Cursor silently lack graph queries). See
+  // src/graph/graph-command.ts (shared with the Claude Code intercept).
+  const graphBody = tryGraphRead(rewritten, input.cwd ?? process.cwd());
+  if (graphBody !== null) {
+    log(`graph vfs intercept: ${command.slice(0, 80)}`);
+    const echoCmd = `cat <<'__HIVEMIND_RESULT__'\n${graphBody}\n__HIVEMIND_RESULT__`;
+    process.stdout.write(JSON.stringify({
+      permission: "allow",
+      updated_input: { command: echoCmd },
+      agent_message: "[Hivemind graph]",
+    }));
+    return;
+  }
 
   const grepParams = parseBashGrep(rewritten);
   if (!grepParams) return; // not a grep/rg invocation we can handle directly

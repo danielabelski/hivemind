@@ -134,6 +134,10 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
+  // A1 (graph Cursor parity): same auto-build hook as Claude Code, wired
+  // to Cursor's stop + sessionEnd events in install-cursor.ts. Reuses the
+  // shared src/hooks/graph-on-stop.ts entry (no per-agent logic).
+  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -176,6 +180,12 @@ await build({
     "onnxruntime-node",
     "onnxruntime-common",
     "sharp",
+    // graph-on-stop transitively imports the tree-sitter native parser
+    // (via runBuildCommand → extractTypeScript); same externalization as
+    // the Claude Code bundle. Native .node prebuilds resolve from
+    // node_modules at runtime.
+    "tree-sitter",
+    "tree-sitter-typescript",
   ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),

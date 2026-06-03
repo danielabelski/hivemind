@@ -36,6 +36,7 @@ import { autoUpdate } from "../shared/autoupdate.js";
 import { autoPullSkills } from "../../skillify/auto-pull.js";
 import { GOALS_INSTRUCTIONS_CLI } from "../shared/goals-instructions.js";
 import { spawnGraphPullWorker } from "../../graph/spawn-pull-worker.js";
+import { graphContextLine } from "../../graph/session-context.js";
 const log = (msg: string) => _log("cursor-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -236,9 +237,19 @@ async function main(): Promise<void> {
   // shell commands. Same end state (rows in hivemind_goals /
   // hivemind_kpis), different code path inside the agent.
   const baseWithGoals = creds?.token ? `${baseContext}\n\n${GOALS_INSTRUCTIONS_CLI}` : baseContext;
-  const additionalContext = rulesBlock
+  const withRules = rulesBlock
     ? `${baseWithGoals}\n\n${rulesBlock}`
     : baseWithGoals;
+
+  // Local code graph context (Phase 3 v1.1) — same inject Claude Code emits
+  // (src/hooks/session-start.ts). Cheap: reads ~/.hivemind/.../​.last-build.json,
+  // never parses the ~1 MB snapshot. Returns null when no graph exists for
+  // this repo, in which case we append nothing. Without this, Cursor never
+  // told the agent the graph existed — the silent gap A3 closes.
+  const graphLine = graphContextLine(resolveCwd(input));
+  const additionalContext = graphLine
+    ? `${withRules}\n${graphLine}`
+    : withRules;
 
   console.log(JSON.stringify({ additional_context: additionalContext }));
 }

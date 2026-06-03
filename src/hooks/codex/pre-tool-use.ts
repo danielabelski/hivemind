@@ -22,6 +22,7 @@ import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
+import { tryGraphRead } from "../../graph/graph-command.js";
 import { executeCompiledBashCommand } from "../bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -144,6 +145,16 @@ export async function processCodexPreToolUse(
   if (!touchesMemory(cmd)) return { action: "pass" };
 
   const rewritten = rewritePaths(cmd);
+
+  // Graph VFS dispatch — a cat/head/tail/ls on the `/graph/*` subtree is
+  // answered from the local snapshot, no SQL, no config needed. Runs before
+  // the isSafe/grep/shell handling. Shared parser: src/graph/graph-command.ts.
+  const graphBody = tryGraphRead(rewritten, input.cwd ?? process.cwd());
+  if (graphBody !== null) {
+    logFn(`graph vfs intercept: ${rewritten}`);
+    return { action: "block", output: graphBody, rewrittenCommand: rewritten };
+  }
+
   if (!isSafe(rewritten)) {
     const guidance = buildUnsupportedGuidance();
     logFn(`unsupported command, returning guidance: ${rewritten}`);

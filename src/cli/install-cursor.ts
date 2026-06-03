@@ -50,8 +50,12 @@ function buildHookConfig(): Record<string, CursorHookEntry[]> {
     preToolUse: [buildHookCmdShellMatcher("pre-tool-use.js", 30)],
     postToolUse: [buildHookCmd("capture.js", 15)],
     afterAgentResponse: [buildHookCmd("capture.js", 15)],
-    stop: [buildHookCmd("capture.js", 15)],
-    sessionEnd: [buildHookCmd("session-end.js", 30)],
+    // graph-on-stop: auto-build the code graph (A1 Cursor parity). Same hook
+    // Claude Code registers under Stop + SessionEnd. It's gated (rate limit +
+    // HEAD-changed + source-diff) so the common path is a ~5ms skip, and runs
+    // async so it never blocks Cursor.
+    stop: [buildHookCmd("capture.js", 15), buildHookCmd("graph-on-stop.js", 30)],
+    sessionEnd: [buildHookCmd("session-end.js", 30), buildHookCmd("graph-on-stop.js", 30)],
   };
 }
 
