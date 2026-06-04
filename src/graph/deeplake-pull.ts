@@ -161,6 +161,13 @@ export async function pullSnapshot(
   } catch (err) {
     return errorOutcome("parse cloud snapshot", err);
   }
+  // JSON.parse accepts `null` and primitives ("null"/"5"/"true" → null/5/true),
+  // none of which are valid snapshots. Guard for a non-null object BEFORE the
+  // property access below, so a malformed payload returns the documented error
+  // outcome instead of throwing TypeError on `null.nodes` (CodeRabbit).
+  if (parsedSnapshot === null || typeof parsedSnapshot !== "object") {
+    return errorOutcome("parse cloud snapshot", new Error("snapshot not an object"));
+  }
   if (!Array.isArray((parsedSnapshot as { nodes?: unknown }).nodes) ||
       !Array.isArray((parsedSnapshot as { links?: unknown }).links)) {
     return errorOutcome("parse cloud snapshot", new Error("snapshot missing nodes/links arrays"));

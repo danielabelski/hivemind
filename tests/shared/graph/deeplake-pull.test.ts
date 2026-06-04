@@ -484,6 +484,29 @@ describe("pullSnapshot — error paths", () => {
     expect(result.kind).toBe("error");
     expect(existsSync(join(baseDir, "snapshots", "head1234abcd.json"))).toBe(false);
   });
+
+  // CodeRabbit: a cloud snapshot_jsonb holding the literal string "null"
+  // JSON.parses to `null`. Without the non-object guard, `null.nodes` throws
+  // TypeError (uncaught) instead of returning the documented error outcome.
+  it("snapshot_jsonb is the string 'null' → error outcome (no throw, no files)", async () => {
+    const { api } = makeMockApi({
+      selectReturns: [{
+        snapshot_jsonb: "null",
+        snapshot_sha256: "whatever",
+        ts: "2026-05-21T00:00:00Z",
+        node_count: 0, edge_count: 0,
+        worktree_id: "remote-wt",
+      }],
+    });
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig,
+      readHead: () => "head1234abcd",
+      makeApi: () => api,
+    });
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.message).toContain("snapshot not an object");
+    expect(existsSync(join(baseDir, "snapshots", "head1234abcd.json"))).toBe(false);
+  });
 });
 
 describe("pullSnapshot — ts coercion", () => {
