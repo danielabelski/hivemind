@@ -25,8 +25,8 @@ const invRow = (skill: string, sid: string) => ({
 });
 const transcript = (skill: string, sid: string, pushback: boolean) => [
   { message: { type: "user_message", content: "do it" } },
-  { message: { type: "assistant_message", content: "done (mocked)" } },
   { message: { type: "tool_call", tool_name: "Skill", tool_input: JSON.stringify({ skill }), timestamp: sid } },
+  { message: { type: "assistant_message", content: "done (mocked)" } },
   { message: { type: "user_message", content: pushback ? "no that's wrong, it mocks the client" : "looks good thanks" } },
 ];
 

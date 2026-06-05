@@ -55,6 +55,10 @@ export function invokedSkillRef(msg: ParsedMsg): string | null {
 /** Split "<name>--<author>" → parts. null for plugin-namespaced / bare / malformed refs. */
 export function splitOrgSkill(skill: string): { name: string; author: string } | null {
   if (skill.includes(":")) return null; // plugin-namespaced (e.g. hivemind:hivemind-memory)
+  // name/author are used to build filesystem paths (skills dir, proposals dir), so a
+  // captured tool_input must not smuggle path separators / traversal — same untrusted
+  // treatment the pull path applies to these segments.
+  if (skill.includes("/") || skill.includes("\\") || skill.includes("..")) return null;
   const i = skill.lastIndexOf("--");
   if (i <= 0 || i + 2 >= skill.length) return null; // bare or malformed
   return { name: skill.slice(0, i), author: skill.slice(i + 2) };
@@ -140,16 +144,25 @@ async function sessionTurns(
  * turns after — where the help-or-harm signal lives — head+tail elided to maxChars.
  * `before`/`after` are tunable; defaults chosen as a small starting point.
  */
+/** A windowed slice plus `pivot` = the index in `turns` of the first POST-invocation
+ * turn (turns before it are the pre-invocation context — kept for the judge, but the
+ * anchor must not scan them, or a prior correction gets misattributed to this skill). */
+export interface WindowSlice {
+  turns: Turn[];
+  pivot: number;
+}
+
 export async function windowedTurns(
   query: QueryFn,
   sessionsTable: string,
   inv: SkillInvocation,
   opts: { before?: number; after?: number } = {},
-): Promise<Turn[]> {
+): Promise<WindowSlice> {
   const before = opts.before ?? 3;
   const after = opts.after ?? 6;
   const { turns, invIndex } = await sessionTurns(query, sessionsTable, inv);
-  return turns.slice(Math.max(0, invIndex - before), invIndex + after);
+  const start = Math.max(0, invIndex - before);
+  return { turns: turns.slice(start, invIndex + after), pivot: invIndex - start };
 }
 
 /** Head+tail elide a string to maxChars (so a pasted log/diff can't blow a prompt). */
@@ -166,6 +179,6 @@ export async function windowAroundInvocation(
   inv: SkillInvocation,
   opts: { before?: number; after?: number; maxChars?: number } = {},
 ): Promise<string> {
-  const slice = await windowedTurns(query, sessionsTable, inv, opts);
-  return elide(slice.map((t) => `${t.role}: ${t.text}`).join("\n\n"), opts.maxChars ?? 4000);
+  const { turns } = await windowedTurns(query, sessionsTable, inv, opts);
+  return elide(turns.map((t) => `${t.role}: ${t.text}`).join("\n\n"), opts.maxChars ?? 4000);
 }

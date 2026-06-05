@@ -39,6 +39,12 @@ describe("splitOrgSkill", () => {
     expect(splitOrgSkill("update-config")).toBeNull();            // bare
     expect(splitOrgSkill("baz--")).toBeNull();                    // empty author
   });
+  it("rejects refs with path separators / traversal (no path escape)", () => {
+    expect(splitOrgSkill("../../etc--x")).toBeNull();
+    expect(splitOrgSkill("ok--..%2f")).toBeNull();   // contains ..
+    expect(splitOrgSkill("a/b--c")).toBeNull();      // separator
+    expect(splitOrgSkill("a--b/c")).toBeNull();      // separator in author
+  });
 });
 
 describe("listSkillInvocations", () => {

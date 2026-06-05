@@ -39,6 +39,14 @@ describe("detectAnchor", () => {
     expect(detectAnchor([a("done"), u("perfect start, but that's still wrong")]).anchored).toBe(true);
   });
 
+  it("ignores PRE-invocation pushback (fromIndex) — no misattribution to a repair-attempt skill", () => {
+    // turns: [a, USER pushback (pre-invocation), a (skill output), USER ok] — pivot=2
+    const turns = [a("attempt 1"), u("no that's wrong"), a("retried with the skill"), u("looks good")];
+    expect(detectAnchor(turns, 2).anchored).toBe(false); // the pre-invocation correction is not scanned
+    // a genuine POST-invocation pushback still fires
+    expect(detectAnchor([a("attempt 1"), u("no wrong"), a("fixed"), u("still failing")], 2).anchored).toBe(true);
+  });
+
   it("returns none when the user is satisfied / silent", () => {
     expect(detectAnchor([u("do X"), a("done")]).anchored).toBe(false);
     expect(detectAnchor([]).anchored).toBe(false);

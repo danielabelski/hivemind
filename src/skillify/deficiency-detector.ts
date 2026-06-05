@@ -61,8 +61,8 @@ export async function scoreInvocations(
   let confirmed = 0;
   const examples: string[] = [];
   for (const inv of invocations) {
-    const turns = await windowedTurns(query, sessionsTable, inv, cfg.window);
-    const anchor = detectAnchor(turns);
+    const { turns, pivot } = await windowedTurns(query, sessionsTable, inv, cfg.window);
+    const anchor = detectAnchor(turns, pivot); // anchor only on post-invocation reaction
     if (!anchor.anchored) continue; // free filter — no judge call
     anchored++;
     const window = elide(turns.map((t) => `${t.role}: ${t.text}`).join("\n\n"), cfg.window?.maxChars ?? 4000);

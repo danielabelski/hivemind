@@ -29,15 +29,18 @@ const AMBIGUOUS = /\b(no|nope)\b/i;
 const BENIGN = /\b(no (problem|worries|need|biggie)|no,? thanks|all good|works? (now|great|fine|perfectly)|that works|perfect|looks good)\b/i;
 
 /**
- * Detect a correction anchor in a windowed slice of turns. Only a USER turn that
- * immediately follows an ASSISTANT turn can be pushback (the first user turn is
- * the request, not a reaction). Recall-oriented: a strong correction phrase fires
- * regardless of polite framing; only the bare "no" is benign-gated.
+ * Detect a correction anchor in a windowed slice of turns. A pushback is a USER turn
+ * reacting to an ASSISTANT turn — and BOTH must be POST-invocation (index ≥ fromIndex),
+ * so a correction that happened BEFORE the skill ran (e.g. the skill was a repair
+ * attempt) isn't misattributed to this skill. fromIndex defaults to 0 (scan all).
+ * Recall-oriented: a strong correction fires regardless of polite framing; only the
+ * bare "no" is benign-gated.
  */
-export function detectAnchor(turns: Turn[]): Anchor {
-  for (let i = 1; i < turns.length; i++) {
+export function detectAnchor(turns: Turn[], fromIndex = 0): Anchor {
+  for (let i = Math.max(1, fromIndex); i < turns.length; i++) {
     const t = turns[i];
     if (t.role !== "USER" || turns[i - 1].role !== "ASSISTANT") continue;
+    if (i - 1 < fromIndex) continue; // the assistant being reacted to must be post-invocation
     const anchored = STRONG.test(t.text) || (AMBIGUOUS.test(t.text) && !BENIGN.test(t.text));
     if (anchored) {
       return { anchored: true, kind: "correction", evidence: t.text.slice(0, 200) };
