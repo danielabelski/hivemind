@@ -180,6 +180,6 @@ describe("cold-start-brief filesystem paths", () => {
     const { pickColdStartBrief } = await import("../../src/notifications/sources/cold-start-brief.js");
     // Just assert it doesn't throw and returns something or null (we can't guarantee
     // signal strength, but the code path through readHeadTail's tail branch runs).
-    await expect(pickColdStartBrief({ token: "t" } as never)).resolves.not.toThrow();
+    await expect(pickColdStartBrief({ token: "t" } as never)).resolves.toBeDefined();
   });
 });

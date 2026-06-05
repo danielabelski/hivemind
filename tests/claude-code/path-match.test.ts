@@ -96,7 +96,7 @@ describe("extractMemoryOp", () => {
   describe("tilde expansion in memoryPath", () => {
     it("expands tilde in the memoryPath argument itself", () => {
       const op = extractMemoryOp("Read", { file_path: `${HOME}/.deeplake/memory/x.md` }, "~/.deeplake/memory");
-      expect(op?.op).toBe("read");
+      expect(op).toEqual({ path: `${HOME}/.deeplake/memory/x.md`, op: "read" });
     });
   });
 });

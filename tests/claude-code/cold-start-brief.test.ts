@@ -272,13 +272,12 @@ describe("renderBrief", () => {
 
   it("returns authed copy when authed=true and signal is not quiet", () => {
     const result = renderBrief([session], { kind: "recall", description: "x", project: "p", count: 3 }, true);
-    expect(result).toContain("found context");
-    expect(result).not.toContain("Sign in");
+    expect(result).toBe("I found context from your recent sessions — from now on I'll keep it, so your next session picks up where you left off.");
   });
 
   it("returns anonymous copy when authed=false and signal is not quiet", () => {
     const result = renderBrief([session], { kind: "recall", description: "x", project: "p", count: 3 }, false);
-    expect(result).toContain("Sign in");
+    expect(result).toBe("I found context from your recent sessions. Sign in to save it, so future sessions start with what you've already learned.");
   });
 
   it("returns null when signal kind is quiet", () => {
