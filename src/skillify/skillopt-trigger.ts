@@ -16,8 +16,18 @@ import { fileURLToPath } from "node:url";
 import { log as _log } from "../utils/debug.js";
 import { getStateDir } from "./state-dir.js";
 import { tryAcquireWorkerLock, releaseWorkerLock } from "./state.js";
+import { loadConfig } from "../config.js";
 
 const log = (m: string) => _log("skillopt-trigger", m);
+
+/**
+ * Fire-gate: the worker queries Deeplake via loadConfig(), which accepts both the
+ * credentials file AND env creds (HIVEMIND_TOKEN/HIVEMIND_ORG_ID). Use the SAME check
+ * here so we neither skip env-cred users forever nor stamp on a malformed token-only file.
+ */
+function defaultHasCreds(): boolean {
+  try { return Boolean(loadConfig()?.token); } catch { return false; }
+}
 
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** Cross-process lock key arbitrating the weekly fire (see runWeeklySkillOpt). */
@@ -81,11 +91,12 @@ export interface FireDeps {
   tryLock?: () => boolean;            // cross-process arbiter; default: real worker lock
   releaseLock?: () => void;          // default: release the real worker lock
   reload?: () => SkillOptState;      // fresh state re-read INSIDE the lock; default: loadState
+  canFire?: () => boolean;           // gate before stamping; default: creds present
 }
 
 export interface FireResult {
   fired: boolean;
-  reason?: "disabled" | "in-worker" | "throttled" | "locked" | "spawned";
+  reason?: "disabled" | "in-worker" | "throttled" | "locked" | "no-creds" | "spawned";
 }
 
 /**
@@ -101,6 +112,10 @@ export function runWeeklySkillOpt(deps: FireDeps = {}): FireResult {
   const state = deps.state ?? loadState();
   // Cheap pre-lock check: skip the lock entirely when clearly throttled.
   if (!shouldFire(state.lastRun, now)) return { fired: false, reason: "throttled" };
+
+  // Don't burn the weekly throttle when logged out — stamping lastRun before the
+  // worker confirms creds would skip a user who logs in shortly after until next week.
+  if (!(deps.canFire ?? defaultHasCreds)()) return { fired: false, reason: "no-creds" };
 
   // Cross-process arbiter: two SessionStart hooks racing at the weekly boundary
   // could both pass the throttle and spawn duplicate workers (doubling user-side
