@@ -68,10 +68,11 @@ export function splitOrgSkill(skill: string): { name: string; author: string } |
 export async function listSkillInvocations(
   query: QueryFn,
   sessionsTable: string,
-  opts: { sinceIso?: string; limit?: number } = {},
+  opts: { sinceIso?: string; untilIso?: string; limit?: number } = {},
 ): Promise<SkillInvocation[]> {
   const where = [`CAST(message AS TEXT) LIKE '%"Skill"%'`];
   if (opts.sinceIso) where.push(`last_update_date >= '${sqlStr(opts.sinceIso)}'`);
+  if (opts.untilIso) where.push(`last_update_date < '${sqlStr(opts.untilIso)}'`);
   const limit = opts.limit && opts.limit > 0 ? ` LIMIT ${Math.floor(opts.limit)}` : "";
   const rows = await query(
     `SELECT message, last_update_date FROM "${sessionsTable}" WHERE ${where.join(" AND ")} ORDER BY last_update_date DESC${limit}`,

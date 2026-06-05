@@ -41,6 +41,40 @@ export interface DetectorConfig {
 
 const skillKey = (name: string, author: string) => `${name}--${author}`;
 
+export interface ScoreConfig {
+  window?: { before?: number; after?: number; maxChars?: number };
+  judge?: ModelCall;
+}
+
+/**
+ * Score a set of invocations: window each, run the free anchor, and judge ONLY the
+ * anchored ones. Shared by the detector (per-skill deficiency) and the edit gate
+ * (a skill's failure rate in a time window).
+ */
+export async function scoreInvocations(
+  query: QueryFn,
+  sessionsTable: string,
+  invocations: SkillInvocation[],
+  cfg: ScoreConfig = {},
+): Promise<{ anchored: number; confirmed: number; examples: string[] }> {
+  let anchored = 0;
+  let confirmed = 0;
+  const examples: string[] = [];
+  for (const inv of invocations) {
+    const turns = await windowedTurns(query, sessionsTable, inv, cfg.window);
+    const anchor = detectAnchor(turns);
+    if (!anchor.anchored) continue; // free filter — no judge call
+    anchored++;
+    const window = turns.map((t) => `${t.role}: ${t.text}`).join("\n\n");
+    const verdict = await judgeSuccess(window, { model: cfg.judge });
+    if (verdict.success === 0) {
+      confirmed++;
+      if (examples.length < 3) examples.push(verdict.reason || anchor.evidence);
+    }
+  }
+  return { anchored, confirmed, examples };
+}
+
 export interface DetectionResult {
   skills: SkillDeficiency[];
   deficientCount: number;
@@ -65,21 +99,7 @@ export async function detectDeficientSkills(
 
   const skills: SkillDeficiency[] = [];
   for (const list of groups.values()) {
-    let anchored = 0;
-    let confirmed = 0;
-    const examples: string[] = [];
-    for (const inv of list) {
-      const turns = await windowedTurns(query, sessionsTable, inv, cfg.window);
-      const anchor = detectAnchor(turns);
-      if (!anchor.anchored) continue;          // free filter — no judge call
-      anchored++;
-      const window = turns.map((t) => `${t.role}: ${t.text}`).join("\n\n");
-      const verdict = await judgeSuccess(window, { model: cfg.judge });
-      if (verdict.success === 0) {             // confirmed: anchor AND judge agree
-        confirmed++;
-        if (examples.length < 3) examples.push(verdict.reason || anchor.evidence);
-      }
-    }
+    const { anchored, confirmed, examples } = await scoreInvocations(query, sessionsTable, list, cfg);
     const failureRate = list.length ? confirmed / list.length : 0;
     skills.push({
       name: list[0].name,
