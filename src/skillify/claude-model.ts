@@ -9,7 +9,14 @@ import { spawn } from "node:child_process";
 /** (systemPrompt, userPrompt) -> raw model text. */
 export type ModelCall = (systemPrompt: string, userPrompt: string) => Promise<string>;
 
-const DENY = ["Bash", "Edit", "Write", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Task"];
+// Deny EVERY write/exec/network tool — the judge & proposer get untrusted captured
+// transcript text in their prompts, so a prompt-injected failure example must not be
+// able to act. Enumerate the write-capable ones (MultiEdit/NotebookEdit/TodoWrite)
+// too, not just the obvious Edit/Write.
+const DENY = [
+  "Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep",
+  "WebFetch", "WebSearch", "Task", "TodoWrite",
+];
 
 export function claudeModel(model: string, opts: { timeoutMs?: number } = {}): ModelCall {
   const timeoutMs = opts.timeoutMs ?? 120_000;
