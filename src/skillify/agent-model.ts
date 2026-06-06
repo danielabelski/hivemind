@@ -62,6 +62,11 @@ const DISPATCH: Record<Agent, AgentDispatch> = {
   hermes: {
     // -z oneshot via the user's provider; --ignore-user-config drops user MCP/skills,
     // so an explicit -m/--provider is required (matches the wiki worker's defaults).
+    // NOTE: the openrouter-style default model below is only valid for openrouter.
+    // A user on another provider MUST set HIVEMIND_SKILLOPT_HERMES_PROVIDER + _MODEL
+    // to a valid id — e.g. AWS Bedrock needs an INFERENCE-PROFILE id like
+    // `us.anthropic.claude-haiku-4-5-20251001-v1:0` (a bare model id, or a legacy
+    // one, is rejected by Bedrock and hermes swallows the error → empty output).
     buildArgs: (model, provider, system, user) => [
       "-z", fold(system, user),
       "--provider", provider ?? "openrouter",
@@ -136,7 +141,15 @@ export function agentModel(opts: {
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) return reject(new Error(`${opts.agent} exit ${code}: ${err.slice(0, 200)}`));
-      resolve(d.parse(out));
+      const text = d.parse(out);
+      // Some agents exit 0 with EMPTY stdout while swallowing a provider error —
+      // e.g. hermes on a dead/legacy Bedrock model writes the error to a dump file
+      // and prints nothing. Treat empty as a failure so a misconfigured scorer
+      // surfaces loudly (the caller catches → safe no-op: judge stays conservative,
+      // proposer reports a failed call) instead of silently resolving "" into an
+      // "unparseable verdict" / no edits forever.
+      if (!text.trim()) return reject(new Error(`${opts.agent} returned empty output (exit 0) — misconfigured provider/model?`));
+      resolve(text);
     });
   });
 }

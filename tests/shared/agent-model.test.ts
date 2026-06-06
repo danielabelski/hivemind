@@ -35,7 +35,7 @@ describe("agentModel — per-agent no-tools dispatch", () => {
   });
 
   it("claude_code proposer defaults to a capable model (sonnet)", async () => {
-    const { spawnImpl, calls } = fakeSpawn('[]');
+    const { spawnImpl, calls } = fakeSpawn(JSON.stringify({ result: "[]" }));
     await agentModel({ agent: "claude_code", role: "proposer", bin: "/x/claude", spawnImpl })("S", "U");
     expect(argVal(calls[0].args, "--model")).toBe("sonnet");
   });
@@ -92,6 +92,13 @@ describe("agentModel — per-agent no-tools dispatch", () => {
     const { spawnImpl } = fakeSpawn("boom", 1);
     await expect(agentModel({ agent: "claude_code", role: "judge", bin: "/x/claude", spawnImpl })("S", "U"))
       .rejects.toThrow(/exit 1/);
+  });
+
+  it("rejects on empty stdout at exit 0 (misconfigured provider surfaces loudly, not silently)", async () => {
+    // hermes on a dead Bedrock model exits 0 with blank stdout, swallowing the error.
+    const { spawnImpl } = fakeSpawn("   \n", 0);
+    await expect(agentModel({ agent: "hermes", role: "judge", bin: "/x/hermes", spawnImpl })("S", "U"))
+      .rejects.toThrow(/empty output/);
   });
 });
 
