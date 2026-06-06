@@ -125,8 +125,11 @@ describe("handleGraphVfs", () => {
       // top files: src/a.ts has 2 nodes, src/b.ts has 2
       expect(r.body).toMatch(/2\s+src\/a\.ts/);
       expect(r.body).toMatch(/2\s+src\/b\.ts/);
-      // Limitations must mention intra-file caveat (the codex insight)
-      expect(r.body).toContain("intra-file only");
+      // Limitations now reflect cross-file resolution + multi-language (live-test fix):
+      // no longer claims "intra-file only" or "TypeScript only".
+      expect(r.body).not.toContain("intra-file only");
+      expect(r.body).toContain("Cross-file");
+      expect(r.body).toContain("TypeScript / JavaScript / Python");
     }
   });
 
@@ -155,6 +158,50 @@ describe("handleGraphVfs", () => {
       const between = r.body.slice(idx1, idx2);
       expect(between).toContain("src/a.ts:foo:function");
     }
+  });
+
+  it("find multi-token (D1) ANDs the tokens: foo+helper matches only fooHelper", () => {
+    seed();
+    const r = handleGraphVfs("find/foo+helper", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      // fooHelper's id contains both "foo" and "helper".
+      expect(r.body).toContain("src/b.ts:fooHelper:function");
+      // plain foo (src/a.ts:foo) lacks "helper" → excluded.
+      expect(r.body).not.toContain("src/a.ts:foo:function");
+      expect(r.body).toContain("1 match");
+    }
+  });
+
+  it("find multi-token tolerates whitespace separator too", () => {
+    seed();
+    const r = handleGraphVfs("find/foo helper", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("src/b.ts:fooHelper:function");
+  });
+
+  it("find fuzzy fallback (D3): a typo with no substring hit suggests the close symbol", () => {
+    seed();
+    // "usermdel" is not a substring of any node, but it's edit-distance 1 from
+    // "usermodel" (UserModel lowercased) → fuzzy fallback surfaces it.
+    const r = handleGraphVfs("find/usermdel", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("src/b.ts:UserModel:class");
+  });
+
+  it("find fuzzy does NOT trigger when an exact substring match exists", () => {
+    seed();
+    // 'foo' has substring hits (foo, fooHelper); fuzzy must not add unrelated nodes.
+    const r = handleGraphVfs("find/foo", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).not.toContain("UserModel");
+  });
+
+  it("find on a pattern with no substring and no near match → No matches", () => {
+    seed();
+    const r = handleGraphVfs("find/zzqqxx", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("No matches");
   });
 
   it("find on empty pattern → not-found with guidance", () => {
@@ -249,17 +296,16 @@ describe("handleGraphVfs", () => {
     if (r.kind === "ok") expect(r.body).toContain("No node matches");
   });
 
-  it("node detail surfaces the intra-file caveat when incoming=0", () => {
-    // fooHelper has no incoming edges in our fixture (no caller in src/b.ts;
-    // even if src/a.ts:foo called it, Phase 1 doesn't resolve cross-file
-    // calls — that's exactly the caveat we want to surface to the agent).
+  it("node detail surfaces the not-proof-of-dead-code caveat when incoming=0", () => {
+    // fooHelper has no incoming edges in this fixture. Cross-file resolution is
+    // partial (bare/aliased/dynamic imports stay unresolved), so "Incoming (0)"
+    // is not proof of dead code — that's the caveat we surface to the agent.
     seed();
     const r = handleGraphVfs("show/fooHelper", cwd);
     expect(r.kind).toBe("ok");
     if (r.kind === "ok") {
       expect(r.body).toContain("Incoming (0)");
-      expect(r.body).toContain("intra-file only");
-      expect(r.body).toContain("may still be called from other files");
+      expect(r.body).toContain("not proof of dead code");
     }
   });
 
@@ -293,6 +339,171 @@ describe("handleGraphVfs", () => {
       expect(r.body).toContain("index.md");
       expect(r.body).toContain("find/");
       expect(r.body).toContain("show/");
+      // M-render endpoints advertised in the listing
+      expect(r.body).toContain("query/");
+      expect(r.body).toContain("neighborhood/");
+      expect(r.body).toContain("layers");
+      expect(r.body).toContain("tour");
+      expect(r.body).toContain("path/");
+    }
+  });
+
+  // ── query/ one-shot (C1) ──────────────────────────────────────────────
+
+  it("query/<pattern> expands top matches with 1-hop neighbors", () => {
+    seed();
+    const r = handleGraphVfs("query/foo", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain('Query "foo"');
+      expect(r.body).toContain("src/a.ts:foo:function");
+      // foo calls bar in the fixture → an OUT calls hop is shown
+      expect(r.body).toMatch(/--calls-->/);
+    }
+  });
+
+  it("query/ with no pattern → not-found", () => {
+    const r = handleGraphVfs("query/", cwd);
+    expect(r.kind).toBe("not-found");
+  });
+
+  it("query/ dedups repeated neighbors with a ×N count (not listed N times)", () => {
+    // Seed a snapshot where foo calls bar THREE times (multigraph).
+    mkdirSync(snapshotsDir, { recursive: true });
+    const snap = makeSnapshot("c9");
+    snap.links = [
+      { source: "src/a.ts:foo:function", target: "src/a.ts:bar:function", relation: "calls", confidence: "EXTRACTED", ord: 0 },
+      { source: "src/a.ts:foo:function", target: "src/a.ts:bar:function", relation: "calls", confidence: "EXTRACTED", ord: 1 },
+      { source: "src/a.ts:foo:function", target: "src/a.ts:bar:function", relation: "calls", confidence: "EXTRACTED", ord: 2 },
+    ];
+    writeFileSync(join(snapshotsDir, "c9.json"), JSON.stringify(snap));
+    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "c9", snapshot_sha256: "9".repeat(64), node_count: snap.nodes.length, edge_count: 3 }, wt);
+    const r = handleGraphVfs("query/foo", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain("src/a.ts:bar:function ×3");
+      // not listed three separate times
+      expect((r.body.match(/src\/a\.ts:bar:function/g) ?? []).length).toBe(1);
+    }
+  });
+
+  it("query/ saves handles so a follow-up show/<N> resolves", () => {
+    seed();
+    handleGraphVfs("query/foo", cwd);
+    const r = handleGraphVfs("show/1", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("Node:");
+  });
+
+  it("query/ on no match returns a friendly message", () => {
+    seed();
+    const r = handleGraphVfs("query/zzznomatch", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("No matches");
+  });
+
+  // ── impact/ blast radius (B5) ─────────────────────────────────────────
+
+  it("impact/<pattern> lists dependents (foo calls bar → bar's impact includes foo)", () => {
+    seed();
+    const r = handleGraphVfs("impact/bar", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain("Impact of src/a.ts:bar:function");
+      expect(r.body).toContain("src/a.ts:foo:function"); // foo depends on bar
+    }
+  });
+
+  it("impact/ with no pattern → not-found", () => {
+    const r = handleGraphVfs("impact/", cwd);
+    expect(r.kind).toBe("not-found");
+  });
+
+  it("impact/ on a symbol nothing depends on reports zero dependents", () => {
+    seed();
+    // "a.ts:foo:" uniquely matches src/a.ts:foo:function (not fooHelper); nothing calls foo.
+    const r = handleGraphVfs("impact/a.ts:foo:", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).toContain("No resolved dependents");
+  });
+
+  // ── render endpoints (team graph-render) ──────────────────────────────
+  // These prove the dispatcher routes the new subpaths to the render
+  // modules; the modules' own logic is covered by their unit tests.
+
+  it("neighborhood/<file> renders symbols + cross-file neighbors", () => {
+    seed();
+    const r = handleGraphVfs("neighborhood/src/a.ts", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain("Symbols in src/a.ts");
+      expect(r.body).toContain("foo");
+    }
+  });
+
+  it("neighborhood/ with no file → not-found", () => {
+    const r = handleGraphVfs("neighborhood/", cwd);
+    expect(r.kind).toBe("not-found");
+  });
+
+  it("layers renders the architectural grouping", () => {
+    seed();
+    const r = handleGraphVfs("layers", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body.toLowerCase()).toContain("layer");
+  });
+
+  it("tour renders a dependency-ordered walkthrough", () => {
+    seed();
+    const r = handleGraphVfs("tour", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body.toLowerCase()).toContain("tour");
+  });
+
+  it("path/<from>/<to> renders a path or a clear no-path/ambiguous message", () => {
+    seed();
+    const r = handleGraphVfs("path/foo/UserModel", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(typeof r.body).toBe("string");
+  });
+
+  it("path/ with a single pattern → not-found guidance", () => {
+    const r = handleGraphVfs("path/onlyone", cwd);
+    expect(r.kind).toBe("not-found");
+    if (r.kind === "not-found") expect(r.message).toContain("two patterns");
+  });
+
+  // ── codex review regressions on the render modules ────────────────────
+
+  it("tour: an exported node whose only incoming edge is from an UNRESOLVED source stays an entry point", () => {
+    // Seed a custom snapshot: src/a.ts:foo is exported, its only incoming edge
+    // comes from an id NOT in nodes[] (an external/unresolved caller).
+    mkdirSync(snapshotsDir, { recursive: true });
+    const snap = makeSnapshot("c1");
+    snap.links = [{ source: "external:ghost:function", target: "src/a.ts:foo:function", relation: "calls", confidence: "EXTRACTED" }];
+    writeFileSync(join(snapshotsDir, "c1.json"), JSON.stringify(snap));
+    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "c1", snapshot_sha256: "z".repeat(64), node_count: snap.nodes.length, edge_count: 1 }, wt);
+    const r = handleGraphVfs("tour", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      // foo must appear under Entry points, not be suppressed by the phantom caller.
+      const entrySection = r.body.split("## Walkthrough")[0]!;
+      expect(entrySection).toContain("src/a.ts:foo:function");
+    }
+  });
+
+  it("neighborhood: an edge to an UNRESOLVED target is not reported as a cross-file neighbor", () => {
+    mkdirSync(snapshotsDir, { recursive: true });
+    const snap = makeSnapshot("c2");
+    // foo (in src/a.ts) imports an unresolved id — must NOT show as Outgoing cross-file.
+    snap.links = [{ source: "src/a.ts:foo:function", target: "external:lodash:module", relation: "imports", confidence: "EXTRACTED" }];
+    writeFileSync(join(snapshotsDir, "c2.json"), JSON.stringify(snap));
+    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "c2", snapshot_sha256: "w".repeat(64), node_count: snap.nodes.length, edge_count: 1 }, wt);
+    const r = handleGraphVfs("neighborhood/src/a.ts", cwd);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).not.toContain("external:lodash:module");
+      expect(r.body).toContain("Outgoing: (none)");
     }
   });
 });

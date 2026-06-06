@@ -83,13 +83,16 @@ describe("graphContextLine", () => {
     expect(line).toContain("built 2m ago");   // truncated formatAge
     // Snapshot path is keyed by commit_sha when present
     expect(line).toContain(join(snapshotsDir, "abc1234deadbeef.json"));
-    expect(line).toContain("TypeScript only, AST-based");
+    expect(line).toContain("TypeScript / JavaScript / Python, AST-based");
     // v1.1 inject restructured to point at the VFS subdir instead of
     // raw-snapshot-only guidance. New assertions:
     expect(line).toContain("~/.deeplake/memory/graph/find/<pattern>");
     expect(line).toContain("~/.deeplake/memory/graph/show/<handle-or-pattern>");
-    expect(line).toContain("no semantic edges yet");
-    expect(line).toContain("intra-file only");
+    expect(line).toContain("~/.deeplake/memory/graph/query/<pattern>"); // C7: primary entry advertised
+    // v1.2 reframe: graph positioned as a navigation INDEX, then Read the source.
+    expect(line).toContain("fast INDEX to locate");
+    // Cross-file resolution wording (replaces the old "intra-file only" caveat).
+    expect(line).toContain("Cross-file calls/imports resolved for named imports");
   });
 
   it("renders '?' for counts on legacy files without node_count/edge_count", () => {

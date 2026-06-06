@@ -25,8 +25,8 @@
  * truncate when rendering.
  *
  * Honest scope hints in the inject text:
- *   - "TypeScript only" — Phase 1 limitation, makes Claude not waste a Read
- *     on Python/Rust expecting to find them in the graph.
+ *   - language scope (TypeScript / JavaScript / Python) — makes Claude not
+ *     waste a Read on e.g. Rust/Go expecting to find them in the graph.
  *   - "AST-based" — call/import/reference edges; NOT semantic similarity.
  *     The semantic layer is a deliberate v1.2 follow-up.
  *   - "may be stale" — the graph is rebuilt at most once per
@@ -138,23 +138,26 @@ export function graphContextLine(cwd: string, deps: GraphContextDeps = {}): stri
 
   return [
     "",
-    "LOCAL CODE GRAPH (TypeScript only, AST-based):",
+    "LOCAL CODE GRAPH (TypeScript / JavaScript / Python, AST-based):",
     `  ${nodesStr} nodes, ${edgesStr} edges (commit ${commitStr}, built ${ageStr} ago)`,
     "",
-    "  Query via the Deeplake mount (intercepted — no real files on disk):",
-    "    cat ~/.deeplake/memory/graph/index.md",
-    "        Overview: node/edge counts, kind breakdown, top files.",
-    "    cat ~/.deeplake/memory/graph/find/<pattern>",
-    "        Case-insensitive substring search on node id + label.",
-    "        Emits numbered handles [1] [2] ... persisted per-worktree.",
-    "    cat ~/.deeplake/memory/graph/show/<handle-or-pattern>",
-    "        <handle>: digit from a prior `find/`. <pattern>: substring",
-    "        (unique → node detail; ambiguous → candidate list).",
-    "        Output: node + 1-hop incoming/outgoing edges grouped by kind.",
+    "  Use it as a fast INDEX to locate the few files/symbols that matter, then",
+    "  open them with Read to answer. It is NOT a substitute for the source: it",
+    "  omits instance-method calls (obj.method()), nested/inner functions, and",
+    "  dynamic dispatch — so confirm every claim against the file before stating it.",
     "",
+    "  Query via the Deeplake mount (intercepted — use `cat`, not `ls`):",
+    "    cat ~/.deeplake/memory/graph/query/<pattern>   ← start here",
+    "        search + 1-hop expand (callers, callees, imports). AND: query/<a>+<b>.",
+    "    cat ~/.deeplake/memory/graph/find/<pattern>     substring search → handles",
+    "    cat ~/.deeplake/memory/graph/show/<handle-or-pattern>   node + 1-hop neighbors",
+    "    cat ~/.deeplake/memory/graph/neighborhood/<file>        symbols + cross-file links",
+    "    Also: index.md · layers · tour · path/<from>/<to>",
+    "",
+    "  Then READ the files the graph points you to — don't answer from the graph",
+    "  alone. Cross-file calls/imports resolved for named imports across TS/JS/Python;",
+    "  bare (npm)/aliased/barrel/dynamic + instance-method dispatch stay unresolved.",
     `  Raw snapshot (fallback): ${snapshotPath}`,
-    "  Limitations: TypeScript only, AST only (no semantic edges yet),",
-    "    call edges intra-file only (cross-file resolution is Phase 1.5+).",
     staleness,
   ].join("\n");
 }

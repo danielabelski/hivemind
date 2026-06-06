@@ -25,6 +25,7 @@ import type {
   GraphNode,
   NodeKind,
   ParseError,
+  RawCall,
 } from "../types.js";
 
 /**
@@ -35,6 +36,8 @@ import type {
 interface TSNode {
   type: string;
   text: string;
+  /** Absolute byte offset of this node's start in the source (tree-sitter). */
+  startIndex: number;
   startPosition: { row: number; column: number };
   endPosition: { row: number; column: number };
   isError: boolean;
@@ -118,6 +121,8 @@ export function extractTypeScript(
     nodes: [],
     edges: [],
     parse_errors: [],
+    raw_calls: [],
+    import_bindings: [],
   };
 
   collectParseErrors(root, relativePath, result.parse_errors);
@@ -142,7 +147,21 @@ export function extractTypeScript(
   // in declByName. Skips when caller or callee is unresolved (Phase 1.5).
   extractCalls(root, relativePath, result, declByName);
 
+  // B7: label JavaScript files. The TS grammar is a superset so .js/.mjs/.cjs
+  // parse with the typescript grammar and .jsx with the tsx grammar (see
+  // pickParserForPath); only the reported `language` differs. makeNode hardcodes
+  // "typescript" for brevity, so remap once here for JS extensions.
+  if (isJavaScriptPath(relativePath)) {
+    result.language = "javascript";
+    for (const n of result.nodes) n.language = "javascript";
+  }
+
   return result;
+}
+
+/** True for JavaScript source extensions (.js/.jsx/.mjs/.cjs), false for TS. */
+function isJavaScriptPath(relativePath: string): boolean {
+  return /\.(jsx?|mjs|cjs)$/.test(relativePath);
 }
 
 // ─── Parse errors ──────────────────────────────────────────────────────────
@@ -364,6 +383,9 @@ function extractImports(
           relation: "imports",
           confidence: "EXTRACTED",
         });
+        // Phase 1.5: also record specifier-level bindings so the cross-file
+        // resolver can map a local call name back to its source module.
+        extractImportBindings(node, specifier, result);
       }
     }
     return; // import_statement has no nested declarations we care about
@@ -371,6 +393,63 @@ function extractImports(
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child !== null) extractImports(child, relativePath, result, moduleNode);
+  }
+}
+
+/**
+ * Parse an `import_statement`'s clause into ImportBindings. Handles:
+ *   import foo from "x"            → default  (local foo, imported "default")
+ *   import * as ns from "x"        → namespace(local ns,  imported "*")
+ *   import { a, b as c } from "x"  → named    (a→a, c→b)
+ *   import foo, { a } from "x"     → default + named
+ * Type-only imports and bare `import "x"` contribute no bindings.
+ */
+function extractImportBindings(
+  importStmt: TSNode,
+  specifier: string,
+  result: FileExtraction,
+): void {
+  // `import type { Foo } from "x"` is type-only for the WHOLE statement. We do
+  // NOT drop these: a type-only binding can't be a value call (calls
+  // resolution skips it) but IS the valid source for an extends/implements
+  // base (heritage resolution accepts it). tree-sitter keeps the `type`
+  // keyword as an unnamed child, so detect it from the statement text.
+  const stmtTypeOnly = /^import\s+type\b/.test(importStmt.text.trimStart());
+
+  const clause = firstNamedChildOfTypes(importStmt, ["import_clause"]);
+  if (clause === null) return; // bare `import "x"` — side-effect only
+  const push = (b: { local_name: string; imported_name: string; kind: "named" | "default" | "namespace"; type_only?: boolean }) => {
+    result.import_bindings!.push({ ...b, specifier });
+  };
+
+  for (let i = 0; i < clause.namedChildCount; i++) {
+    const child = clause.namedChild(i);
+    if (child === null) continue;
+    if (child.type === "identifier") {
+      // default import: `import foo from "x"`
+      push({ local_name: child.text, imported_name: "default", kind: "default", type_only: stmtTypeOnly });
+    } else if (child.type === "namespace_import") {
+      // `import * as ns from "x"`
+      const id = firstNamedChildOfTypes(child, ["identifier"]);
+      if (id !== null) push({ local_name: id.text, imported_name: "*", kind: "namespace", type_only: stmtTypeOnly });
+    } else if (child.type === "named_imports") {
+      // `import { a, b as c } from "x"`
+      for (let j = 0; j < child.namedChildCount; j++) {
+        const spec = child.namedChild(j);
+        if (spec === null || spec.type !== "import_specifier") continue;
+        // Per-specifier type-only (`import { type Foo }` / `type Foo as Bar`).
+        // NOT `import { type as value }`, which is a VALUE import of an export
+        // literally named `type` (the `as` after `type` means `type` is the
+        // imported name): negative-lookahead on `as`.
+        const specTypeOnly = stmtTypeOnly || /^type\s+(?!as\b)/.test(spec.text);
+        const nameNode = spec.childForFieldName("name");
+        const aliasNode = spec.childForFieldName("alias");
+        const imported = nameNode !== null ? nameNode.text : null;
+        if (imported === null) continue;
+        const local = aliasNode !== null ? aliasNode.text : imported;
+        push({ local_name: local, imported_name: imported, kind: "named", type_only: specTypeOnly });
+      }
+    }
   }
 }
 
@@ -385,22 +464,28 @@ function extractCalls(
   if (node.type === "call_expression") {
     const callee = node.childForFieldName("function");
     if (callee !== null) {
-      const calleeKey = resolveCalleeKey(callee, declByName);
-      if (calleeKey !== null) {
-        const targetNode = declByName.get(calleeKey);
+      const callerNode = findEnclosingDeclaration(node, declByName);
+      if (callerNode !== null) {
+        const calleeKey = resolveCalleeKey(callee, declByName);
+        const targetNode = calleeKey !== null ? declByName.get(calleeKey) : undefined;
         if (targetNode !== undefined) {
-          const callerNode = findEnclosingDeclaration(node, declByName);
-          if (callerNode !== null) {
-            // Self-recursion is a valid edge: `function topLevel(a) { return topLevel(a-1); }`
-            // emits topLevel --calls--> topLevel. The graph is a multigraph so even repeated
-            // calls between the same caller/callee remain distinct via `ord` if we ever need it.
-            result.edges.push({
-              source: callerNode.id,
-              target: targetNode.id,
-              relation: "calls",
-              confidence: "EXTRACTED",
-            });
-          }
+          // Resolved in THIS file → emit the intra-file edge directly.
+          // Self-recursion is a valid edge: `function f(a){ return f(a-1); }`
+          // emits f --calls--> f. The graph is a multigraph so repeated calls
+          // between the same pair remain distinct via `ord` if we ever need it.
+          result.edges.push({
+            source: callerNode.id,
+            target: targetNode.id,
+            relation: "calls",
+            confidence: "EXTRACTED",
+          });
+        } else {
+          // Not a same-file declaration → record a raw call so the cross-file
+          // resolver (src/graph/resolve/cross-file.ts) can try to bind it to an
+          // imported symbol. Only `foo()` and `ns.foo()` shapes are captured;
+          // `this.foo()` / `obj.foo()` are left to intra-file / future phases.
+          const rc = rawCallFromCallee(callee, callerNode.id);
+          if (rc !== null) result.raw_calls!.push(rc);
         }
       }
     }
@@ -409,6 +494,29 @@ function extractCalls(
     const child = node.namedChild(i);
     if (child !== null) extractCalls(child, relativePath, result, declByName);
   }
+}
+
+/**
+ * Build a RawCall from a call_expression's callee, for the cross-file pass.
+ * Returns null for shapes we don't cross-file resolve in Phase 1.5:
+ *   foo()        → { callee_name: "foo" }
+ *   ns.foo()     → { callee_name: "foo", receiver: "ns" }   (namespace import)
+ *   this.foo()   → null (intra-file only)
+ *   a.b.foo()    → null (chained / instance dispatch)
+ */
+function rawCallFromCallee(callee: TSNode, callerId: string): RawCall | null {
+  if (callee.type === "identifier") {
+    return { caller_id: callerId, callee_name: callee.text };
+  }
+  if (callee.type === "member_expression") {
+    const object = callee.childForFieldName("object");
+    const property = callee.childForFieldName("property");
+    if (object !== null && object.type === "identifier" &&
+        property !== null && property.type === "property_identifier") {
+      return { caller_id: callerId, callee_name: property.text, receiver: object.text };
+    }
+  }
+  return null;
 }
 
 /**
@@ -520,7 +628,48 @@ function makeNode(
     source_location: locationStr(node),
     language: "typescript",
     exported,
+    signature: signatureOf(node, kind),
   };
+}
+
+/**
+ * One-line declaration signature for B4 node metadata. Collapses whitespace and
+ * truncates (code-point safe). AST-only, deterministic.
+ *
+ * For body-bearing declarations (function/class/method/interface/enum) we cut
+ * at the opening `{` so the body is dropped:
+ *   function foo(a: number): string { ... }  ->  "function foo(a: number): string"
+ *   class Sub extends Base { ... }            ->  "class Sub extends Base"
+ * For value/type declarations (const/type_alias) the `{` is part of the value
+ * (object literal / type literal), so we keep it and cut only at the first
+ * newline:
+ *   const f = (a: number) => {...}            ->  "f = (a: number) =>" (first line)
+ *   type T = { a: string }                    ->  "type T = { a: string }"
+ */
+function signatureOf(node: TSNode, kind: NodeKind): string {
+  const text = node.text;
+  let end = text.length;
+  const nl = text.indexOf("\n");
+  if (nl >= 0) end = Math.min(end, nl);
+  // Body-bearing kinds drop the body. Cut PRECISELY at the body node's start
+  // (via the `body` field) rather than the first `{` — so an object-literal
+  // RETURN TYPE like `foo(): { a: string } { ... }` isn't truncated to `foo():`.
+  // Fall back to the first `{` only when the body field is unavailable.
+  const cutsAtBody = kind === "function" || kind === "class" ||
+    kind === "method" || kind === "interface" || kind === "enum";
+  if (cutsAtBody) {
+    const body = node.childForFieldName("body");
+    if (body !== null) {
+      end = Math.min(end, body.startIndex - node.startIndex);
+    } else {
+      const brace = text.indexOf("{");
+      if (brace >= 0) end = Math.min(end, brace);
+    }
+  }
+  const sig = text.slice(0, end).replace(/\s+/g, " ").trim();
+  // Code-point-safe truncation (avoid splitting a surrogate pair).
+  const cps = [...sig];
+  return cps.length > 120 ? `${cps.slice(0, 117).join("")}...` : sig;
 }
 
 function makeNodeWithExplicitLabel(
@@ -539,6 +688,7 @@ function makeNodeWithExplicitLabel(
     source_location: locationStr(node),
     language: "typescript",
     exported,
+    signature: signatureOf(node, kind),
   };
 }
 

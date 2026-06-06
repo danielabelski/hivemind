@@ -104,6 +104,25 @@ export interface GraphNode {
   language: NodeLanguage;
   /** Whether the symbol is `export`ed (relevant for cross-file resolution in Phase 1.5). */
   exported: boolean;
+  /**
+   * Phase 1.5 AST-only node metadata. All OPTIONAL and additive — older
+   * snapshots and hand-built fixtures omit them.
+   *
+   * `signature` / `doc` are intrinsic (captured by the extractor from the AST).
+   * `fan_in` / `fan_out` / `is_entrypoint` are DERIVED and computed in
+   * buildSnapshot AFTER cross-file edge resolution, so they reflect the full
+   * graph, not just intra-file edges.
+   */
+  /** One-line declaration signature (truncated), e.g. `function foo(a: number): string`. */
+  signature?: string;
+  /** Leading JSDoc/TSDoc or line-comment summary (first line, truncated). */
+  doc?: string;
+  /** Number of incoming edges (any relation) in the resolved graph. */
+  fan_in?: number;
+  /** Number of outgoing edges (any relation) in the resolved graph. */
+  fan_out?: number;
+  /** Heuristic: `exported && fan_in === 0` — a likely public/root symbol. */
+  is_entrypoint?: boolean;
 }
 
 export type NodeKind =
@@ -116,7 +135,7 @@ export type NodeKind =
   | "const"
   | "module";
 
-export type NodeLanguage = "typescript";
+export type NodeLanguage = "typescript" | "javascript" | "python";
 
 export interface GraphEdge {
   /** Source node `id`. */
@@ -168,6 +187,19 @@ export interface FileExtraction {
   edges: GraphEdge[];
   /** Empty array on clean parse; populated when tree-sitter reports ERROR nodes. */
   parse_errors: ParseError[];
+  /**
+   * Phase 1.5 cross-file call resolution inputs. OPTIONAL and additive: older
+   * extractions / hand-built test fixtures omit them and the cross-file
+   * resolver simply produces no edges for that file. Populated by the
+   * TypeScript extractor; consumed by src/graph/resolve/cross-file.ts.
+   *
+   * Calls the per-file extractor could NOT resolve to a same-file declaration
+   * (e.g. an imported function). The resolver matches callee_name against the
+   * file's import_bindings to find a cross-file target.
+   */
+  raw_calls?: RawCall[];
+  /** Import name → source module bindings for this file (Phase 1.5). */
+  import_bindings?: ImportBinding[];
 }
 
 export interface ParseError {
@@ -175,4 +207,37 @@ export interface ParseError {
   message: string;
   /** Optional `L<line>` if the parser localized the error. */
   location?: string;
+}
+
+/**
+ * An unresolved call site captured by the extractor for the cross-file pass.
+ * `caller_id` is the enclosing declaration's node id; `callee_name` is the
+ * bare identifier being invoked. For a namespaced call `ns.foo()`, `receiver`
+ * is the namespace object (`ns`) and `callee_name` is the property (`foo`).
+ */
+export interface RawCall {
+  caller_id: string;
+  callee_name: string;
+  receiver?: string;
+}
+
+/**
+ * A single imported binding in a file. `imported_name` is the name in the
+ * SOURCE module: the real export for a named import (accounting for `as`
+ * aliases), the literal "default" for a default import, or "*" for a
+ * namespace import. `local_name` is how this file refers to it.
+ */
+export interface ImportBinding {
+  local_name: string;
+  imported_name: string;
+  kind: "named" | "default" | "namespace";
+  /** Raw module specifier, e.g. "./foo" or "../bar/baz". */
+  specifier: string;
+  /**
+   * True for `import type {...}` and per-specifier `import { type Foo }`. A
+   * type-only binding can never be a VALUE call target (calls resolution skips
+   * it), but it IS the legitimate source for an `extends`/`implements` base
+   * (heritage resolution accepts it). Absent/false = a normal value import.
+   */
+  type_only?: boolean;
 }

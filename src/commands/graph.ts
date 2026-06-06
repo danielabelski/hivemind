@@ -5,8 +5,9 @@
  *
  * Phase 1 ships ONE subcommand:
  *   hivemind graph build [--cwd <path>]
- *     Walk the project for TypeScript source files, run the tree-sitter
- *     extractor on each, write a snapshot to ~/.hivemind/graphs/<repo-key>/.
+ *     Walk the project for supported source files (TypeScript/JavaScript/Python),
+ *     run the tree-sitter extractor on each, write a snapshot to
+ *     ~/.hivemind/graphs/<repo-key>/.
  *
  * Later phases add: daemon, diff, history, search, latest, push, pull, init,
  * uninstall, prune. None of those exist yet.
@@ -27,7 +28,13 @@ import {
   loadSnapshotByCommit,
   printDiffHuman,
 } from "../graph/diff.js";
-import { extractTypeScript } from "../graph/extract/typescript.js";
+import { extractFile } from "../graph/extract/index.js";
+import {
+  loadGraphIgnore,
+  ignoreDirSet,
+  pathHasIgnoredSegment,
+  type GraphIgnoreConfig,
+} from "../graph/ignore-config.js";
 import {
   installPostCommitHook,
   uninstallPostCommitHook,
@@ -41,11 +48,11 @@ import type {
 } from "../graph/types.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 
-const USAGE = `hivemind graph — codebase-graph commands (Phase 1 — TypeScript only)
+const USAGE = `hivemind graph — codebase-graph commands (TypeScript / JavaScript / Python)
 
 Usage:
   hivemind graph build [--cwd <path>]
-      Walk the project for TypeScript source files, extract symbols + edges,
+      Walk the project for supported source files (TS/JS/Python), extract symbols + edges,
       and write a snapshot to ~/.hivemind/graphs/<repo-key>/snapshots/<commit-sha>.json.
       Also updates ~/.hivemind/graphs/<repo-key>/latest-commit.txt and the
       per-repo .last-build.json (consumed by the SessionEnd auto-build hook).
@@ -90,19 +97,9 @@ Usage:
   Future subcommands (Phase 1.5+): daemon, search, latest, push, pull, prune.
 `;
 
-/**
- * Directories never walked by the source-file discovery. Conservative defaults
- * for v1; per-project ignore rules land later via a .hivemindignore or config.
- */
-const DEFAULT_IGNORES = new Set<string>([
-  "node_modules",
-  ".git",
-  "bundle",
-  "dist",
-  "coverage",
-  ".cache",
-  ".nyc_output",
-]);
+// Which directories to skip during discovery lives in
+// src/graph/ignore-config.ts — a user-editable JSON (~/.deeplake/graph-ignore.json)
+// merged with the repo's own .gitignore (honored via git ls-files).
 
 /** Top-level dispatcher: invoked from src/cli/index.ts on `hivemind graph ...`. */
 export function runGraphCommand(args: string[]): void | Promise<void> {
@@ -440,8 +437,9 @@ export async function runBuildCommand(args: string[]): Promise<void> {
   console.log(`  output:     ${baseDir}`);
   console.log("");
 
-  const sourceFiles = discoverSourceFiles(cwd);
-  console.log(`Discovered ${sourceFiles.length} TypeScript source files. Extracting...`);
+  const ignoreConfig = loadGraphIgnore();
+  const sourceFiles = discoverSourceFiles(cwd, ignoreConfig);
+  console.log(`Discovered ${sourceFiles.length} source files. Extracting...`);
 
   const extractions: FileExtraction[] = [];
   let skipped = 0;
@@ -457,7 +455,7 @@ export async function runBuildCommand(args: string[]): Promise<void> {
       const contentSha = fileContentHash(content);
       let extraction = readCache(baseDir, contentSha, rel);
       if (extraction === null) {
-        extraction = extractTypeScript(content, rel);
+        extraction = extractFile(content, rel);
         writeCache(baseDir, contentSha, extraction);
       } else {
         cacheHits += 1;
@@ -625,14 +623,53 @@ function workTreeIdFor(cwd: string): string {
 
 // ─── Source-file discovery ─────────────────────────────────────────────────
 
-function discoverSourceFiles(rootDir: string): string[] {
+function discoverSourceFiles(rootDir: string, config: GraphIgnoreConfig): string[] {
+  const ignore = ignoreDirSet(config);
+  // Preferred path: let git's own ignore engine (.gitignore, nested rules,
+  // .git/info/exclude, anchoring) decide what's in-repo, then drop anything
+  // under an ignored dir name as a safety net for tracked junk.
+  if (config.respectGitignore) {
+    const fromGit = gitListSourceFiles(rootDir, ignore);
+    if (fromGit !== null) return fromGit;
+  }
+  // Fallback (non-git repo, or git unavailable): manual walk with name-based ignores.
   const out: string[] = [];
-  walk(rootDir, out);
+  walk(rootDir, out, ignore);
   out.sort(); // deterministic order across runs (FS readdir order isn't guaranteed)
   return out;
 }
 
-function walk(dir: string, out: string[]): void {
+/**
+ * List in-repo source files via `git ls-files --cached --others --exclude-standard`
+ * (tracked + untracked-not-ignored, honoring .gitignore EXACTLY — anchoring and
+ * nested rules included). Returns absolute paths, or null when this isn't a
+ * usable git repo (caller falls back to walk()). The ignore-name set is still
+ * applied as a safety net for directories the repo happens to track.
+ */
+function gitListSourceFiles(rootDir: string, ignore: Set<string>): string[] | null {
+  let stdout: string;
+  try {
+    stdout = execSync("git ls-files --cached --others --exclude-standard -z", {
+      cwd: rootDir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return null; // not a git repo / git unavailable
+  }
+  const out: string[] = [];
+  for (const rel of stdout.split("\0")) {
+    if (rel.length === 0) continue;
+    if (!isSourceFile(rel)) continue;
+    if (pathHasIgnoredSegment(rel, ignore)) continue;
+    out.push(join(rootDir, rel));
+  }
+  out.sort();
+  return out;
+}
+
+function walk(dir: string, out: string[], ignore: Set<string>): void {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -640,12 +677,12 @@ function walk(dir: string, out: string[]): void {
     return; // unreadable dirs (permissions, races) are skipped silently
   }
   for (const entry of entries) {
-    if (DEFAULT_IGNORES.has(entry.name)) continue;
+    if (ignore.has(entry.name)) continue;
     // Skip dotfiles/dotdirs except the dir itself (rare edge — we entered via name, not '.')
     if (entry.name.startsWith(".")) continue;
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
-      walk(abs, out);
+      walk(abs, out, ignore);
     } else if (entry.isFile() && isSourceFile(entry.name)) {
       out.push(abs);
     }
@@ -654,7 +691,10 @@ function walk(dir: string, out: string[]): void {
 
 function isSourceFile(name: string): boolean {
   if (name.endsWith(".d.ts")) return false; // declarations only, no implementation
-  return name.endsWith(".ts") || name.endsWith(".tsx");
+  // B7: JS/JSX/ESM/CJS via the TS grammar (superset). B6: Python via the
+  // tree-sitter Python grammar. extractFile() routes by extension; the
+  // per-file language label is set inside each extractor.
+  return /\.(tsx?|jsx?|mjs|cjs|pyi?)$/.test(name);
 }
 
 function toForwardSlash(p: string): string {

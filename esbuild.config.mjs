@@ -63,6 +63,7 @@ await build({
     // can't be bundled by esbuild; resolved from node_modules at runtime.
     "tree-sitter",
     "tree-sitter-typescript",
+    "tree-sitter-python",
   ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
@@ -84,6 +85,8 @@ const codexHooks = [
   { entry: "dist/src/hooks/codex/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
+  // G3: code-graph auto-build parity for Codex (same shared hook as CC/Cursor).
+  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
 ];
 
 const codexShell = [
@@ -114,6 +117,10 @@ await build({
     "onnxruntime-node",
     "onnxruntime-common",
     "sharp",
+    // graph-on-stop transitively imports the tree-sitter native parser (G3).
+    "tree-sitter",
+    "tree-sitter-typescript",
+    "tree-sitter-python",
   ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
@@ -134,6 +141,10 @@ const cursorHooks = [
   { entry: "dist/src/hooks/cursor/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
+  // A1 (graph Cursor parity): same auto-build hook as Claude Code, wired
+  // to Cursor's stop + sessionEnd events in install-cursor.ts. Reuses the
+  // shared src/hooks/graph-on-stop.ts entry (no per-agent logic).
+  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -146,6 +157,8 @@ const hermesHooks = [
   { entry: "dist/src/hooks/hermes/wiki-worker.js", out: "wiki-worker" },
   { entry: "dist/src/skillify/skillify-worker.js", out: "skillify-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
+  // G3: code-graph auto-build parity for Hermes (registered on on_session_end).
+  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
 ];
 
 const cursorShell = [
@@ -176,6 +189,13 @@ await build({
     "onnxruntime-node",
     "onnxruntime-common",
     "sharp",
+    // graph-on-stop transitively imports the tree-sitter native parser
+    // (via runBuildCommand → extractTypeScript); same externalization as
+    // the Claude Code bundle. Native .node prebuilds resolve from
+    // node_modules at runtime.
+    "tree-sitter",
+    "tree-sitter-typescript",
+    "tree-sitter-python",
   ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
@@ -214,6 +234,10 @@ await build({
     "onnxruntime-node",
     "onnxruntime-common",
     "sharp",
+    // graph-on-stop transitively imports the tree-sitter native parser (G3).
+    "tree-sitter",
+    "tree-sitter-typescript",
+    "tree-sitter-python",
   ],
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
@@ -473,6 +497,7 @@ await build({
     // Phase 1).
     "tree-sitter",
     "tree-sitter-typescript",
+    "tree-sitter-python",
   ],
   banner: { js: "#!/usr/bin/env node" },
 });

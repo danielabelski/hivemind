@@ -26,6 +26,7 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { touchesMemory, rewritePaths } from "../memory-path-utils.js";
+import { tryGraphRead } from "../../graph/graph-command.js";
 const log = (msg: string) => _log("hermes-pre-tool-use", msg);
 
 interface HermesPreToolUseInput {
@@ -48,6 +49,17 @@ async function main(): Promise<void> {
   if (!touchesMemory(command)) return;
 
   const rewritten = rewritePaths(command);
+
+  // Graph VFS dispatch — a cat/head/tail/ls on the `/graph/*` subtree is
+  // answered from the local snapshot, no SQL, no config needed. Runs before
+  // grep handling. Shared parser: src/graph/graph-command.ts.
+  const graphBody = tryGraphRead(rewritten, input.cwd ?? process.cwd());
+  if (graphBody !== null) {
+    log(`graph vfs intercept: ${command.slice(0, 80)}`);
+    process.stdout.write(JSON.stringify({ action: "block", message: graphBody }));
+    return;
+  }
+
   const grepParams = parseBashGrep(rewritten);
   if (!grepParams) return; // not grep/rg/egrep/fgrep — leave it alone
 
