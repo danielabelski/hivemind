@@ -1,103 +1,108 @@
 import { describe, it, expect, vi } from "vitest";
-import { shouldFire, runWeeklySkillOpt, WEEK_MS } from "../../src/skillify/skillopt-trigger.js";
+import { markSkillPending, runEventTrigger, judgeWindow, DEFAULT_JUDGE_WINDOW, type PendingSkill, type PendingStore } from "../../src/skillify/skillopt-trigger.js";
 
-const DAY = 24 * 60 * 60 * 1000;
-const NOW = 1_900_000_000_000; // fixed clock
+/** In-memory per-session store standing in for the per-session files. */
+function memStore(initial: Record<string, PendingSkill> = {}) {
+  const m = new Map<string, PendingSkill>(Object.entries(initial));
+  const store: PendingStore = {
+    load: (sid) => m.get(sid) ?? null,
+    save: (sid, p) => { if (p === null) m.delete(sid); else m.set(sid, p); },
+  };
+  return { store, get: (sid: string) => m.get(sid) ?? null };
+}
 
-describe("shouldFire (weekly throttle)", () => {
-  it("fires when never run (no timestamp)", () => {
-    expect(shouldFire(undefined, NOW)).toBe(true);
+describe("markSkillPending (shape gate + manifest gate + K-window + tool_use_id)", () => {
+  const ORG = () => true; // isOrgSkill: in unit tests, treat refs as pulled org skills
+
+  it("opens a K-message window for a PULLED org skill, storing the tool_use_id", () => {
+    const s = memStore();
+    expect(markSkillPending("s1", "posthog--kamo", "tu1", { store: s.store, env: {} as NodeJS.ProcessEnv, isOrgSkill: ORG })).toBe(true);
+    expect(s.get("s1")).toEqual({ skill: "posthog--kamo", budget: DEFAULT_JUDGE_WINDOW, toolUseId: "tu1" });
   });
-  it("fires when the timestamp is unparseable", () => {
-    expect(shouldFire("not-a-date", NOW)).toBe(true);
+
+  it("ignores bare local and plugin skills (wrong shape → not org)", () => {
+    const s = memStore();
+    expect(markSkillPending("s1", "bareskill", "tu", { store: s.store, isOrgSkill: ORG })).toBe(false);
+    expect(markSkillPending("s1", "hivemind:memory", "tu", { store: s.store, isOrgSkill: ORG })).toBe(false);
+    expect(s.get("s1")).toBeNull();
   });
-  it("does NOT fire <7 days since last run", () => {
-    expect(shouldFire(new Date(NOW - 1 * DAY).toISOString(), NOW)).toBe(false);
-    expect(shouldFire(new Date(NOW - 6.9 * DAY).toISOString(), NOW)).toBe(false);
+
+  it("ignores a LOCAL skill that looks like name--author but isn't in the pull manifest", () => {
+    const s = memStore();
+    expect(markSkillPending("s1", "myskill--alice", "tu", { store: s.store, isOrgSkill: () => false })).toBe(false);
+    expect(s.get("s1")).toBeNull(); // must not arm → can't edit the shared org row of that name
   });
-  it("fires at exactly the weekly boundary and beyond", () => {
-    expect(shouldFire(new Date(NOW - WEEK_MS).toISOString(), NOW)).toBe(true);
-    expect(shouldFire(new Date(NOW - 8 * DAY).toISOString(), NOW)).toBe(true);
+
+  it("the newest org-skill call supersedes the pending one and resets the budget", () => {
+    const s = memStore({ s1: { skill: "a--u", budget: 1 } });
+    markSkillPending("s1", "b--u", "tu2", { store: s.store, env: {} as NodeJS.ProcessEnv, isOrgSkill: ORG });
+    expect(s.get("s1")).toEqual({ skill: "b--u", budget: DEFAULT_JUDGE_WINDOW, toolUseId: "tu2" });
+  });
+
+  it("does not touch a DIFFERENT session's entry (no cross-session clobber)", () => {
+    const s = memStore({ other: { skill: "x--u", budget: 2 } });
+    markSkillPending("s1", "b--u", "tu", { store: s.store, env: {} as NodeJS.ProcessEnv, isOrgSkill: ORG });
+    expect(s.get("other")).toEqual({ skill: "x--u", budget: 2 }); // untouched
+    expect(s.get("s1")).toMatchObject({ skill: "b--u" });
+  });
+
+  it("returns false for empty session/skill", () => {
+    expect(markSkillPending("", "x--a")).toBe(false);
+    expect(markSkillPending("s1", "")).toBe(false);
   });
 });
 
-describe("runWeeklySkillOpt (auto-fire decision)", () => {
-  function harness(over: Partial<Parameters<typeof runWeeklySkillOpt>[0]> = {}) {
-    const saved: unknown[] = [];
-    const spawn = vi.fn();
-    const release = vi.fn();
-    const res = runWeeklySkillOpt({
-      now: NOW,
-      save: (s) => saved.push(s),
-      spawnWorker: spawn,
-      env: {} as NodeJS.ProcessEnv, // default ON
-      tryLock: () => true,          // injected so the unit test touches no real lock file
-      releaseLock: release,
-      reload: () => over.state ?? {}, // in-lock re-read mirrors the pre-lock state by default
-      canFire: () => true,           // injected so the unit test doesn't read real credentials
-      ...over,
-    });
-    return { res, saved, spawn, release };
+describe("runEventTrigger", () => {
+  function harness(over: { initial?: Record<string, PendingSkill>; env?: NodeJS.ProcessEnv; canFire?: () => boolean } = {}) {
+    const s = memStore(over.initial ?? { s1: { skill: "posthog--kamo", budget: 3 } });
+    const spawnWorker = vi.fn();
+    const run = (sessionId: string, reaction: string, opts: { agent?: string } = {}) =>
+      runEventTrigger(sessionId, reaction, {
+        ...opts,
+        deps: {
+          env: over.env ?? ({} as NodeJS.ProcessEnv),
+          store: s.store,
+          spawnWorker,
+          canFire: over.canFire ?? (() => true),
+        },
+      });
+    return { run, spawnWorker, get: s.get };
   }
 
-  it("fires on first run: spawns the worker exactly once, stamps lastRun=now, releases the lock", () => {
-    const { res, saved, spawn, release } = harness({ state: {} });
-    expect(res.fired).toBe(true);
-    expect(spawn).toHaveBeenCalledTimes(1); // exactly one spawn
-    expect(saved).toEqual([{ lastRun: new Date(NOW).toISOString() }]); // stamped before spawn
-    expect(release).toHaveBeenCalledTimes(1); // lock released after firing
+  it("spawns the worker with session+skill+reaction+toolUseId+agent, decrements the budget", () => {
+    const { run, spawnWorker, get } = harness({ initial: { s1: { skill: "posthog--kamo", budget: 3, toolUseId: "tu9" } } });
+    const r = run("s1", "no you fucked up, mocking hides the bug", { agent: "codex" });
+    expect(r).toEqual({ fired: true, reason: "spawned" });
+    expect(spawnWorker).toHaveBeenCalledWith("s1", "posthog--kamo", "no you fucked up, mocking hides the bug", "tu9", "codex");
+    expect(get("s1")?.budget).toBe(2); // 3 → 2
   });
 
-  it("does NOT fire or stamp when logged out (preserves the throttle for a fresh login)", () => {
-    const { res, saved, spawn } = harness({ state: {}, canFire: () => false });
-    expect(res).toEqual({ fired: false, reason: "no-creds" });
-    expect(spawn).not.toHaveBeenCalled();
-    expect(saved).toEqual([]); // no stamp → next session after login fires
+  it("closes the window (clears the session) when the budget is exhausted", () => {
+    const { run, get } = harness({ initial: { s1: { skill: "x--a", budget: 1 } } });
+    run("s1", "still broken");
+    expect(get("s1")).toBeNull();
   });
 
-  it("does NOT fire when another process holds the weekly lock (cross-process race)", () => {
-    const { res, saved, spawn } = harness({ state: {}, tryLock: () => false });
-    expect(res).toEqual({ fired: false, reason: "locked" });
-    expect(spawn).not.toHaveBeenCalled();
-    expect(saved).toEqual([]); // the loser never stamps — only the lock winner does
+  it("does NOTHING when no skill is pending for the session", () => {
+    const { run, spawnWorker } = harness({ initial: {} });
+    expect(run("s1", "anything")).toEqual({ fired: false, reason: "no-skill" });
+    expect(spawnWorker).not.toHaveBeenCalled();
   });
 
-  it("re-checks lastRun INSIDE the lock and bails if another process just fired (TOCTOU)", () => {
-    // Pre-lock snapshot is fire-eligible, but by the time we own the lock the
-    // freshly-read state shows a just-stamped lastRun (a racing process fired +
-    // released between our pre-check and acquire) → must NOT spawn a 2nd worker.
-    const { res, saved, spawn, release } = harness({
-      state: {},
-      reload: () => ({ lastRun: new Date(NOW).toISOString() }),
-    });
-    expect(res).toEqual({ fired: false, reason: "throttled" });
-    expect(spawn).not.toHaveBeenCalled();
-    expect(saved).toEqual([]);                // the loser doesn't stamp
-    expect(release).toHaveBeenCalledTimes(1); // but DOES release the lock it acquired
+  it("respects the kill switch, recursion guard, and logged-out state", () => {
+    expect(harness({ env: { HIVEMIND_SKILLOPT_DISABLED: "1" } as never }).run("s1", "x").reason).toBe("disabled");
+    expect(harness({ env: { HIVEMIND_SKILLOPT_WORKER: "1" } as never }).run("s1", "x").reason).toBe("in-worker");
+    const lo = harness({ canFire: () => false });
+    expect(lo.run("s1", "x")).toEqual({ fired: false, reason: "no-creds" });
+    expect(lo.spawnWorker).not.toHaveBeenCalled();
   });
+});
 
-  it("fires when last run was 8 days ago", () => {
-    const { res, spawn } = harness({ state: { lastRun: new Date(NOW - 8 * DAY).toISOString() } });
-    expect(res.fired).toBe(true);
-    expect(spawn).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT fire (and does not spawn) when throttled (1 day ago)", () => {
-    const { res, saved, spawn } = harness({ state: { lastRun: new Date(NOW - 1 * DAY).toISOString() } });
-    expect(res).toEqual({ fired: false, reason: "throttled" });
-    expect(spawn).not.toHaveBeenCalled();
-    expect(saved).toEqual([]); // no state write when throttled
-  });
-
-  it("respects the kill switch HIVEMIND_SKILLOPT_DISABLED=1", () => {
-    const { res, spawn } = harness({ state: {}, env: { HIVEMIND_SKILLOPT_DISABLED: "1" } as NodeJS.ProcessEnv });
-    expect(res).toEqual({ fired: false, reason: "disabled" });
-    expect(spawn).not.toHaveBeenCalled();
-  });
-
-  it("does not recurse: a run inside the worker (HIVEMIND_SKILLOPT_WORKER=1) never fires again", () => {
-    const { res, spawn } = harness({ state: {}, env: { HIVEMIND_SKILLOPT_WORKER: "1" } as NodeJS.ProcessEnv });
-    expect(res).toEqual({ fired: false, reason: "in-worker" });
-    expect(spawn).not.toHaveBeenCalled();
+describe("judgeWindow", () => {
+  it("defaults to 3, env-overridable, rejects garbage/non-positive", () => {
+    expect(judgeWindow({} as NodeJS.ProcessEnv)).toBe(3);
+    expect(judgeWindow({ HIVEMIND_SKILLOPT_JUDGE_WINDOW: "5" } as never)).toBe(5);
+    expect(judgeWindow({ HIVEMIND_SKILLOPT_JUDGE_WINDOW: "0" } as never)).toBe(3);
+    expect(judgeWindow({ HIVEMIND_SKILLOPT_JUDGE_WINDOW: "x" } as never)).toBe(3);
   });
 });

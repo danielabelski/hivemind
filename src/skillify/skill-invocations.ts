@@ -25,16 +25,17 @@ export interface SkillInvocation {
   ts: string; // invocation timestamp (message.timestamp, else the row's last_update_date)
 }
 
-interface ParsedMsg {
+export interface ParsedMsg {
   type?: string;
   tool_name?: string;
   tool_input?: unknown;
+  tool_use_id?: unknown;
   content?: unknown;
   session_id?: unknown;
   timestamp?: unknown;
 }
 
-function parseMessage(m: unknown): ParsedMsg | null {
+export function parseMessage(m: unknown): ParsedMsg | null {
   if (m == null) return null;
   if (typeof m === "string") {
     try { return JSON.parse(m) as ParsedMsg; } catch { return null; }
