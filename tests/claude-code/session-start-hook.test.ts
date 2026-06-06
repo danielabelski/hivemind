@@ -23,7 +23,6 @@ const ensureSessionsTableMock = vi.fn();
 const queryMock = vi.fn();
 const knownTablesMock = vi.fn();
 const autoUpdateMock = vi.fn();
-const runWeeklySkillOptMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -44,13 +43,8 @@ vi.mock("../../src/deeplake-api.js", () => ({
     async knownTablesOrNull() { return knownTablesMock(); }
   },
 }));
-// SkillOpt weekly trigger mocked at the boundary: the real runWeeklySkillOpt
-// spawns a detached worker + writes a state file (side effects we must NOT do
-// in unit tests). Its own logic is covered in tests/shared/skillopt-trigger.test.ts.
-vi.mock("../../src/skillify/skillopt-trigger.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/skillify/skillopt-trigger.js")>();
-  return { ...actual, runWeeklySkillOpt: (...a: any[]) => runWeeklySkillOptMock(...a) };
-});
+// (SkillOpt is no longer invoked from SessionStart — it's event-driven via
+// PreToolUse/UserPromptSubmit — so skillopt-trigger is not mocked here anymore.)
 // autoUpdate mocked at the boundary (CLAUDE.md rule 5) — the helper
 // itself is exhaustively tested in autoupdate.test.ts. Here we only
 // assert the hook *called* it with the right agent id and *didn't*
@@ -162,9 +156,6 @@ beforeEach(() => {
   // common test scenario where the developer's HOME has no local
   // sessions visible to the test runner.
   maybeAutoMineLocalMock.mockReset().mockReturnValue({ triggered: false, reason: "no-claude-sessions" });
-  // Default: SkillOpt weekly trigger throttled (no spawn). Individual tests
-  // override to exercise the fired / error branches.
-  runWeeklySkillOptMock.mockReset().mockReturnValue({ fired: false, reason: "throttled" });
   // Disable auto-pull during this test: autoPullSkills would otherwise issue
   // an extra SQL query (against `skills`) through the same DeeplakeApi mock,
   // breaking the placeholder-branching call-count assertions. The auto-pull
@@ -325,20 +316,8 @@ describe("session-start hook — placeholder branching", () => {
     );
   });
 
-  it("logs the SkillOpt fired branch when the weekly trigger spawns a worker", async () => {
-    runWeeklySkillOptMock.mockReturnValue({ fired: true, reason: "spawned" });
-    await runHook();
-    expect(debugLogMock).toHaveBeenCalledWith("skillopt: fired (detached worker)");
-  });
-
-  it("swallows a throwing SkillOpt trigger (never breaks SessionStart)", async () => {
-    runWeeklySkillOptMock.mockImplementation(() => { throw new Error("fire boom"); });
-    const out = await runHook();
-    expect(out).toBeTruthy();
-    expect(debugLogMock).toHaveBeenCalledWith(
-      expect.stringContaining("skillopt trigger failed (swallowed): fire boom"),
-    );
-  });
+  // (SkillOpt is no longer fired from SessionStart — it's event-driven now via
+  // PreToolUse/UserPromptSubmit — so the old weekly-trigger branch tests were removed.)
 
   it("swallows placeholder errors and logs via both loggers", async () => {
     ensureTableMock.mockRejectedValue(new Error("table boom"));
