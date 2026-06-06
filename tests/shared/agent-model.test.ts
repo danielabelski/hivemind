@@ -81,11 +81,30 @@ describe("agentModel — per-agent no-tools dispatch", () => {
     expect(argVal(calls[0].args, "--model")).toBe("opus");
   });
 
-  it("env provider override (e.g. AWS Bedrock instead of openrouter) is applied", async () => {
+  it("env provider+model override (e.g. AWS Bedrock) is applied together", async () => {
     const { spawnImpl, calls } = fakeSpawn("x");
-    const env = { HIVEMIND_SKILLOPT_HERMES_PROVIDER: "bedrock" } as unknown as NodeJS.ProcessEnv;
+    const env = {
+      HIVEMIND_SKILLOPT_HERMES_PROVIDER: "bedrock",
+      HIVEMIND_SKILLOPT_HERMES_MODEL: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    } as unknown as NodeJS.ProcessEnv;
     await agentModel({ agent: "hermes", role: "judge", bin: "/x/hermes", spawnImpl, env })("S", "U");
     expect(argVal(calls[0].args, "--provider")).toBe("bedrock");
+    expect(argVal(calls[0].args, "-m")).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+  });
+
+  it("rejects a hermes/pi provider override with NO model (the default id wouldn't match)", async () => {
+    const { spawnImpl } = fakeSpawn("x");
+    const env = { HIVEMIND_SKILLOPT_HERMES_PROVIDER: "bedrock" } as unknown as NodeJS.ProcessEnv;
+    await expect(agentModel({ agent: "hermes", role: "judge", bin: "/x/hermes", spawnImpl, env })("S", "U"))
+      .rejects.toThrow(/without a model/);
+  });
+
+  it("propagates the injected env to the spawned child (not just global process.env)", async () => {
+    const { spawnImpl, calls } = fakeSpawn("x");
+    const env = { MY_SCOPED: "1", HIVEMIND_SKILLOPT_CLAUDE_CODE_JUDGE_MODEL: "haiku" } as unknown as NodeJS.ProcessEnv;
+    await agentModel({ agent: "claude_code", role: "judge", bin: "/x/claude", spawnImpl, env })("S", "U");
+    expect(calls[0].env.MY_SCOPED).toBe("1");
+    expect(calls[0].env.HIVEMIND_CAPTURE).toBe("false");
   });
 
   it("rejects on non-zero exit (caller swallows → no-change)", async () => {

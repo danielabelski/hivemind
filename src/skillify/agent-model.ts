@@ -123,19 +123,28 @@ export function agentModel(opts: {
 }): ModelCall {
   const env = opts.env ?? process.env;
   const d = DISPATCH[opts.agent];
-  const model = opts.model ?? envModel(opts.agent, opts.role, env) ?? d.model(opts.role);
-  const provider = opts.provider ?? envProvider(opts.agent, env) ?? d.provider;
+  const modelOverride = opts.model ?? envModel(opts.agent, opts.role, env);
+  const providerOverride = opts.provider ?? envProvider(opts.agent, env);
+  const model = modelOverride ?? d.model(opts.role);
+  const provider = providerOverride ?? d.provider;
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const spawnFn = opts.spawnImpl ?? (nodeSpawn as unknown as SpawnFn);
   const bin = opts.bin ?? findAgentBin(opts.agent);
   return (system, user) => new Promise<string>((resolve, reject) => {
+    // Fail fast on a provider override without a matching model (hermes/pi): the default
+    // model is provider-specific (openrouter-style ids), so a bare ..._PROVIDER=bedrock
+    // with no ..._MODEL would silently send a wrong model id. Surface it loudly.
+    if (providerOverride && !modelOverride && (opts.agent === "hermes" || opts.agent === "pi")) {
+      return reject(new Error(`${opts.agent}: provider overridden to '${provider}' without a model — set HIVEMIND_SKILLOPT_${opts.agent.toUpperCase()}_MODEL to a valid id for that provider`));
+    }
     const args = d.buildArgs(model, provider, system, user);
     // HIVEMIND_CAPTURE=false: these calls aren't real sessions. HIVEMIND_WIKI_WORKER=1:
     // the spawned agent skips this package's SessionStart hook (no context injection /
-    // auto-pull / recursive firing). Same isolation every internal runner uses.
+    // auto-pull / recursive firing). Inherit the (possibly caller-scoped) `env` so scoped
+    // creds/config reach the child too, not just the global process.env.
     const child = spawnFn(bin, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, HIVEMIND_CAPTURE: "false", HIVEMIND_WIKI_WORKER: "1" },
+      env: { ...env, HIVEMIND_CAPTURE: "false", HIVEMIND_WIKI_WORKER: "1" },
     });
     let out = "";
     let err = "";

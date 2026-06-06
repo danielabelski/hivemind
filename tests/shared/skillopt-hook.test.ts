@@ -33,8 +33,10 @@ describe("reactSkillOpt", () => {
     reactSkillOpt("s1", "no you fucked up", "codex");
     expect(runEventTrigger).toHaveBeenCalledWith("s1", "no you fucked up", { agent: "codex" });
   });
-  it("does nothing when there is no prompt (not a UserPromptSubmit)", () => {
+  it("does nothing when there is no prompt, or an empty/whitespace one (not a reaction)", () => {
     reactSkillOpt("s1", undefined, "codex");
+    reactSkillOpt("s1", "", "codex");
+    reactSkillOpt("s1", "   \n", "codex");
     expect(runEventTrigger).not.toHaveBeenCalled();
   });
   it("does nothing inside an internal worker call (HIVEMIND_WIKI_WORKER=1)", () => {

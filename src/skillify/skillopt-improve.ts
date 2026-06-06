@@ -105,6 +105,8 @@ export async function improveSkillIfFailed(opts: ImproveOpts): Promise<ImproveRe
     query: opts.query, tableName: opts.skillsTable, workspaceId: opts.workspaceId,
     current, newBody: p.editedBody, collaborator: opts.collaborator, now: opts.now,
   });
-  opts.recordEdit?.(parts.name, parts.author, p.edits);
+  // The publish already landed — a meta-write failure must NOT report failure (that would
+  // drop the dedup marker AND make the run look failed, inviting a re-publish). Swallow it.
+  try { opts.recordEdit?.(parts.name, parts.author, p.edits); } catch { /* meta is best-effort */ }
   return { judged: true, failed: true, improved: true, version, reason: verdict.reason };
 }

@@ -25,7 +25,9 @@ export function armSkillOptOnSkillUse(sessionId: string, toolName: string, toolI
  */
 export function reactSkillOpt(sessionId: string, prompt: string | undefined, agent: string): void {
   try {
-    if (prompt === undefined || process.env.HIVEMIND_WIKI_WORKER === "1") return;
+    // Empty/whitespace prompt isn't a reaction — firing on it would spend the judgment
+    // budget and spawn a worker with no signal.
+    if (prompt === undefined || prompt.trim() === "" || process.env.HIVEMIND_WIKI_WORKER === "1") return;
     runEventTrigger(sessionId, prompt, { agent });
   } catch { /* never break capture */ }
 }
