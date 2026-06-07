@@ -50,7 +50,11 @@ export function parseMessage(m: unknown): ParsedMsg | null {
  *  trailing args don't get swallowed into the ref. */
 export function pathToSkillRef(s: unknown): string | null {
   if (typeof s !== "string") return null;
-  const m = s.match(/\/skills\/([^/\s"'`]+)\/SKILL\.md/);
+  // `/skills/` then any intermediate dirs (codex nests org skills under `.system/`,
+  // e.g. …/skills/.system/<name--author>/SKILL.md), capturing the dir right before
+  // SKILL.md. markSkillPending still gates org-shape (name--author), so `.system` /
+  // bare system-skill dirs are rejected there.
+  const m = s.match(/\/skills\/(?:[^/\s"'`]+\/)*([^/\s"'`]+)\/SKILL\.md/);
   return m ? m[1] : null;
 }
 

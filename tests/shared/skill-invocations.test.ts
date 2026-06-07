@@ -32,6 +32,10 @@ describe("invokedSkillRef", () => {
     expect(invokedSkillRef({ type: "tool_call", tool_name: "Bash", tool_input: JSON.stringify({ command: "sed -n '1,5p' /x/.agents/skills/a--b/SKILL.md" }) })).toBe("a--b");
     expect(invokedSkillRef({ type: "tool_call", tool_name: "Bash", tool_input: JSON.stringify({ command: "ls /tmp" }) })).toBeNull();
   });
+  it("handles codex's nested .system path (intermediate dirs before the ref)", () => {
+    // codex reads org skills as `sed -n '1,220p' ~/.codex/skills/.system/<name--author>/SKILL.md`
+    expect(invokedSkillRef({ type: "tool_call", tool_name: "Bash", tool_input: JSON.stringify({ command: "sed -n '1,220p' /home/e/.codex/skills/.system/posthog--kamo/SKILL.md" }) })).toBe("posthog--kamo");
+  });
 });
 
 describe("splitOrgSkill", () => {
