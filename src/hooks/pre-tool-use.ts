@@ -576,10 +576,16 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   // Do NOT return null: that would hand the original command to Claude Code's
   // real host shell, which is unsafe.
   const shellBundle = join(__bundleDir, "shell", "deeplake-shell.js");
-  const escaped = shellCmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   logFn(`unroutable memory command, falling back to shell: ${shellCmd}`);
+  // Read needs file_path, not a command-shaped decision.
+  if (input.tool_name === "Read") {
+    return buildDenyDecision(MEMORY_RETRY_GUIDANCE, "[DeepLake] memory Read unavailable — use Bash builtins");
+  }
+  // Single-quote both arguments so $(), backticks, and variable expansion
+  // cannot escape into the host shell before deeplake-shell.js receives them.
+  const sq = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
   return buildAllowDecision(
-    `node "${shellBundle}" -c "${escaped}"`,
+    `node ${sq(shellBundle)} -c ${sq(shellCmd)}`,
     `[DeepLake shell] ${shellCmd}`,
   );
 }

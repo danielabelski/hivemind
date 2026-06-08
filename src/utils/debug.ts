@@ -21,6 +21,8 @@ export function utcTimestamp(d: Date = new Date()): string {
 
 export function log(tag: string, msg: string) {
   if (!isDebug()) return;
-  mkdirSync(dirname(LOG), { recursive: true });
-  appendFileSync(LOG, `${new Date().toISOString()} [${tag}] ${msg}\n`);
+  try {
+    mkdirSync(dirname(LOG), { recursive: true });
+    appendFileSync(LOG, `${new Date().toISOString()} [${tag}] ${msg}\n`);
+  } catch { /* best-effort */ }
 }

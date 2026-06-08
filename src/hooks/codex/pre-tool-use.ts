@@ -366,7 +366,11 @@ export async function processCodexPreToolUse(
   //     ~/.deeplake/memory/ disk dir is harmless — VFS reads always query SQL.
   //   "block" (exit 2) — Codex treats the command as rejected. Used for
   //     everything else (pipes, finds, reads) to prevent host execution.
-  const isWriteRedirect = /\s>>?\s/.test(rewritten);
+  // Safe to return "guide" (Codex also runs original on host) ONLY for pure
+  // output commands: echo/printf/tee writing to a VFS path. A generic ">>"
+  // check would match mixed commands like `sort /etc/passwd > /vfs/out` which
+  // would then execute on the host and read real files.
+  const isWriteRedirect = /^\s*(echo|printf|tee)\b/.test(rewritten) && /\s>>?\s/.test(rewritten);
   const shellBundle = join(__bundleDir, "shell", "deeplake-shell.js");
   logFn(`unroutable memory command, falling back to VFS shell: ${rewritten}`);
   try {

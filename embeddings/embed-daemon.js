@@ -143,9 +143,12 @@ function isDebug() {
 function log(tag, msg) {
   if (!isDebug())
     return;
-  mkdirSync(dirname(LOG), { recursive: true });
-  appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
+  try {
+    mkdirSync(dirname(LOG), { recursive: true });
+    appendFileSync(LOG, `${(/* @__PURE__ */ new Date()).toISOString()} [${tag}] ${msg}
 `);
+  } catch {
+  }
 }
 
 // dist/src/embeddings/daemon.js

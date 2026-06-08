@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isHivemindPluginEnabled } from "../../src/utils/plugin-state.js";
@@ -18,8 +18,7 @@ describe("isHivemindPluginEnabled", () => {
   let originalHome: string | undefined;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `plugin-state-test-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
+    tmpDir = mkdtempSync(join(tmpdir(), "plugin-state-test-"));
     originalHome = process.env.HOME;
     process.env.HOME = tmpDir;
   });
