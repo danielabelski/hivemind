@@ -91,6 +91,27 @@ describe("Rust extraction", () => {
     expect(call).toBeDefined();
   });
 
+  it("extracts use with scoped path (std::io::Read)", () => {
+    // Covers extractUsePath scoped_identifier / nested path branches
+    const ex = extractRust(`use std::io::{Read, Write};\nfn f() {}\n`, "src/lib.rs");
+    expect(ex.edges.some(e => e.relation === "imports" && e.target.startsWith("external:"))).toBe(true);
+  });
+
+  it("resolves call from an impl method to a free function (triggers impl-qualified findEnclosingFn search)", () => {
+    // Covers lines 221-224: findEnclosingFn walks up to function_item inside an impl block;
+    // tries declByName.get(name) first then searches k.endsWith(::name) to find the impl-qualified key.
+    const ex = extractRust(
+      `fn setup() {}\nstruct Worker {}\nimpl Worker {\n  pub fn run(&self) { setup(); }\n}\n`,
+      "src/worker.rs",
+    );
+    const run = ex.nodes.find(n => n.id === "src/worker.rs:Worker::run:method");
+    const setup = ex.nodes.find(n => n.id === "src/worker.rs:setup:function");
+    expect(run).toBeDefined();
+    expect(setup).toBeDefined();
+    const call = ex.edges.find(e => e.relation === "calls" && e.source === run!.id && e.target === setup!.id);
+    expect(call).toBeDefined();
+  });
+
   it("includes a module node for the file", () => {
     const ex = extractRust(`fn f() {}\n`, "src/lib.rs");
     expect(ex.nodes.some(n => n.kind === "module" && n.id === "src/lib.rs::module")).toBe(true);

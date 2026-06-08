@@ -161,6 +161,40 @@ describe("makeModuleNode", () => {
   });
 });
 
+describe("findEnclosingDecl", () => {
+  // Import findEnclosingDecl
+  it("returns the enclosing declaration when found", async () => {
+    const { findEnclosingDecl } = await import("../../../src/graph/extract/shared.js");
+    const map = new Map<string, any>();
+    const node = makeGraphNode("f.ts:foo:function");
+    map.set("foo", node);
+
+    const target = stubNode();
+    // parent is a function_definition named "foo"
+    const parent = stubNode({
+      type: "function_definition",
+      parent: null,
+      childForFieldName: (f: string) => f === "name" ? stubNode({ text: "foo" }) : null,
+    });
+    (target as any).parent = parent;
+
+    const found = findEnclosingDecl(
+      target,
+      ["function_definition"],
+      (n) => n.childForFieldName("name")?.text ?? null,
+      map,
+    );
+    expect(found).toBe(node);
+  });
+
+  it("returns null when no enclosing decl matches", async () => {
+    const { findEnclosingDecl } = await import("../../../src/graph/extract/shared.js");
+    const map = new Map<string, any>();
+    const found = findEnclosingDecl(stubNode(), ["function_definition"], () => null, map);
+    expect(found).toBeNull();
+  });
+});
+
 describe("textOfField", () => {
   it("returns null when field is absent", () => {
     expect(textOfField(stubNode(), "name")).toBeNull();

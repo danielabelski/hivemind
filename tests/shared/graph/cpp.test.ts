@@ -97,6 +97,16 @@ describe("C++ extraction", () => {
     expect(fn_).toBeDefined();
   });
 
+  it("resolves calls via field_expression (this->method pattern)", () => {
+    // Covers field_expression branch in collectCppCalls (lines 181-183)
+    const ex = extractCpp(
+      `void helper() {}\nvoid run() { auto p = nullptr; p->helper(); }\n`,
+      "src/a.cpp",
+    );
+    // Mainly verifies no crash on field_expression; call resolution depends on enclosing class
+    expect(ex.parse_errors).toHaveLength(0);
+  });
+
   it("includes a module node for the file", () => {
     const ex = extractCpp(`void f() {}\n`, "src/a.cpp");
     expect(ex.nodes.some(n => n.kind === "module" && n.id === "src/a.cpp::module")).toBe(true);

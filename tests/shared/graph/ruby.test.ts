@@ -74,6 +74,17 @@ describe("Ruby extraction", () => {
     expect(call).toBeDefined();
   });
 
+  it("finds methods defined inside conditional blocks (else recursion branch)", () => {
+    // Covers the else { collectDecls(child, ...) } branch for do_block/if/begin
+    const ex = extractRuby(
+      `class App\n  if true\n    def boot; end\n  end\nend\n`,
+      "lib/app.rb",
+    );
+    // boot should be extracted even though it's inside an if block
+    const method = ex.nodes.find(n => n.label === "App#boot" || n.label === "boot");
+    expect(method).toBeDefined();
+  });
+
   it("includes a module node for the file", () => {
     const ex = extractRuby(`def f; end\n`, "lib/a.rb");
     expect(ex.nodes.some(n => n.kind === "module" && n.id === "lib/a.rb::module")).toBe(true);

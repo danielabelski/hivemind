@@ -100,6 +100,33 @@ describe("Go extraction", () => {
     expect(call).toBeDefined();
   });
 
+  it("extracts a method on a pointer receiver (*Foo) and resolves the receiver type", () => {
+    // Covers the pointer_type branch in extractReceiverType
+    const ex = extractGo(
+      `package main\ntype Stack struct{}\nfunc (s *Stack) Push(v int) {}\n`,
+      "pkg/stack.go",
+    );
+    const method = ex.nodes.find(n => n.label === "Push" && n.kind === "method");
+    expect(method).toBeDefined();
+    const edge = ex.edges.find(e => e.relation === "method_of" && e.source === "pkg/stack.go:Stack:class");
+    expect(edge).toBeDefined();
+  });
+
+  it("resolves call from a method to a free function (triggers method_declaration branch in findEnclosingFn)", () => {
+    // Covers lines 232-243: when collectCalls finds an identifier call inside a
+    // method body, findEnclosingFn walks up to a method_declaration to find the caller.
+    const ex = extractGo(
+      `package main\nfunc setup() {}\ntype Svc struct{}\nfunc (s *Svc) Run() { setup() }\n`,
+      "pkg/svc.go",
+    );
+    const run = ex.nodes.find(n => n.id === "pkg/svc.go:Svc.Run:method");
+    const setup = ex.nodes.find(n => n.id === "pkg/svc.go:setup:function");
+    expect(run).toBeDefined();
+    expect(setup).toBeDefined();
+    const call = ex.edges.find(e => e.relation === "calls" && e.source === run!.id && e.target === setup!.id);
+    expect(call).toBeDefined();
+  });
+
   it("includes a module node for the file", () => {
     const ex = extractGo(`package main\n`, "pkg/a.go");
     expect(ex.nodes.some(n => n.kind === "module" && n.id === "pkg/a.go::module")).toBe(true);

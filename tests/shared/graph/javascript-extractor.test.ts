@@ -91,6 +91,36 @@ describe("JavaScript (native) extractor", () => {
     expect(call).toBeDefined();
   });
 
+  it("resolves calls from one class method to another (className branch in findEnclosingCaller)", () => {
+    // Covers lines 277-278: className !== null path in findEnclosingCaller
+    const ex = extractJavaScript(
+      `class Controller {\n  handle() { this.validate(); }\n  validate() { return true; }\n}\n`,
+      "src/ctrl.js",
+    );
+    const handle = ex.nodes.find(n => n.id === "src/ctrl.js:Controller.handle:method");
+    const validate = ex.nodes.find(n => n.id === "src/ctrl.js:Controller.validate:method");
+    expect(handle).toBeDefined();
+    expect(validate).toBeDefined();
+    const call = ex.edges.find(e => e.relation === "calls" && e.source === handle!.id && e.target === validate!.id);
+    expect(call).toBeDefined();
+  });
+
+  it("resolves calls from an arrow function const to another function (variable_declarator branch)", () => {
+    // Covers lines 280-285: variable_declarator with arrow_function value
+    const ex = extractJavaScript(
+      `const process = (x) => transform(x);\nfunction transform(x) { return x * 2; }\n`,
+      "src/pipe.js",
+    );
+    const process = ex.nodes.find(n => n.label === "process");
+    const transform = ex.nodes.find(n => n.label === "transform");
+    expect(process).toBeDefined();
+    expect(transform).toBeDefined();
+    const call = ex.edges.find(
+      e => e.relation === "calls" && e.source === process!.id && e.target === transform!.id,
+    );
+    expect(call).toBeDefined();
+  });
+
   it("includes a module node for the file", () => {
     const ex = extractJavaScript(`function f() {}\n`, "src/a.js");
     expect(ex.nodes.some(n => n.kind === "module" && n.id === "src/a.js::module")).toBe(true);
