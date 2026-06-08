@@ -13,7 +13,9 @@
  * spawning the bundled script in a subprocess.
  */
 
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -37,6 +39,8 @@ import { isSafe, touchesMemory, rewritePaths } from "../memory-path-utils.js";
 import { armSkillOptOnSkillUse } from "../shared/skillopt-hook.js";
 
 export { isSafe, touchesMemory, rewritePaths };
+
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
 
 const log = (msg: string) => _log("codex-pre", msg);
 
@@ -351,19 +355,41 @@ export async function processCodexPreToolUse(
     }
   }
 
-  // Nothing matched: no config, an unhandled command shape, or a direct-query
-  // error. Do NOT run the command through just-bash or the host shell — it only
-  // passed isSafe(), and just-bash can invoke real host binaries, which is the
-  // exact code-execution surface this hook exists to remove. BLOCK (exit 2) so
-  // the command never reaches the host, and inject the guidance as the result.
-  // (We can't use "guide" here: guide exits 0, which lets Codex run the original
-  // command on the host — the very thing we're preventing.)
-  logFn(`unroutable memory command, blocking with guidance: ${rewritten}`);
-  return {
-    action: "block",
-    output: buildUnsupportedGuidance(),
-    rewrittenCommand: rewritten,
-  };
+  // Nothing matched by the inline fast-path. Route through the VFS shell bundle
+  // — a sandboxed Node.js interpreter against the SQL backend, no host access.
+  // We run it synchronously here (spawnSync) so the output is available before
+  // returning the decision.
+  //
+  // Action choice:
+  //   "guide" (exit 0) — Codex treats the command as successful and also runs
+  //     the original on the host. Safe ONLY for write-redirect patterns
+  //     (echo/printf/tee … > /file) where the side-effect on the real
+  //     ~/.deeplake/memory/ disk dir is harmless — VFS reads always query SQL.
+  //   "block" (exit 2) — Codex treats the command as rejected. Used for
+  //     everything else (pipes, finds, reads) to prevent host execution.
+  // Safe to return "guide" (Codex also runs original on host) ONLY for pure
+  // output commands: echo/printf/tee writing to a VFS path. A generic ">>"
+  // check would match mixed commands like `sort /etc/passwd > /vfs/out` which
+  // would then execute on the host and read real files.
+  const isWriteRedirect = /^\s*(echo|printf|tee)\b/.test(rewritten) && /\s>>?\s/.test(rewritten);
+  const shellBundle = join(__bundleDir, "shell", "deeplake-shell.js");
+  logFn(`unroutable memory command, falling back to VFS shell: ${rewritten}`);
+  try {
+    const proc = spawnSync("node", [shellBundle, "-c", rewritten], {
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+    if (proc.status === 0 || (proc.stdout && proc.stdout.trim())) {
+      const output = (proc.stdout?.trim() ?? "") || "(done)";
+      // Write redirects: use "guide" so Codex reports success (not "blocked").
+      // Other commands: keep "block" so the host shell never runs them.
+      return { action: isWriteRedirect ? "guide" : "block", output, rewrittenCommand: rewritten };
+    }
+    // Shell exited non-zero (bundle missing or command failed) — fall back to guidance.
+    return { action: "block", output: buildUnsupportedGuidance(), rewrittenCommand: rewritten };
+  } catch {
+    return { action: "block", output: buildUnsupportedGuidance(), rewrittenCommand: rewritten };
+  }
 }
 
 /* c8 ignore start */
