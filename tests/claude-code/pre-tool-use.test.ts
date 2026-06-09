@@ -485,3 +485,35 @@ describe("pre-tool-use: Write / Edit on memory paths are denied with Bash guidan
     expect(r.empty).toBe(true);
   });
 });
+
+
+describe("pre-tool-use: incidental memory mentions pass through", () => {
+  it("passes through `claude -p` with a memory path in the prompt", () => {
+    const r = runPreToolUse("Bash", {
+      command: "claude -p 'use the memory at ~/.deeplake/memory/'",
+    });
+    expect(r.empty).toBe(true);
+  });
+
+  it("passes through `echo` of a memory path", () => {
+    const r = runPreToolUse("Bash", { command: "echo '~/.deeplake/memory/'" });
+    expect(r.empty).toBe(true);
+  });
+
+  // ── boundaries: the carve-out must NOT swallow real interactions ──
+
+  it("still intercepts `echo` redirecting INTO memory (documented write path)", () => {
+    const r = runPreToolUse("Bash", { command: "echo 'hi' > ~/.deeplake/memory/note.md" });
+    expect(r.empty).toBe(false);
+  });
+
+  it("still intercepts `echo` with a substitution touching memory", () => {
+    const r = runPreToolUse("Bash", { command: "echo $(cat ~/.deeplake/memory/index.md)" });
+    expect(r.empty).toBe(false);
+  });
+
+  it("intercepts a quoted reader path", () => {
+    const r = runPreToolUse("Bash", { command: 'cat "~/.deeplake/memory/index.md"' });
+    expect(r.empty).toBe(false);
+  });
+});
