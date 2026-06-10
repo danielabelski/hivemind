@@ -134,7 +134,10 @@ export function parseBashTokens(cmd: string): string[][] {
     const char = cmd[i];
 
     if (escape) { currentToken += char; escape = false; continue; } // prev char was `\`
-    if (char === "\\") { escape = true; currentToken += char; continue; }
+    // Backslash is literal inside single quotes (bash semantics) — treating it
+    // as an escape there would swallow the closing quote and hide a following
+    // `; cmd …` stage inside the quoted token.
+    if (char === "\\" && !inSingle) { escape = true; currentToken += char; continue; }
     if (char === "'" && !inDouble) { inSingle = !inSingle; currentToken += char; continue; } // keep quotes
     if (char === '"' && !inSingle) { inDouble = !inDouble; currentToken += char; continue; }
 
@@ -145,6 +148,13 @@ export function parseBashTokens(cmd: string): string[][] {
       if (char === ">") { // own token, so `>file` (no space) is detectable
         pushToken();
         if (cmd[i + 1] === ">") { currentStage.push(">>"); i++; } else currentStage.push(">");
+        continue;
+      }
+      if (char === "<") { // own token, so `<file` (no space) is detectable;
+        pushToken();      // `<<`/`<<<` (heredoc/herestring) lump into one token
+        let run = "<";    // so only a lone `<` reads a file path
+        while (cmd[i + 1] === "<" && run.length < 3) { run += "<"; i++; }
+        currentStage.push(run);
         continue;
       }
       if (/\s/.test(char)) { pushToken(); continue; }
@@ -164,25 +174,31 @@ export function parseBashTokens(cmd: string): string[][] {
 const PASSTHROUGH_COMMANDS = new Set(["echo", "printf", "claude"]);
 
 export function bashTouchesMemory(cmd: string): boolean {
+  // Substitutions — $(), backticks, <(…) — run on the host no matter whose
+  // argv they sit in, and isSafe() (which rejects them) only runs AFTER this
+  // function returns true. So they get no carve-out: any memory mention next
+  // to one is intercepted and lands on the guidance/deny path downstream.
+  if (/\$\(|`|<\(/.test(cmd) && touchesMemory(cmd)) return true;
+
   const stages = parseBashTokens(stripHeredocBodies(cmd));
 
   for (const stage of stages) {
     if (stage.length === 0) continue;
     const program = stage[0].replace(/^["']|["']$/g, "");
 
-    // A redirection target into memory is a WRITE — always intercept
-    // (e.g. `echo '<content>' > '<path>'`), regardless of the command.
+    // A redirection on a memory path is a real interaction regardless of the
+    // command: `>`/`>>` writes (the documented `echo '<content>' > '<path>'`
+    // path), `<` reads (`claude -p 'summarize' < '<path>'`) — always intercept.
     for (let i = 0; i < stage.length; i++) {
-      if ((stage[i] === ">" || stage[i] === ">>") && i + 1 < stage.length
-          && touchesMemory(stage[i + 1])) {
+      if ((stage[i] === ">" || stage[i] === ">>" || stage[i] === "<")
+          && i + 1 < stage.length && touchesMemory(stage[i + 1])) {
         return true;
       }
     }
 
-    // echo/printf/claude with the path as inert text → skip this stage, UNLESS
-    // it smuggles a command substitution ($()/backticks) that would run on the
-    // host — those fall through to be caught below.
-    if (PASSTHROUGH_COMMANDS.has(program) && !/\$\(|`/.test(stage.join(" "))) {
+    // echo/printf/claude with the path as inert text → skip this stage
+    // (substitution smuggling is already handled above).
+    if (PASSTHROUGH_COMMANDS.has(program)) {
       continue;
     }
 
