@@ -264,6 +264,58 @@ describe("hivemind_index", () => {
   });
 });
 
+describe("fresh org — missing memory/sessions tables (issue #252)", () => {
+  // Exact error shape captured from a live repro against api.deeplake.ai
+  // (MCP server pointed at a nonexistent table). The backend 400 must be
+  // classified as "memory is empty", not surfaced raw.
+  const missingTableErr = new Error(
+    'Query failed: 400: {"error":"Table does not exist: relation \\"memory\\" does not exist","code":"INVALID_REQUEST","request_id":"fb0c2da8-d02c-4670-8ecd-c232d59b59da"}',
+  );
+
+  it("hivemind_index: missing table → 'No summaries found.' + fresh-org hint, no raw 400", async () => {
+    queryMock.mockRejectedValue(missingTableErr);
+    await importServer();
+    const out = await registeredTools.get("hivemind_index")!.handler({}) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("No summaries found.");
+    expect(out.content[0].text).toContain("first agent session");
+    expect(out.content[0].text).not.toContain("Index failed");
+    expect(out.content[0].text).not.toContain("400");
+  });
+
+  it("hivemind_search: missing table → 'No matches' + fresh-org hint, no raw 400", async () => {
+    searchDeeplakeTablesMock.mockRejectedValue(missingTableErr);
+    await importServer();
+    const out = await registeredTools.get("hivemind_search")!.handler({ query: "needle" }) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain('No matches for "needle".');
+    expect(out.content[0].text).toContain("first agent session");
+    expect(out.content[0].text).not.toContain("Search failed");
+  });
+
+  it("hivemind_read: missing table → 'No content found' + fresh-org hint, no raw 400", async () => {
+    queryMock.mockRejectedValue(missingTableErr);
+    await importServer();
+    const out = await registeredTools.get("hivemind_read")!.handler({ path: "/summaries/alice/a.md" }) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("No content found at /summaries/alice/a.md");
+    expect(out.content[0].text).toContain("first agent session");
+    expect(out.content[0].text).not.toContain("Read failed");
+  });
+
+  it("bare postgres wording (relation ... does not exist) is also classified", async () => {
+    queryMock.mockRejectedValue(new Error('relation "sessions" does not exist'));
+    await importServer();
+    const out = await registeredTools.get("hivemind_index")!.handler({}) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("No summaries found.");
+  });
+
+  it("missing COLUMN is NOT treated as fresh org — raw error still surfaces", async () => {
+    queryMock.mockRejectedValue(new Error('column "description" of relation "memory" does not exist'));
+    await importServer();
+    const out = await registeredTools.get("hivemind_index")!.handler({}) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("Index failed:");
+    expect(out.content[0].text).not.toContain("No summaries found.");
+  });
+});
+
 describe("error-message coercion (non-Error rejections)", () => {
   // Source uses `err instanceof Error ? err.message : String(err)` — exercise
   // the String(err) branch by rejecting with a non-Error value.
