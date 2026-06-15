@@ -32,6 +32,59 @@ describe("pi extension — embedding wiring", () => {
     expect(insertLine![0]).toContain("message_embedding");
   });
 
+  // Regression for the pi `plugin_version` 42703 incident (org c2d29f27 et al.):
+  // the pi extension hard-codes its sessions CREATE TABLE inline (it does NOT go
+  // through DeeplakeApi.ensureSessionsTable / healMissingColumns like the other
+  // agents). When `plugin_version` was added to the canonical SESSIONS_COLUMNS
+  // (2026-05-18) the pi INSERT picked it up but the inline CREATE did not, so
+  // every pi-created sessions table was one column short from birth and every
+  // INSERT failed with `column "plugin_version" ... does not exist` — with no
+  // heal to recover. This invariant locks INSERT ⊆ CREATE so the schemas can
+  // never silently drift again.
+  function sessionsInsertColumns(): string[] {
+    const m = PI_SRC.match(/INSERT INTO "\$\{SESSIONS_TABLE\}"\s*\(([^)]+)\)/);
+    expect(m).not.toBeNull();
+    return m![1].split(",").map(c => c.trim().toLowerCase());
+  }
+  function sessionsCreateColumns(): string[] {
+    const block = PI_SRC.match(/const sessCreate =([\s\S]*?)USING deeplake/);
+    expect(block).not.toBeNull();
+    const cols = new Set<string>();
+    for (const m of block![1].matchAll(
+      /[(,`]\s*([a-z_][a-z0-9_]*)\s+(?:TEXT|JSONB|FLOAT4|BIGINT|INT|BOOLEAN|DOUBLE)/gi,
+    )) {
+      cols.add(m[1].toLowerCase());
+    }
+    return [...cols];
+  }
+
+  it("every column the sessions INSERT writes exists in the sessions CREATE TABLE", () => {
+    const created = new Set(sessionsCreateColumns());
+    const missing = sessionsInsertColumns().filter(c => !created.has(c));
+    expect(missing).toEqual([]);
+  });
+
+  it("plugin_version is in both the sessions CREATE and INSERT", () => {
+    expect(sessionsCreateColumns()).toContain("plugin_version");
+    expect(sessionsInsertColumns()).toContain("plugin_version");
+  });
+
+  // The CREATE/INSERT invariants above only protect FRESH tables. Existing
+  // 13-column pi tables (the actual prod incident — org c2d29f27) are recovered
+  // by the session_start SCHEMA_HEAL pass. Guard that contract too: dropping
+  // plugin_version from the heal, or no longer healing MEMORY_TABLE, would
+  // silently re-break pre-existing tables while the suite stayed green.
+  it("session_start SCHEMA_HEAL heals sessions + memory tables for plugin_version", () => {
+    const block = PI_SRC.match(/const SCHEMA_HEAL[^=]*=\s*\[([\s\S]*?)\];/);
+    expect(block).not.toBeNull();
+    const heal = block![1];
+    expect(heal).toContain("SESSIONS_TABLE");
+    expect(heal).toContain("MEMORY_TABLE");
+    const pluginVersionHeals =
+      heal.match(/\["plugin_version",\s*"TEXT NOT NULL DEFAULT ''"\]/g) ?? [];
+    expect(pluginVersionHeals.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("auto-spawn target is the canonical shared-deps daemon path", () => {
     expect(PI_SRC).toContain('".hivemind"');
     expect(PI_SRC).toContain('"embed-deps"');

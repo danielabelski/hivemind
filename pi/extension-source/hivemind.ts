@@ -1258,7 +1258,8 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         `summary_embedding FLOAT4[], author TEXT NOT NULL DEFAULT '', ` +
         `mime_type TEXT NOT NULL DEFAULT 'text/plain', size_bytes BIGINT NOT NULL DEFAULT 0, ` +
         `project TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', ` +
-        `agent TEXT NOT NULL DEFAULT '', creation_date TEXT NOT NULL DEFAULT '', ` +
+        `agent TEXT NOT NULL DEFAULT '', plugin_version TEXT NOT NULL DEFAULT '', ` +
+        `creation_date TEXT NOT NULL DEFAULT '', ` +
         `last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`;
       const sessCreate = `CREATE TABLE IF NOT EXISTS "${SESSIONS_TABLE}" (` +
@@ -1267,6 +1268,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         `author TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT 'application/json', ` +
         `size_bytes BIGINT NOT NULL DEFAULT 0, project TEXT NOT NULL DEFAULT '', ` +
         `description TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', ` +
+        `plugin_version TEXT NOT NULL DEFAULT '', ` +
         `creation_date TEXT NOT NULL DEFAULT '', last_update_date TEXT NOT NULL DEFAULT ''` +
         `) USING deeplake`;
       try { await dlQuery(creds, memCreate); logHm(`session_start: memory CREATE TABLE ok (${MEMORY_TABLE})`); }
@@ -1294,6 +1296,42 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         }
       }
       logHm(`session_start: sessions table visible=${visible} (probe took ${Date.now() - start}ms)`);
+
+      // Heal pre-existing tables: `CREATE TABLE IF NOT EXISTS` no-ops on a table
+      // that already exists, so a column added to the canonical schema after the
+      // table was first created (e.g. plugin_version, 2026-05-18) never lands —
+      // every INSERT then fails with `column "plugin_version" ... does not exist`
+      // and pi (unlike the other agents) has no DeeplakeApi.healMissingColumns
+      // to recover. Introspect once and ALTER ADD only the genuinely-missing
+      // columns. Never `IF NOT EXISTS` — Deeplake returns HTTP 500 when the
+      // column already exists. Best-effort: failures must not block capture.
+      const SCHEMA_HEAL: Array<[string, Array<[string, string]>]> = [
+        [SESSIONS_TABLE, [["plugin_version", "TEXT NOT NULL DEFAULT ''"]]],
+        [MEMORY_TABLE, [["plugin_version", "TEXT NOT NULL DEFAULT ''"]]],
+      ];
+      for (const [table, cols] of SCHEMA_HEAL) {
+        try {
+          const rows = await dlQuery(
+            creds,
+            `SELECT column_name FROM information_schema.columns ` +
+              `WHERE table_name = '${sqlStr(table)}' AND table_schema = '${sqlStr(creds.workspaceId)}'`,
+          );
+          const have = new Set(
+            rows.map((r) => String((r as Record<string, unknown>).column_name).toLowerCase()),
+          );
+          for (const [name, type] of cols) {
+            if (have.has(name.toLowerCase())) continue;
+            try {
+              await dlQuery(creds, `ALTER TABLE "${table}" ADD COLUMN ${name} ${type}`);
+              logHm(`session_start: healed missing column ${table}.${name}`);
+            } catch (e: any) {
+              logHm(`session_start: heal ${table}.${name} failed: ${e?.message ?? e}`);
+            }
+          }
+        } catch (e: any) {
+          logHm(`session_start: schema-heal introspect failed for ${table}: ${e?.message ?? e}`);
+        }
+      }
     }
 
     // Auto-pull all-author skills via the bundled worker (same shared
