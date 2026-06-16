@@ -73,6 +73,16 @@ describe("stageSession", () => {
     expect(readPendingMemoryManifest(manifestPath)).toBeNull();
   });
 
+  it("does not count a pre-existing stale summary as success when the agent writes nothing", async () => {
+    mkdirSync(stagingDir, { recursive: true });
+    writeFileSync(join(stagingDir, "s1.md"), "# stale\n## What Happened\nold run\n");
+    // runAgent writes nothing → the stale file must be deleted first, so the
+    // result is no-summary rather than a false success on stale content.
+    const r = await stageSession(input(), opts({ runAgent: async () => true }));
+    expect(r).toMatchObject({ ok: false, reason: "no-summary" });
+    expect(existsSync(join(stagingDir, "s1.md"))).toBe(false);
+  });
+
   it("reports claude-failed when the agent run returns false and writes nothing", async () => {
     const r = await stageSession(input(), opts({ runAgent: async () => false }));
     expect(r).toMatchObject({ ok: false, reason: "claude-failed" });
@@ -158,7 +168,7 @@ process.exit(0);
       now: () => "2026-06-16T00:00:00.000Z", stagingDir, manifestPath,
     });
     expect(r.ok).toBe(true);
-    expect(readFileSync(join(stagingDir, "s1.md"), "utf-8")).toContain("from fake bin");
+    expect(readFileSync(join(stagingDir, "s1.md"), "utf-8")).toBe("# Session s1\n## What Happened\nfrom fake bin\n");
   });
 
   it("default runClaude reports failure when the bin exits non-zero", async () => {

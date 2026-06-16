@@ -17,7 +17,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -148,6 +148,13 @@ export async function stageSession(input: StageSessionInput, opts: StageOptions)
     // prompt's PRIVACY rule strips absolute paths from the body, so use a
     // synthetic project-relative marker rather than leaking the disk path.
     .replace(/__JSONL_SERVER_PATH__/g, `local:${input.agent}/${input.sessionId}`);
+
+  // Remove any leftover summary from a prior run so success genuinely
+  // requires THIS run's agent to (re)write the file — otherwise a failed or
+  // no-op run could return ok:true on stale content.
+  if (existsSync(summaryPath)) {
+    try { unlinkSync(summaryPath); } catch { /* best-effort */ }
+  }
 
   const runAgent = opts.runAgent ?? runClaude;
   const ran = await runAgent(opts.claudeBin, prompt, opts.timeoutMs);

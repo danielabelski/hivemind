@@ -51,8 +51,10 @@ describe("maybeAutoBackfillMemory wiring", () => {
     const r = maybeAutoBackfillMemory();
     expect(r).toEqual({ triggered: true });
     expect(spawn).toHaveBeenCalledTimes(1);
-    const [, args] = vi.mocked(spawn).mock.calls[0];
+    const [, args, options] = vi.mocked(spawn).mock.calls[0];
     expect(args).toEqual(["memory", "backfill"]);
+    // The spawned process is marked as the lock owner so only it releases.
+    expect((options as { env: Record<string, string> }).env.HIVEMIND_BACKFILL_LOCK_OWNED).toBe("1");
   });
 
   it("skips when the manifest already exists (manifestExists closure)", () => {

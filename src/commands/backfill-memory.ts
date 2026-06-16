@@ -263,11 +263,17 @@ export async function executeBackfill(
       const s = queue.shift();
       if (!s) return;
       summary.attempted++;
-      const res = await stage(s);
-      if (res.ok) {
-        summary.staged++;
-        if (res.embedded) summary.embedded++;
-      } else {
+      try {
+        const res = await stage(s);
+        if (res.ok) {
+          summary.staged++;
+          if (res.embedded) summary.embedded++;
+        } else {
+          summary.failed++;
+        }
+      } catch {
+        // A stager that throws must not abort the whole run — count it as a
+        // failed session and move on to the rest of the queue.
         summary.failed++;
       }
     }
@@ -278,8 +284,15 @@ export async function executeBackfill(
   return summary;
 }
 
-/** Release the install-time spawn lock (best-effort). */
+/**
+ * Release the install-time spawn lock — ONLY when this process owns it.
+ * The spawn worker (spawn-backfill-memory-worker.ts) acquires the lock and
+ * sets HIVEMIND_BACKFILL_LOCK_OWNED=1 in the spawned process's env. A manual
+ * `hivemind memory backfill` invocation never owns the lock, so it must not
+ * delete one another (spawned) process is holding.
+ */
 function releaseBackfillLock(): void {
+  if (process.env.HIVEMIND_BACKFILL_LOCK_OWNED !== "1") return;
   try {
     if (existsSync(PENDING_MEMORY_LOCK_PATH)) unlinkSync(PENDING_MEMORY_LOCK_PATH);
   } catch { /* best-effort */ }

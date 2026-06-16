@@ -173,6 +173,16 @@ describe("executeBackfill", () => {
     expect(r).toMatchObject({ attempted: 3, staged: 2, embedded: 1, failed: 1, timedOutOnBudget: false });
   });
 
+  it("counts a stager that throws as failed and continues the queue", async () => {
+    const items = [sess("a", DAY), sess("b", DAY), sess("c", DAY)];
+    const stage = async (s: SessionFile) => {
+      if (s.sessionId === "b") throw new Error("stager boom");
+      return { ok: true, embedded: false };
+    };
+    const r = await executeBackfill(items, opts({ stage }));
+    expect(r).toMatchObject({ attempted: 3, staged: 2, failed: 1, timedOutOnBudget: false });
+  });
+
   it("respects the wall-clock budget and flags it", async () => {
     const items = [sess("a", DAY), sess("b", DAY), sess("c", DAY)];
     // Clock jumps past the deadline after the first dequeue.

@@ -511,7 +511,7 @@ describe("hivemind memory", () => {
     runFlushMemoryMock.mockResolvedValue({ pending: 3, uploaded: 3, failed: 0 });
     await runCli(["memory", "flush"]);
     expect(runFlushMemoryMock).toHaveBeenCalledTimes(1);
-    expect(stdoutText()).toContain("uploaded 3/3");
+    expect(stdoutText()).toContain("memory flush: uploaded 3/3 staged summary(ies).");
   });
 
   it("flush warns + exits 1 when not logged in", async () => {

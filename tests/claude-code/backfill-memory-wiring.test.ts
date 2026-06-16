@@ -43,14 +43,10 @@ describe("runBackfillMemory non-dry wiring", () => {
     // defaultStageFn ran the (mocked) stageSession for both eligible sessions.
     expect(staged.sort()).toEqual(["s1", "s2"]);
     const printed = writeSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("");
-    expect(printed).toContain("staged 2/2");
+    expect(printed).toContain("staged 2/2 session(s) (0 embedded, 0 failed)");
   });
 
-  it("reports 'nothing to extract' when the cap is zero-effective via --n", async () => {
-    // All eligible already staged → executor short-circuits. Simulate by
-    // pointing the manifest dedup at both ids is overkill here; instead use
-    // --project-only with a session list whose codex item is out-of-cwd and
-    // s1 in-cwd, then confirm at least the in-cwd one extracts.
+  it("--project-only extracts only the in-cwd session (codex out-of-cwd excluded)", async () => {
     const code = await runBackfillMemory(["--project-only"]);
     expect(code).toBe(0);
     expect(staged).toContain("s1");

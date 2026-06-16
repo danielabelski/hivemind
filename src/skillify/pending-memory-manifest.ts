@@ -38,7 +38,7 @@
  * local-source enumeration) into a hook bundle.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -108,13 +108,26 @@ export function readPendingMemoryManifest(
   }
 }
 
-/** Write the manifest, creating parent directories as needed. */
+/**
+ * Write the manifest atomically (temp file + rename) so a crash mid-write
+ * can never leave a torn/truncated manifest — a reader either sees the old
+ * file or the complete new one.
+ *
+ * Concurrency note: the upsert/markUploaded read-modify-write helpers are
+ * synchronous and the EXTRACT phase runs in a single process (the spawn
+ * worker holds an exclusive lock against a second backfill process), so
+ * concurrent backfill workers can't interleave a read-modify-write and lose
+ * each other's rows. The atomic rename guards against crash-torn files, not
+ * against multi-process lost updates (which the spawn lock already prevents).
+ */
 export function writePendingMemoryManifest(
   m: PendingMemoryManifest,
   path: string = PENDING_MEMORY_MANIFEST_PATH,
 ): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(m, null, 2));
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(m, null, 2));
+  renameSync(tmp, path);
 }
 
 /**

@@ -50,7 +50,9 @@ function realSpawn(): boolean {
   const child = spawn(cmd, cmdArgs as string[], {
     detached: true,
     stdio: ["ignore", out, out],
-    env: process.env,
+    // Mark the spawned process as the lock owner so it (and only it) releases
+    // the lock on exit — a manual `hivemind memory backfill` won't clear it.
+    env: { ...process.env, HIVEMIND_BACKFILL_LOCK_OWNED: "1" },
   });
   closeSync(out);
   child.unref();
