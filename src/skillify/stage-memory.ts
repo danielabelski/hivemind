@@ -21,7 +21,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "
 import { join } from "node:path";
 
 import { WIKI_PROMPT_TEMPLATE } from "../hooks/spawn-wiki-worker.js";
-import { findAgentBin } from "./gate-runner.js";
+import { buildClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
+import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import {
@@ -82,25 +83,55 @@ function countLines(path: string): number {
   }
 }
 
+/** Spawn shape derived from a ClaudeInvocation: how to wire stdio + the prompt. */
+export interface ClaudeSpawnPlan {
+  file: string;
+  args: string[];
+  /** stdin is piped only when the prompt rides stdin (Windows `.cmd` shim). */
+  stdio: ["pipe" | "ignore", "ignore", "ignore"];
+  shell: boolean;
+  /** Prompt to write to stdin, or null when it's passed as a positional arg. */
+  stdinInput: string | null;
+}
+
+/**
+ * Pure translation of a ClaudeInvocation into spawn options. Isolating the
+ * Unix (prompt-as-arg) vs Windows (`.cmd` → prompt-over-stdin) branching here
+ * keeps it unit-testable on any platform — `runClaude` itself stays a thin,
+ * branch-light spawn wrapper.
+ */
+export function planClaudeSpawn(inv: ReturnType<typeof buildClaudeInvocation>): ClaudeSpawnPlan {
+  const shell = inv.options.shell === true;
+  const stdinInput = shell && typeof inv.options.input === "string" ? inv.options.input : null;
+  return {
+    file: inv.file,
+    args: inv.args,
+    // stdout/stderr stay ignored — success is judged by the summary file
+    // landing on disk, and the backfill executor surfaces a `claude-failed`
+    // reason on non-zero exit.
+    stdio: [stdinInput !== null ? "pipe" : "ignore", "ignore", "ignore"],
+    shell,
+    stdinInput,
+  };
+}
+
 function runClaude(claudeBin: string, prompt: string, timeoutMs: number): Promise<boolean> {
+  // Reuse the live wiki-worker's invocation builder so the prompt-as-arg vs
+  // prompt-over-stdin (Windows `.cmd` shim) handling stays identical to the
+  // proven SessionEnd path. A bare `spawn(bin, ["-p", prompt, ...])` cannot
+  // launch a `.cmd` shim and would blow the command-line length on Windows.
+  const plan = planClaudeSpawn(buildClaudeInvocation(claudeBin, prompt));
   return new Promise((resolve) => {
-    const child = spawn(
-      claudeBin,
-      [
-        "-p", prompt,
-        "--no-session-persistence",
-        "--model", "haiku",
-        "--permission-mode", "bypassPermissions",
-      ],
-      {
-        stdio: ["ignore", "ignore", "ignore"],
-        // HIVEMIND_CAPTURE=false: our own extraction claude -p calls must
-        // not re-trigger the capture/wiki hooks and recurse.
-        env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
-        timeout: timeoutMs,
-      },
-    );
+    const child = spawn(plan.file, plan.args, {
+      stdio: plan.stdio,
+      // HIVEMIND_CAPTURE=false: our own extraction claude -p calls must
+      // not re-trigger the capture/wiki hooks and recurse.
+      env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
+      timeout: timeoutMs,
+      shell: plan.shell,
+    });
     child.on("error", () => resolve(false));
+    if (plan.stdinInput !== null) child.stdin?.end(plan.stdinInput);
     child.on("close", (code) => resolve(code === 0));
   });
 }
@@ -205,7 +236,17 @@ export async function stageSession(input: StageSessionInput, opts: StageOptions)
   return { sessionId: key, ok: true, embedded };
 }
 
-/** Resolve the claude binary for the extraction gate. */
+/**
+ * Resolve the claude binary for the extraction gate.
+ *
+ * Uses the same PATH-aware resolver as the live wiki-worker
+ * (`resolveCliBin`, which shells out to `which`/`where`) instead of a
+ * hard-coded candidate list. The candidate-list resolver missed claude when
+ * it was installed somewhere not on the list (e.g. an nvm/npm-global bin) and
+ * fell back to a `~/.claude/local/claude` that may not exist — so every
+ * backfill spawn ENOENT'd and reported `claude-failed` for every session on
+ * an otherwise-healthy install. Aligning with the proven path fixes that.
+ */
 export function resolveClaudeBin(): string {
-  return findAgentBin("claude_code");
+  return resolveCliBin("claude");
 }
