@@ -71,6 +71,7 @@ const DEFAULT_BUDGET_MS = 15 * 60 * 1000;
  */
 const IN_FLIGHT_MAX_AGE_MS = 60_000;
 
+/** Parsed options controlling a `memory backfill` run. */
 export interface BackfillOptions {
   /** Look-back window in days (sessions older than this are skipped). */
   windowDays: number;
@@ -88,6 +89,7 @@ export interface BackfillOptions {
   cwd: string;
 }
 
+/** Parse `memory backfill` argv into options, ignoring malformed numeric flags. */
 export function parseBackfillArgs(argv: string[], cwd: string): BackfillOptions {
   const opts: BackfillOptions = {
     windowDays: DEFAULT_WINDOW_DAYS,
@@ -119,6 +121,7 @@ export function parseBackfillArgs(argv: string[], cwd: string): BackfillOptions 
   return opts;
 }
 
+/** The computed work-list for a run: what's in-window, deduped, and to extract. */
 export interface BackfillPlan {
   windowDays: number;
   /** Cutoff epoch-ms; sessions with mtime < cutoff are excluded. */
@@ -192,6 +195,7 @@ export function planBackfill(opts: BackfillOptions, now: number): BackfillPlan {
   return planFromSessions(all, stagedSessionIds(), opts, now);
 }
 
+/** Render the human-readable plan/dry-run report (window, cap, by-agent counts). */
 export function renderPlan(plan: BackfillPlan, opts: BackfillOptions): string {
   const lines: string[] = [];
   lines.push(`memory backfill — ${opts.dryRun ? "DRY RUN" : "plan"}`);
@@ -208,6 +212,7 @@ export function renderPlan(plan: BackfillPlan, opts: BackfillOptions): string {
   return lines.join("\n");
 }
 
+/** One session's failed-extraction outcome, surfaced in the run report. */
 export interface BackfillFailure {
   /** Composite agent-id staging key (matches the manifest key). */
   session: string;
@@ -215,6 +220,7 @@ export interface BackfillFailure {
   reason: string;
 }
 
+/** Tally of an extract run: counts plus per-reason / per-session failure detail. */
 export interface ExtractSummary {
   attempted: number;
   staged: number;
@@ -326,17 +332,18 @@ export function releaseBackfillLock(lockPath: string = PENDING_MEMORY_LOCK_PATH)
   } catch { /* best-effort */ }
 }
 
+/** CLI entry for `hivemind memory backfill`: plan, then extract unless --dry-run. */
 export async function runBackfillMemory(argv: string[]): Promise<number> {
   const cwd = process.cwd();
   const opts = parseBackfillArgs(argv, cwd);
-  const plan = planBackfill(opts, Date.now());
-
-  process.stdout.write(renderPlan(plan, opts) + "\n");
-
-  // Dry-run doesn't acquire/own the lock (the spawn path only locks for a
-  // real run), so leave it untouched here.
-  if (opts.dryRun) return 0;
+  // Everything that can throw runs inside the try so the finally always
+  // releases the lock — a planBackfill/renderPlan failure must not strand a
+  // worker-owned lock. releaseBackfillLock is itself a no-op unless this
+  // process owns the lock, so the dry-run early return is safe under it.
   try {
+    const plan = planBackfill(opts, Date.now());
+    process.stdout.write(renderPlan(plan, opts) + "\n");
+    if (opts.dryRun) return 0;
     return await runExtract(plan, cwd, opts);
   } finally {
     releaseBackfillLock();
@@ -385,6 +392,11 @@ export function summarizeExtract(
   return { lines, exitCode };
 }
 
+/**
+ * Execute the planned extraction and print the outcome. Returns the process
+ * exit code (1 only on a total wash — see {@link summarizeExtract}); a no-op
+ * when the plan is empty.
+ */
 export async function runExtract(plan: BackfillPlan, cwd: string, opts: BackfillOptions): Promise<number> {
 
   if (plan.toExtract.length === 0) {

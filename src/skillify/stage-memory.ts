@@ -32,6 +32,7 @@ import {
   type PendingMemoryEntry,
 } from "./pending-memory-manifest.js";
 
+/** Inputs identifying one local session to stage into pending memory. */
 export interface StageSessionInput {
   sessionId: string;
   /** Absolute path to the local session JSONL. */
@@ -42,6 +43,7 @@ export interface StageSessionInput {
   project: string;
 }
 
+/** Knobs + injectable seams (agent runner, embedder, paths, clock) for staging. */
 export interface StageOptions {
   /** Path to the claude binary used to run the extraction prompt. */
   claudeBin: string;
@@ -65,6 +67,7 @@ export interface StageOptions {
   embed?: (text: string) => Promise<number[] | null>;
 }
 
+/** Outcome of staging one session: success/embedded flags + a failure reason. */
 export interface StageResult {
   sessionId: string;
   ok: boolean;
@@ -160,6 +163,12 @@ export function backfillSessionKey(agent: string, sessionId: string): string {
   return `${agent}-${sessionId}`;
 }
 
+/**
+ * Stage one local session: run the wiki prompt through the agent CLI, persist
+ * the summary (+ a local embedding) under the staging dir, and append an
+ * `uploaded: false` manifest row. Returns a reason-tagged failure rather than
+ * throwing so the backfill executor can surface why a session didn't stage.
+ */
 export async function stageSession(input: StageSessionInput, opts: StageOptions): Promise<StageResult> {
   const stagingDir = opts.stagingDir ?? PENDING_MEMORY_DIR;
   const key = backfillSessionKey(input.agent, input.sessionId);
