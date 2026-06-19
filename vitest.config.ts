@@ -364,6 +364,7 @@ export default defineConfig({
         "src/notifications/index.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
         "src/notifications/queue.ts":             { statements: 90, branches: 70, functions: 90, lines: 90 },
         "src/notifications/state.ts":             { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/utils/atomic-write.ts":            { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/registry.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/welcome.ts":     { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/referral-invite.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },

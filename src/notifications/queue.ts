@@ -10,12 +10,13 @@
  * hook consumes at next session). The file is the cross-process boundary.
  */
 
-import { readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync, statSync } from "node:fs";
-import { join, resolve, relative, isAbsolute } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Notification, NotificationsQueue } from "./types.js";
 import { log as _log } from "../utils/debug.js";
+import { isPathInsideHome, renameAtomic } from "../utils/atomic-write.js";
 
 const log = (msg: string) => _log("notifications-queue", msg);
 
@@ -70,16 +71,7 @@ export function readQueue(): NotificationsQueue {
  * `os.homedir`, and we don't want to mock the whole module).
  */
 export function _isQueuePathInsideHome(path: string, home: string): boolean {
-  const r = resolve(path);
-  const h = resolve(home);
-  if (r === h) return true;
-  // `relative(h, r)` is the safe cross-platform containment check: a path
-  // inside `h` yields a relative path that neither escapes upward ("..") nor
-  // re-anchors to an absolute root. A naive `startsWith(h + "/")` breaks on
-  // Windows, where `resolve` emits backslash separators (`C:\Users\u\...`),
-  // so the hardcoded forward slash never matches and every write is blocked.
-  const rel = relative(h, r);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  return isPathInsideHome(path, home);
 }
 
 export function writeQueue(q: NotificationsQueue): void {
@@ -92,32 +84,6 @@ export function writeQueue(q: NotificationsQueue): void {
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(q, null, 2), { mode: 0o600 });
   renameAtomic(tmp, path);
-}
-
-/**
- * `renameSync` is atomic on POSIX, but on Windows it raises EPERM/EBUSY when
- * the destination is transiently open (e.g. a concurrent reader, AV scanner,
- * or indexer holding the file). Retry a few times with a short synchronous
- * backoff before giving up. POSIX never hits the retry path — the first call
- * succeeds — so Linux/macOS behavior is unchanged.
- */
-function renameAtomic(tmp: string, dest: string): void {
-  const MAX_ATTEMPTS = 10;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      renameSync(tmp, dest);
-      return;
-    } catch (e: unknown) {
-      const code = (e as NodeJS.ErrnoException).code;
-      const retryable = code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (!retryable || attempt >= MAX_ATTEMPTS - 1) {
-        try { unlinkSync(tmp); } catch { /* best-effort cleanup */ }
-        throw e;
-      }
-      const until = Date.now() + 10 * (attempt + 1);
-      while (Date.now() < until) { /* short synchronous spin; rename is sync API */ }
-    }
-  }
 }
 
 /**

@@ -485,7 +485,9 @@ describe("enqueueNotification cross-process safety", () => {
   // would clobber the earlier one's append. Spawn N subprocesses that
   // each enqueue one notification and assert the final queue length
   // equals N — without the lock, the count would be < N.
-  const modPath = new URL("../../src/notifications/queue.ts", import.meta.url).pathname;
+  // .href (file:// URL) not .pathname: the latter yields "/C:/…" on Windows,
+  // which a dynamic import() rejects as an invalid specifier.
+  const modPath = new URL("../../src/notifications/queue.ts", import.meta.url).href;
 
   it("cross-process producers with identical (id, dedupKey) collapse to one queue entry", async () => {
     // Regression for CodeRabbit #8/#12: previously fresh hook processes
@@ -503,9 +505,12 @@ describe("enqueueNotification cross-process safety", () => {
       `});`;
     for (let i = 0; i < 3; i++) {
       const r = spawnSync("npx", ["tsx", "-e", code], {
-        env: { ...process.env, HOME: TEMP_HOME },
+        // USERPROFILE so os.homedir resolves the temp home on Windows; shell
+        // because `npx` is `npx.cmd` there and can't be spawned directly.
+        env: { ...process.env, HOME: TEMP_HOME, USERPROFILE: TEMP_HOME },
         encoding: "utf-8",
         timeout: 30_000,
+        shell: process.platform === "win32",
       });
       expect(r.status, `producer ${i} stderr=${(r.stderr || "").slice(0, 300)}`).toBe(0);
     }
@@ -529,9 +534,10 @@ describe("enqueueNotification cross-process safety", () => {
     const runs = Array.from({ length: N }, (_, i) =>
       new Promise<void>((resolve, reject) => {
         const r = spawnSync("npx", ["tsx", "-e", code], {
-          env: { ...process.env, HOME: TEMP_HOME, PRODUCER_IDX: String(i) },
+          env: { ...process.env, HOME: TEMP_HOME, USERPROFILE: TEMP_HOME, PRODUCER_IDX: String(i) },
           encoding: "utf-8",
           timeout: 30_000,
+          shell: process.platform === "win32",
         });
         if (r.status !== 0) {
           reject(new Error(`producer ${i} exit=${r.status} stderr=${(r.stderr || "").slice(0, 300)}`));
@@ -747,7 +753,10 @@ describe("bundle/session-notifications.js (built artifact)", () => {
       input,
       encoding: "utf-8",
       timeout: 5_000,
-      env: { ...process.env, HOME: extraEnv.HOME, HIVEMIND_CAPTURE: "false", ...extraEnv },
+      // USERPROFILE must track the sandbox HOME, else os.homedir() in the
+      // child resolves the outer faked home on Windows and reads the wrong
+      // (empty) sandbox — yielding empty stdout / JSON-parse failures.
+      env: { ...process.env, HOME: extraEnv.HOME, USERPROFILE: extraEnv.HOME, HIVEMIND_CAPTURE: "false", ...extraEnv },
     });
     return { stdout: (r.stdout ?? "").toString(), stderr: (r.stderr ?? "").toString() };
   }

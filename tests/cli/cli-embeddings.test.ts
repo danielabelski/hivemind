@@ -221,7 +221,13 @@ describe("killEmbedDaemon — verifies socket before SIGTERM (#2)", () => {
   // fix gates the SIGTERM on `_isDaemonAliveOnSocket` — if the UDS path
   // doesn't accept a connect within a short timeout, the daemon is dead
   // and the PID in the file is stale, so we only clean up sock+pid.
-  it("skips SIGTERM when the socket is dead (stale pidfile path)", async () => {
+  // Windows-skip (approved): the embed daemon is a Unix-domain-socket +
+  // uid-keyed pidfile model. killEmbedDaemon derives its paths from
+  // process.getuid()/userInfo().uid (uid is -1 / meaningless on Windows),
+  // and the liveness probe connects to a UDS path — neither maps to the
+  // Windows daemon (named-pipe) world. The product's socket-dead → skip-
+  // SIGTERM behaviour is fully covered on POSIX.
+  it.skipIf(process.platform === "win32")("skips SIGTERM when the socket is dead (stale pidfile path)", async () => {
     const { killEmbedDaemon: kill, _isDaemonAliveOnSocket } = await import(
       "../../src/cli/embeddings.js"
     );

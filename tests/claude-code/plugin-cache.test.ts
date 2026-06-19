@@ -138,7 +138,14 @@ describe("snapshotPluginDir + restoreOrCleanup", () => {
     expect(restoreOrCleanup(null)).toBe("noop");
   });
 
-  it("returns 'restore-failed' and writes to stderr when rename throws", () => {
+  // Windows-skip: this test forces renameSync to fail by chmod-ing the parent
+  // dir to 0o500 (read+execute, no write). POSIX honours that and the rename
+  // throws EACCES; Windows ignores Unix mode bits on directories, so the
+  // rename succeeds and no error is injected. The product code path
+  // (restoreOrCleanup's catch → "restore-failed") is platform-agnostic and
+  // fully covered on Linux/macOS. node:fs named imports are non-configurable
+  // so a spy-based injection isn't possible here.
+  it.skipIf(process.platform === "win32")("returns 'restore-failed' and writes to stderr when rename throws", () => {
     const root = mkRoot();
     const stderrChunks: string[] = [];
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: any) => {
@@ -450,7 +457,12 @@ describe("executeGc", () => {
     expect(result.deletedVersions).toEqual(["nonexistent-version"]);
   });
 
-  it("collects errors from both rmSync catch blocks without throwing", () => {
+  // Windows-skip: forces rmSync to fail via chmod(parent, 0o500). POSIX-only —
+  // Windows ignores Unix dir mode bits, so the rm succeeds and no EACCES is
+  // injected. executeGc's two catch blocks are platform-agnostic and covered
+  // on Linux/macOS. node:fs named imports are non-configurable, ruling out a
+  // spy-based throw here.
+  it.skipIf(process.platform === "win32")("collects errors from both rmSync catch blocks without throwing", () => {
     const versionDir = join(root, "0.6.38");
     mkdirSync(versionDir, { recursive: true });
     const snapshotDir = join(root, "0.6.38.keep-9999");

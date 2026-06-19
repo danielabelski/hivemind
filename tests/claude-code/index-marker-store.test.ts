@@ -174,8 +174,9 @@ describe("writeIndexMarker", () => {
     writeIndexMarker(markerPath);
 
     expect(mkdirSyncMock).toHaveBeenCalledTimes(1);
+    // join(...) so the expected separator matches the host (`\` on Windows).
     expect(mkdirSyncMock).toHaveBeenCalledWith(
-      "/tmp/test-tmp/hivemind-deeplake-indexes",
+      join("/tmp/test-tmp", "hivemind-deeplake-indexes"),
       { recursive: true },
     );
     expect(writeFileSyncMock).toHaveBeenCalledTimes(1);

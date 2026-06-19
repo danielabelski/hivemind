@@ -1,5 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runGate, buildArgs, findAgentBin, type Agent } from "../../src/skillify/gate-runner.js";
+
+// runGate's actual spawn path needs a real executable that exits 0/non-zero
+// regardless of the agent flags it's handed. A shebang shell script is the
+// simplest such fixture, so this block is POSIX-only — on Windows the spawn
+// path is exercised by the install/wiki-worker suites, and the argv contract
+// is covered cross-platform by the buildArgs tests below.
+describe.skipIf(process.platform === "win32")("runGate spawn (POSIX)", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "gate-spawn-")); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("captures stdout and reports success when the agent exits 0", () => {
+    const bin = join(dir, "ok.sh");
+    writeFileSync(bin, "#!/bin/sh\necho gate-ok\nexit 0\n");
+    chmodSync(bin, 0o755);
+    const r = runGate({ agent: "claude_code", prompt: "p", bin });
+    expect(r.errored).toBe(false);
+    expect(r.stdout).toContain("gate-ok");
+  });
+
+  it("reports errored (with captured streams) when the agent exits non-zero", () => {
+    const bin = join(dir, "fail.sh");
+    writeFileSync(bin, "#!/bin/sh\necho oops 1>&2\nexit 3\n");
+    chmodSync(bin, 0o755);
+    const r = runGate({ agent: "claude_code", prompt: "p", bin });
+    expect(r.errored).toBe(true);
+    expect(r.errorMessage).toMatch(/CLI failed/);
+  });
+});
 
 describe("findAgentBin", () => {
   it("returns a path for each known agent (PATH lookup or fallback)", () => {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { autoUpdate } from "../../src/hooks/shared/autoupdate.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
@@ -183,11 +183,16 @@ describe("autoUpdate — default findHivemindOnPath()", () => {
 
   it("finds binary on PATH and dispatches", async () => {
     const fakeBinDir = mkdtempSync(join(tmpdir(), "fake-bin-"));
-    const fakeBin = join(fakeBinDir, "hivemind");
+    // On Windows the resolver looks for `hivemind.cmd` (the npm shim shape);
+    // on POSIX it's the extensionless `hivemind`. Build the fake binary with
+    // the name the resolver will actually probe, and join PATH with the
+    // platform delimiter (';' on Windows, ':' on POSIX).
+    const binName = process.platform === "win32" ? "hivemind.cmd" : "hivemind";
+    const fakeBin = join(fakeBinDir, binName);
     writeFileSync(fakeBin, "#!/usr/bin/env bash\nexit 0\n");
     require("node:fs").chmodSync(fakeBin, 0o755);
     const origPath = process.env.PATH;
-    process.env.PATH = `${fakeBinDir}:${origPath ?? ""}`;
+    process.env.PATH = `${fakeBinDir}${delimiter}${origPath ?? ""}`;
     try {
       const spawnFn = vi.fn().mockReturnValue({ pid: 99 });
       await autoUpdate(VALID_CREDS, { agent: "claude", spawn: spawnFn });

@@ -222,7 +222,10 @@ describe("promote", () => {
     process.chdir(dir);
     expectExit(1, () => runSkillifyCommand(["promote", "nonexistent-skill"]));
     expect(erred.join("\n")).toMatch(/not found/);
-    rmSync(dir, { recursive: true, force: true });
+    // Windows can't remove the process cwd and may briefly hold a handle on
+    // the temp dir; chdir out first, then retry-on-EBUSY.
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 });
 
@@ -251,7 +254,8 @@ describe("pull", () => {
     runSkillifyCommand(["pull", "--to", "project", "--dry-run"]);
     await new Promise(r => setImmediate(r));
     expect(logged.join("\n")).toContain(`Destination: ${join(dir, ".claude", "skills")}`);
-    rmSync(dir, { recursive: true, force: true });
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("--user X filters by single author", async () => {
@@ -344,7 +348,8 @@ describe("unpull", () => {
     process.chdir(dir);
     runSkillifyCommand(["unpull", "--to", "project", "--dry-run"]);
     expect(logged.join("\n")).toContain(join(dir, ".claude", "skills"));
-    rmSync(dir, { recursive: true, force: true });
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("--to with invalid value reports error", async () => {

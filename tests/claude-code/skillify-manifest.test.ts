@@ -127,8 +127,13 @@ describe("saveManifest", () => {
     expect(existsSync(`${path}.tmp`)).toBe(false);
     // Permissions hardened (file contains the install root path which leaks
     // some local layout info; not secret but tightens the default).
-    const mode = statSync(path).mode & 0o777;
-    expect(mode & 0o077).toBe(0); // no group/other perms
+    // Unix mode bits have no Windows analogue — Node reports a synthesized
+    // mode there (typically 0o666) regardless of the chmod(0o600) the
+    // product applies, so only assert the 0o077-clear invariant on POSIX.
+    if (process.platform !== "win32") {
+      const mode = statSync(path).mode & 0o777;
+      expect(mode & 0o077).toBe(0); // no group/other perms
+    }
   });
 
   it("creates parent directories on first write", () => {
