@@ -55,7 +55,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { Credentials } from "../../commands/auth-creds.js";
 import { log as _log } from "../../utils/debug.js";
 
@@ -94,12 +94,20 @@ const defaultSpawn = (cmd: string, args: string[]): { pid?: number } => {
 /** Find the hivemind binary on PATH synchronously. ~5ms; on the hot path. */
 function findHivemindOnPath(): string | null {
   // node:os doesn't expose `which`. Walk PATH manually — sync, fast,
-  // no subprocess.
+  // no subprocess. PATH is delimited by ':' on POSIX and ';' on Windows
+  // (path.delimiter), and on Windows the binary is a `.cmd`/`.exe` shim
+  // (an extensionless `hivemind` is not a runnable Windows program).
   const PATH = process.env.PATH ?? "";
-  const dirs = PATH.split(":").filter(Boolean);
+  const dirs = PATH.split(delimiter).filter(Boolean);
+  const candidates =
+    process.platform === "win32"
+      ? ["hivemind.cmd", "hivemind.exe", "hivemind.bat", "hivemind"]
+      : ["hivemind"];
   for (const dir of dirs) {
-    const candidate = join(dir, "hivemind");
-    if (existsSync(candidate)) return candidate;
+    for (const name of candidates) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }
