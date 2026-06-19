@@ -201,7 +201,11 @@ function parseRef(args: string[]): string | undefined {
   const idx = args.findIndex(a => a === "--ref" || a.startsWith("--ref="));
   if (idx === -1) return undefined;
   const raw = args[idx].includes("=") ? args[idx].split("=", 2)[1] : args[idx + 1];
-  return raw && raw.length > 0 ? raw : undefined;
+  // A bare `--ref` followed by another flag (e.g. `--ref --skip-auth`) must not
+  // swallow that flag as the code. Reject anything that looks like a flag.
+  if (!raw || raw.startsWith("--")) return undefined;
+  const code = raw.trim();
+  return code.length > 0 ? code : undefined;
 }
 
 function hasEnvToken(): boolean {
