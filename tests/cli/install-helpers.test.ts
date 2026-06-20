@@ -376,18 +376,19 @@ describe("stripHivemindBlock", () => {
     expect(stripHivemindBlock(prior)).toBe(prior);
   });
 
-  it("install→uninstall round-trip removes our block even when a stray malformed BEGIN preexists", () => {
-    // Codex edge case: the user's AGENTS.md already has a half-written BEGIN
-    // (no END). Install appends a well-formed block; uninstall must still
-    // remove it (not orphaned). Because our appended block supplies an END,
-    // strip pairs the first BEGIN with it and removes through — never bailing
-    // while a well-formed marker pair survives.
+  it("install→uninstall round-trip removes our block AND preserves user content past a stray BEGIN", () => {
+    // Codex data-loss edge case: the user's AGENTS.md already has a half-written
+    // BEGIN (no END). Install appends a well-formed block; uninstall must remove
+    // OUR block without deleting the user's lines between their stray marker and
+    // our block. Strip must NOT pair the stray BEGIN with our block's END.
     const userFile = `# Notes\n${BEGIN}\nuser half-wrote this, no end\n`;
     const installed = upsertHivemindBlock(userFile);
     expect(installed).toContain(END); // a well-formed block was added
     const uninstalled = stripHivemindBlock(installed);
-    expect(uninstalled).not.toContain(END); // our block is gone, not orphaned
+    expect(uninstalled).not.toContain(END); // our block is gone
     expect(uninstalled).not.toContain("Hivemind Memory");
+    // User content is NOT truncated — this is the data-loss guard.
+    expect(uninstalled).toContain("user half-wrote this, no end");
   });
 
   it("removes EVERY block when the file has duplicate marker pairs", () => {

@@ -59,19 +59,30 @@ export function stripMarkedBlock(
   end: string = HIVEMIND_BLOCK_END,
 ): string {
   let text = existing;
+  let searchFrom = 0;
   for (;;) {
-    const startIdx = text.indexOf(start);
+    const startIdx = text.indexOf(start, searchFrom);
     if (startIdx === -1) return text;
     const endIdx = text.indexOf(end, startIdx);
-    // A BEGIN with no END after it — stop here, leaving the remainder intact so
-    // a user's half-written marker (and any text under it) is never truncated.
-    // Well-formed blocks earlier in the file have already been removed by now.
+    // A BEGIN with no END anywhere after it — leave the remainder intact so a
+    // user's half-written marker (and the text under it) is never truncated.
     if (endIdx === -1) return text;
+    // A stray/unclosed BEGIN: another BEGIN appears before this one's END, so
+    // this END actually belongs to a *later* block. Pairing them would delete
+    // the user's content in between (data loss). Skip this BEGIN and resume the
+    // scan after it — only well-formed BEGIN..END pairs (no intervening BEGIN)
+    // are removed.
+    const nextStart = text.indexOf(start, startIdx + start.length);
+    if (nextStart !== -1 && nextStart < endIdx) {
+      searchFrom = startIdx + start.length;
+      continue;
+    }
     const before = text.slice(0, startIdx).trimEnd();
     const after = text.slice(endIdx + end.length).replace(/^\n+/, "");
     if (!before && !after) text = "";
     else if (!before) text = after;
     else if (!after) text = `${before}\n`;
     else text = `${before}\n\n${after}`;
+    searchFrom = 0; // text shifted — rescan from the top
   }
 }
