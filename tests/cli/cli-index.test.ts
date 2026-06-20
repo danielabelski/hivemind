@@ -459,6 +459,16 @@ describe("hivemind login / status", () => {
     expect(ensureLoggedInMock).toHaveBeenCalledTimes(1);
   });
 
+  it("'login --ref <code>' passes the affiliate code to ensureLoggedIn", async () => {
+    await runCli(["login", "--ref", "mario"]);
+    expect(ensureLoggedInMock).toHaveBeenCalledWith("mario");
+  });
+
+  it("'login --ref' does not swallow a following flag as the code", async () => {
+    await runCli(["login", "--ref", "--skip-auth"]);
+    expect(ensureLoggedInMock).toHaveBeenCalledWith(undefined);
+  });
+
   it("'status' prints version, login state, and detected platforms", async () => {
     detectPlatformsMock.mockReturnValue([{ id: "claude", markerDir: "/x/.claude" }]);
     isLoggedInMock.mockReturnValue(true);

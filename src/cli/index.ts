@@ -46,12 +46,15 @@ hivemind — one brain for every agent on your team
 
 Usage:
   hivemind install   [--only <platforms>] [--skip-auth] [--token <value>]
+                     [--ref <code>]
       Auto-detect assistants on this machine and install hivemind into each.
       --only takes a comma-separated list: ${allPlatformIds().join(",")}
       --token, or env HIVEMIND_TOKEN, signs in non-interactively (useful
       for CI / scripted installs). Without it, a TTY install shows a
       consent prompt; a headless install skips auth and prints a hint
       for 'hivemind login'.
+      --ref <code> attributes a NEW signup to an affiliate/referrer code
+      (e.g. --ref mario). Ignored for already-registered users.
 
   hivemind uninstall [--only <platforms>]
       Auto-detect installed assistants and remove hivemind from each.
@@ -65,7 +68,9 @@ Usage:
   hivemind pi      install | uninstall
       Install or remove hivemind for a specific assistant.
 
-  hivemind login            Run device-flow login (open browser).
+  hivemind login [--ref <code>]
+                            Run device-flow login (open browser). --ref
+                            attributes a new signup to a referrer code.
   hivemind status           Show which assistants are wired up.
   hivemind update [--dry-run]
       Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
@@ -190,6 +195,19 @@ function parseToken(args: string[]): string | undefined {
   return raw && raw.length > 0 ? raw : undefined;
 }
 
+// Affiliate referral code from `--ref <code>` / `--ref=<code>`. Carried into the
+// device flow so a NEW signup can be attributed to the referring influencer.
+function parseRef(args: string[]): string | undefined {
+  const idx = args.findIndex(a => a === "--ref" || a.startsWith("--ref="));
+  if (idx === -1) return undefined;
+  const raw = args[idx].includes("=") ? args[idx].split("=", 2)[1] : args[idx + 1];
+  // A bare `--ref` followed by another flag (e.g. `--ref --skip-auth`) must not
+  // swallow that flag as the code. Reject anything that looks like a flag.
+  if (!raw || raw.startsWith("--")) return undefined;
+  const code = raw.trim();
+  return code.length > 0 ? code : undefined;
+}
+
 function hasEnvToken(): boolean {
   return Boolean(process.env.HIVEMIND_TOKEN);
 }
@@ -296,7 +314,7 @@ async function runAuthGate(args: string[]): Promise<void> {
 
   let signedIn = false;
   if (yes) {
-    signedIn = await ensureLoggedIn();
+    signedIn = await ensureLoggedIn(parseRef(args));
     if (!signedIn) {
       warn("Login did not complete.");
     }
@@ -441,7 +459,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === "login") { await ensureLoggedIn(); return; }
+  if (cmd === "login") { await ensureLoggedIn(parseRef(args.slice(1))); return; }
   if (cmd === "status") { runStatus(); return; }
   if (cmd === "update") {
     const code = await runUpdate({ dryRun: hasFlag(args.slice(1), "--dry-run") });
