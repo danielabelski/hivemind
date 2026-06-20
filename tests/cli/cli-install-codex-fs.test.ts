@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, u
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
+import { HIVEMIND_BLOCK_START, HIVEMIND_BLOCK_END } from "../../src/cli/agents-md.js";
 
 /**
  * Tests for the disk-side of src/cli/install-codex.ts.
@@ -386,8 +387,9 @@ describe("installCodex — happy path", () => {
   });
 });
 
-const BEGIN = "<!-- BEGIN hivemind-memory -->";
-const END = "<!-- END hivemind-memory -->";
+// Reuse the source-of-truth markers so the test tracks any format change.
+const BEGIN = HIVEMIND_BLOCK_START;
+const END = HIVEMIND_BLOCK_END;
 
 describe("installCodex — AGENTS.md memory block", () => {
   const agentsPath = (): string => join(tmpHome, ".codex", "AGENTS.md");
