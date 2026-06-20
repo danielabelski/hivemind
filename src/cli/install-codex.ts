@@ -252,8 +252,21 @@ function stripLegacyCodexHooksKey(): void {
  * Codex auto-loads into model context every session. Writes only when the
  * content actually changes, preserving any user content outside the markers.
  */
+// Read a file, returning null when it does not exist. Reads directly and
+// catches ENOENT rather than existsSync()-then-read, which is a TOCTOU race
+// (the file can vanish between the check and the read — flagged by CodeQL
+// js/file-system-race).
+function readFileOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+}
+
 function writeCodexAgentsBlock(): void {
-  const prior = existsSync(AGENTS_MD) ? readFileSync(AGENTS_MD, "utf-8") : null;
+  const prior = readFileOrNull(AGENTS_MD);
   const next = upsertMarkedBlock(prior, CODEX_AGENTS_BLOCK);
   if (next === prior) return;
   writeFileSync(AGENTS_MD, next);
@@ -265,8 +278,8 @@ function writeCodexAgentsBlock(): void {
  * file when nothing else remains and otherwise preserving the user's content.
  */
 function removeCodexAgentsBlock(): void {
-  if (!existsSync(AGENTS_MD)) return;
-  const prior = readFileSync(AGENTS_MD, "utf-8");
+  const prior = readFileOrNull(AGENTS_MD);
+  if (prior === null) return;
   const stripped = stripMarkedBlock(prior);
   if (stripped === prior) return;
   if (stripped.trim().length === 0) {

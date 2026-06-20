@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, utimesSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, utimesSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
@@ -31,7 +31,9 @@ vi.mock("node:child_process", () => ({
 }));
 
 beforeEach(() => {
-  tmpRoot = join(tmpdir(), `hm-codex-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  // mkdtempSync creates a securely-unique temp dir (vs join(tmpdir(), predictable)),
+  // satisfying CodeQL js/insecure-temporary-file for the writes underneath it.
+  tmpRoot = mkdtempSync(join(tmpdir(), "hm-codex-"));
   tmpHome = join(tmpRoot, "home");
   tmpPkg = join(tmpRoot, "pkg");
 
