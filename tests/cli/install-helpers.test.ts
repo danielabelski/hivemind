@@ -396,10 +396,9 @@ describe("stripHivemindBlock", () => {
     const installed = upsertHivemindBlock(userFile);
     expect(installed).toContain(END); // a well-formed block was added
     const uninstalled = stripHivemindBlock(installed);
-    expect(uninstalled).not.toContain(END); // our block is gone
-    expect(uninstalled).not.toContain("Hivemind Memory");
-    // User content is NOT truncated — this is the data-loss guard.
-    expect(uninstalled).toContain("user half-wrote this, no end");
+    // Uninstall round-trips EXACTLY back to the user's original file: our block
+    // removed, their stray marker and text fully preserved (no data loss).
+    expect(uninstalled).toBe(userFile);
   });
 
   it("removes EVERY block when the file has duplicate marker pairs", () => {
