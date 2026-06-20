@@ -247,9 +247,11 @@ function stripLegacyCodexHooksKey(): void {
   }
 }
 
-// Idempotent upsert of the hivemind block into ~/.codex/AGENTS.md. Only
-// writes when the content actually changes, preserving the user's own
-// AGENTS.md content outside the markers.
+/**
+ * Idempotently upsert the hivemind block into ~/.codex/AGENTS.md, the file
+ * Codex auto-loads into model context every session. Writes only when the
+ * content actually changes, preserving any user content outside the markers.
+ */
 function writeCodexAgentsBlock(): void {
   const prior = existsSync(AGENTS_MD) ? readFileSync(AGENTS_MD, "utf-8") : null;
   const next = upsertMarkedBlock(prior, CODEX_AGENTS_BLOCK);
@@ -258,6 +260,10 @@ function writeCodexAgentsBlock(): void {
   log(`  Codex          AGENTS.md memory block ${prior ? "updated" : "created"} -> ${AGENTS_MD}`);
 }
 
+/**
+ * Strip the hivemind block from ~/.codex/AGENTS.md on uninstall, deleting the
+ * file when nothing else remains and otherwise preserving the user's content.
+ */
 function removeCodexAgentsBlock(): void {
   if (!existsSync(AGENTS_MD)) return;
   const prior = readFileSync(AGENTS_MD, "utf-8");
