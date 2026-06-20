@@ -376,6 +376,20 @@ describe("stripHivemindBlock", () => {
     expect(stripHivemindBlock(prior)).toBe(prior);
   });
 
+  it("install→uninstall round-trip removes our block even when a stray malformed BEGIN preexists", () => {
+    // Codex edge case: the user's AGENTS.md already has a half-written BEGIN
+    // (no END). Install appends a well-formed block; uninstall must still
+    // remove it (not orphaned). Because our appended block supplies an END,
+    // strip pairs the first BEGIN with it and removes through — never bailing
+    // while a well-formed marker pair survives.
+    const userFile = `# Notes\n${BEGIN}\nuser half-wrote this, no end\n`;
+    const installed = upsertHivemindBlock(userFile);
+    expect(installed).toContain(END); // a well-formed block was added
+    const uninstalled = stripHivemindBlock(installed);
+    expect(uninstalled).not.toContain(END); // our block is gone, not orphaned
+    expect(uninstalled).not.toContain("Hivemind Memory");
+  });
+
   it("removes EVERY block when the file has duplicate marker pairs", () => {
     const prior = `# Before\n\n${BEGIN}\none\n${END}\n\n## Mid\n\n${BEGIN}\ntwo\n${END}\n\n## After\n`;
     const out = stripHivemindBlock(prior);
