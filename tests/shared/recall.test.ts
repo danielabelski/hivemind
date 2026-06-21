@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   shouldRecall,
   passesThreshold,
+  extractKeywords,
   RECALL_THRESHOLD,
 } from "../../src/hooks/shared/recall-gate.js";
 import {
@@ -10,7 +11,7 @@ import {
   formatRecallContext,
   type RecallHit,
 } from "../../src/hooks/shared/recall-format.js";
-import { recallTopHit } from "../../src/hooks/shared/recall-query.js";
+import { recallTopHit, recallTopHitLexical } from "../../src/hooks/shared/recall-query.js";
 import { withDeadline } from "../../src/hooks/shared/with-deadline.js";
 
 describe("shouldRecall — the precision gate (NOT every prompt)", () => {
@@ -97,6 +98,7 @@ describe("formatRecallContext", () => {
     description: "Fixed pg-deeplake SIGSEGV on sessions scan via row-count clamp",
     lastUpdate: "2026-06-18T00:00:00Z",
     score: 0.71,
+    mode: "semantic",
   };
 
   it("attributes a teammate's hit with relative date + project", () => {
@@ -162,7 +164,7 @@ describe("recallTopHit — focused semantic query", () => {
     expect(captured).toContain("ARRAY_LENGTH(summary_embedding, 1) > 0");
     expect(captured).toContain("path <> '/summaries/sasun/mine.md'");
     expect(captured).toContain("ORDER BY score DESC LIMIT 3");
-    expect(hit).toMatchObject({ author: "levon", project: "indra", score: 0.8 });
+    expect(hit).toMatchObject({ author: "levon", project: "indra", score: 0.8, mode: "semantic" });
   });
 
   it("returns null when no rows match", async () => {
@@ -173,6 +175,52 @@ describe("recallTopHit — focused semantic query", () => {
   it("returns null for a non-finite embedding (never builds a NULL-vector query)", async () => {
     let called = false;
     const hit = await recallTopHit(async () => { called = true; return []; }, "t", [0.1, NaN], {});
+    expect(hit).toBeNull();
+    expect(called).toBe(false);
+  });
+});
+
+describe("extractKeywords — lexical fallback keyword extraction", () => {
+  it("keeps salient/identifier tokens, drops stopwords and short tokens", () => {
+    const kw = extractKeywords("why does the parser throw a TypeError in column_streamers.hpp?");
+    expect(kw).toContain("parser");
+    expect(kw).toContain("typeerror");
+    expect(kw).toContain("column_streamers.hpp");
+    expect(kw).not.toContain("the");
+    expect(kw).not.toContain("why"); // stopword
+  });
+  it("de-dupes and caps the count", () => {
+    const kw = extractKeywords("cache cache cache redis redis storage storage provider bucket byoc extra", 4);
+    expect(kw.length).toBe(4);
+    expect(new Set(kw).size).toBe(kw.length);
+  });
+  it("returns few/no keywords for terse input (can't meet the lexical bar)", () => {
+    expect(extractKeywords("ok go").length).toBeLessThan(2);
+  });
+});
+
+describe("recallTopHitLexical — ILIKE keyword-overlap fallback", () => {
+  const kw = ["parser", "typeerror"];
+
+  it("builds an overlap-ranked ILIKE query and tags the hit lexical", async () => {
+    let captured = "";
+    const query = async (sql: string) => {
+      captured = sql;
+      return [{ path: "/summaries/levon/s.md", author: "levon", project: "indra", description: "d", last_update_date: "2026-06-18", score: 2 }];
+    };
+    const hit = await recallTopHitLexical(query, "org_memory", kw, { excludePath: "/summaries/me/x.md" });
+    expect(captured).toContain("ILIKE '%parser%'");
+    expect(captured).toContain("ILIKE '%typeerror%'");
+    expect(captured).toContain("CASE WHEN"); // overlap count
+    expect(captured).toContain('FROM "org_memory"');
+    expect(captured).toContain("path <> '/summaries/me/x.md'");
+    expect(captured).toContain("ORDER BY score DESC");
+    expect(hit).toMatchObject({ author: "levon", score: 2, mode: "lexical" });
+  });
+
+  it("returns null when fewer than 2 keywords (precision floor)", async () => {
+    let called = false;
+    const hit = await recallTopHitLexical(async () => { called = true; return []; }, "t", ["only"], {});
     expect(hit).toBeNull();
     expect(called).toBe(false);
   });

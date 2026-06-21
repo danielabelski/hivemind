@@ -10,8 +10,10 @@
  */
 
 import { serializeFloat4Array } from "../../shell/grep-core.js";
-import { sqlStr } from "../../utils/sql.js";
+import { sqlStr, sqlLike } from "../../utils/sql.js";
 import type { RecallHit } from "./recall-format.js";
+
+const SELECT_COLS = "path, author, project, description, last_update_date";
 
 export interface RecallQueryOptions {
   /** Restrict to this project when set (most relevant); omit for org-wide. */
@@ -44,12 +46,47 @@ export async function recallTopHit(
   if (opts.excludePath) filters.push(`path <> '${sqlStr(opts.excludePath)}'`);
 
   const sql =
-    `SELECT path, author, project, description, last_update_date, ` +
+    `SELECT ${SELECT_COLS}, ` +
     `(summary_embedding <#> ${vecLit}) AS score ` +
     `FROM "${memoryTable}" WHERE ${filters.join(" AND ")} ` +
     `ORDER BY score DESC LIMIT ${Math.max(1, opts.limit ?? 3)}`;
 
-  const rows = await query(sql);
+  return mapTopRow(await query(sql), "semantic");
+}
+
+/**
+ * Lexical fallback (no embeddings): rank summaries by how many of the prompt's
+ * salient keywords they contain (ILIKE on summary+description). Mirrors the
+ * codebase's ILIKE search path (BM25 indexing is currently disabled backend-
+ * side — see deeplake-api.ts). `score` is the distinct-keyword overlap count;
+ * the caller gates on MIN_LEXICAL_OVERLAP.
+ */
+export async function recallTopHitLexical(
+  query: QueryFn,
+  memoryTable: string,
+  keywords: string[],
+  opts: RecallQueryOptions = {},
+): Promise<RecallHit | null> {
+  if (keywords.length < 2) return null;
+  const field = `(COALESCE(summary, '') || ' ' || COALESCE(description, ''))`;
+  const overlap = keywords
+    .map((k) => `(CASE WHEN ${field} ILIKE '%${sqlLike(k)}%' THEN 1 ELSE 0 END)`)
+    .join(" + ");
+  const anyMatch = keywords.map((k) => `${field} ILIKE '%${sqlLike(k)}%'`).join(" OR ");
+
+  const filters = [`(${anyMatch})`];
+  if (opts.project) filters.push(`project = '${sqlStr(opts.project)}'`);
+  if (opts.excludePath) filters.push(`path <> '${sqlStr(opts.excludePath)}'`);
+
+  const sql =
+    `SELECT ${SELECT_COLS}, (${overlap}) AS score ` +
+    `FROM "${memoryTable}" WHERE ${filters.join(" AND ")} ` +
+    `ORDER BY score DESC LIMIT ${Math.max(1, opts.limit ?? 3)}`;
+
+  return mapTopRow(await query(sql), "lexical");
+}
+
+function mapTopRow(rows: Array<Record<string, unknown>>, mode: "semantic" | "lexical"): RecallHit | null {
   if (!rows.length) return null;
   const r = rows[0];
   const score = Number(r["score"]);
@@ -60,5 +97,6 @@ export async function recallTopHit(
     description: String(r["description"] ?? ""),
     lastUpdate: String(r["last_update_date"] ?? ""),
     score: Number.isFinite(score) ? score : 0,
+    mode,
   };
 }

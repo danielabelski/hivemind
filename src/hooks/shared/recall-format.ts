@@ -14,7 +14,9 @@ export interface RecallHit {
   project: string;
   description: string;
   lastUpdate: string; // ISO-ish date string from last_update_date
-  score: number; // cosine 0..1
+  /** semantic: cosine 0..1; lexical: count of distinct keywords matched. */
+  score: number;
+  mode: "semantic" | "lexical";
 }
 
 /** Extract the author + session id encoded in a summary path. */

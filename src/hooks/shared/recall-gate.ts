@@ -65,3 +65,40 @@ export function shouldRecall(prompt: string | undefined | null): RecallDecision 
 export function passesThreshold(score: number, threshold: number = RECALL_THRESHOLD): boolean {
   return Number.isFinite(score) && score >= threshold;
 }
+
+/**
+ * Minimum distinct salient keywords a summary must share with the prompt for a
+ * LEXICAL (no-embeddings) recall to inject. Lexical hits have no relevance
+ * score, so co-occurrence of >=N meaningful terms is the precision proxy.
+ */
+export const MIN_LEXICAL_OVERLAP = Number(process.env.HIVEMIND_RECALL_MIN_OVERLAP ?? "2");
+
+// Common words carry no recall signal — matching them would surface noise.
+const STOPWORDS = new Set([
+  "the", "and", "for", "are", "but", "not", "you", "your", "with", "this", "that",
+  "have", "has", "had", "was", "were", "can", "could", "should", "would", "will",
+  "does", "did", "what", "why", "how", "when", "where", "which", "who", "into",
+  "from", "they", "them", "then", "than", "there", "here", "out", "get", "got",
+  "use", "using", "used", "make", "made", "want", "need", "please", "let", "add",
+  "fix", "run", "set", "all", "any", "our", "its", "his", "her", "now", "new",
+  "some", "more", "most", "such", "only", "also", "just", "like", "able", "via",
+]);
+
+/**
+ * Extract salient lower-cased keywords from a prompt for the lexical fallback.
+ * Keeps identifier-ish tokens (snake_case, dotted, paths), drops stopwords and
+ * sub-3-char tokens, de-dupes, and caps the count.
+ */
+export function extractKeywords(prompt: string | undefined | null, max = 8): string[] {
+  const raw = (prompt ?? "").toLowerCase().match(/[a-z0-9][a-z0-9_./-]{2,}/g) ?? [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tok of raw) {
+    const w = tok.replace(/[._/-]+$/, ""); // trim trailing separators
+    if (w.length < 3 || STOPWORDS.has(w) || seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+    if (out.length >= max) break;
+  }
+  return out;
+}
