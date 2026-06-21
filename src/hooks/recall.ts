@@ -27,12 +27,26 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { shouldRecall, passesThreshold, RECALL_THRESHOLD } from "./shared/recall-gate.js";
 import { recallTopHit } from "./shared/recall-query.js";
-import { formatRecallContext } from "./shared/recall-format.js";
+import { formatRecallContext, type RecallHit } from "./shared/recall-format.js";
+import { withDeadline } from "./shared/with-deadline.js";
 
 const log = (msg: string) => _log("recall", msg);
 
 const SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
 const EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+// Hard ceiling on the recall critical path (embed + query). recall runs
+// SYNCHRONOUSLY on UserPromptSubmit — it blocks the turn — so we cap the worst
+// case to a predictable budget and degrade to "skip" rather than stall on a
+// slow/cold backend. The hooks.json timeout is only a coarse backstop.
+const RECALL_BUDGET_MS = Number(process.env.HIVEMIND_RECALL_TIMEOUT_MS ?? "1000");
+
+type FindResult =
+  | { kind: "hit"; hit: RecallHit }
+  | { kind: "none" }
+  | { kind: "no-embed" }
+  | { kind: "timeout" };
+
+const TIMED_OUT: FindResult = { kind: "timeout" };
 
 function resolveDaemonPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
@@ -52,6 +66,29 @@ function emit(additionalContext: string): void {
   }));
 }
 
+/** Embed the prompt and fetch the top scored hit. Bounded by withDeadline in main. */
+async function findHit(
+  input: RecallInput,
+  config: NonNullable<ReturnType<typeof loadConfig>>,
+): Promise<FindResult> {
+  const vec = await new EmbedClient({ daemonEntry: resolveDaemonPath(), timeoutMs: EMBED_TIMEOUT_MS })
+    .embed(input.prompt ?? "", "query");
+  if (!vec) return { kind: "no-embed" };
+
+  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  const ownSummary = input.session_id
+    ? `/summaries/${config.userName}/${input.session_id}.md`
+    : undefined;
+
+  const hit = await recallTopHit(
+    (sql) => api.query(sql) as Promise<Array<Record<string, unknown>>>,
+    config.tableName,
+    vec,
+    { excludePath: ownSummary, limit: 3 },
+  );
+  return hit ? { kind: "hit", hit } : { kind: "none" };
+}
+
 async function main(): Promise<void> {
   if (process.env.HIVEMIND_RECALL === "false") return;
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
@@ -67,24 +104,14 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (!config?.token) { log("skip no-config"); return; }
 
-  const vec = await new EmbedClient({ daemonEntry: resolveDaemonPath(), timeoutMs: EMBED_TIMEOUT_MS })
-    .embed(input.prompt ?? "", "query");
-  if (!vec) { log("skip embed-unavailable"); return; }
+  // Bound the whole embed+query critical path so the turn never stalls beyond
+  // RECALL_BUDGET_MS — on timeout we skip (emit nothing), never block.
+  const res = await withDeadline(findHit(input, config), RECALL_BUDGET_MS, TIMED_OUT);
+  if (res.kind === "timeout") { log(`skip timeout budget=${RECALL_BUDGET_MS}ms`); return; }
+  if (res.kind === "no-embed") { log("skip embed-unavailable"); return; }
+  if (res.kind === "none") { log(`searched gate=${reason} hit=none`); return; }
 
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-  const ownSummary = input.session_id
-    ? `/summaries/${config.userName}/${input.session_id}.md`
-    : undefined;
-
-  const hit = await recallTopHit(
-    (sql) => api.query(sql) as Promise<Array<Record<string, unknown>>>,
-    config.tableName,
-    vec,
-    { excludePath: ownSummary, limit: 3 },
-  );
-
-  if (!hit) { log(`searched gate=${reason} hit=none`); return; }
-
+  const hit = res.hit;
   const teammate = hit.author !== config.userName;
   const top = hit.score.toFixed(3);
   if (!passesThreshold(hit.score)) {

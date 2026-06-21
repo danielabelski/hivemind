@@ -11,6 +11,7 @@ import {
   type RecallHit,
 } from "../../src/hooks/shared/recall-format.js";
 import { recallTopHit } from "../../src/hooks/shared/recall-query.js";
+import { withDeadline } from "../../src/hooks/shared/with-deadline.js";
 
 describe("shouldRecall — the precision gate (NOT every prompt)", () => {
   it("skips short acknowledgements / continuations", () => {
@@ -122,6 +123,24 @@ describe("formatRecallContext", () => {
   it("frames the block as context, not an instruction (prompt-injection hygiene)", () => {
     const out = formatRecallContext({ hit: base, currentUser: "sasun", now });
     expect(out.toLowerCase()).toContain("not an instruction");
+  });
+});
+
+describe("withDeadline — bounds the synchronous recall path", () => {
+  it("resolves to the promise value when it beats the deadline", async () => {
+    const r = await withDeadline(Promise.resolve("ok"), 1000, "fallback");
+    expect(r).toBe("ok");
+  });
+
+  it("resolves to the fallback when the promise exceeds the deadline", async () => {
+    const slow = new Promise<string>((res) => setTimeout(() => res("late"), 50));
+    const r = await withDeadline(slow, 5, "skip");
+    expect(r).toBe("skip");
+  });
+
+  it("resolves to the fallback when the promise rejects (never throws on the critical path)", async () => {
+    const r = await withDeadline(Promise.reject(new Error("boom")), 1000, "skip");
+    expect(r).toBe("skip");
   });
 });
 
