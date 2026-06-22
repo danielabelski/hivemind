@@ -73,6 +73,7 @@ function makeConfig(): Config {
     rulesTableName: "hivemind_rules",
     goalsTableName: "hivemind_goals",
     kpisTableName: "hivemind_kpis",
+    docsTableName: "hivemind_docs",
     codebaseTableName: "codebase",
     memoryPath: join(tmpHome, ".deeplake", "memory"),
   };

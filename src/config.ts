@@ -15,6 +15,7 @@ export interface Config {
   rulesTableName: string;
   goalsTableName: string;
   kpisTableName: string;
+  docsTableName: string;
   codebaseTableName: string;
   memoryPath: string;
 }
@@ -70,6 +71,10 @@ export function loadConfig(): Config | null {
     // table shape.
     goalsTableName: process.env.HIVEMIND_GOALS_TABLE ?? "hivemind_goals",
     kpisTableName: process.env.HIVEMIND_KPIS_TABLE ?? "hivemind_kpis",
+    // Per-file documentation kept fresh on code deltas. INSERT-only
+    // version-bumped table (see DOCS_COLUMNS in deeplake-schema.ts); the
+    // VFS path classifier maps memory/docs/<project>/<file>.md → row.
+    docsTableName: process.env.HIVEMIND_DOCS_TABLE ?? "hivemind_docs",
     codebaseTableName: process.env.HIVEMIND_CODEBASE_TABLE ?? "codebase",
     memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };

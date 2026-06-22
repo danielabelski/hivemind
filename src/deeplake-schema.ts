@@ -174,6 +174,39 @@ export const KPIS_COLUMNS: readonly ColumnDef[] = Object.freeze([
   { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
 ]);
 
+/**
+ * Docs table — per-file internal documentation kept fresh on code deltas.
+ *
+ * One row per doc version. Edits INSERT a fresh row with version+1; reads
+ * pick the latest per doc_id (ORDER BY version DESC LIMIT 1). Same
+ * immutable / version-bumped pattern as RULES_COLUMNS / SKILLS_COLUMNS —
+ * sidesteps the Deeplake UPDATE-coalescing quirk that bit the wiki worker.
+ *
+ * `doc_id` is the stable key = the documented source file path (e.g.
+ * `src/shell/deeplake-fs.ts`); `path` is the VFS location the doc is read
+ * from (`/docs/<project>/<file>.md`). `anchors` is a JSON array of
+ * `{ symbol_id, content_hash }` pairs tying doc sections to graph nodes —
+ * a changed `content_hash` is the objective drift signal that marks the
+ * doc stale. `tier` is `fast` (per-file, regenerated freely on delta) or
+ * `slow` (project knowledge, append-only through the gate; never silently
+ * overwritten by a fast edit).
+ */
+export const DOCS_COLUMNS: readonly ColumnDef[] = Object.freeze([
+  { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "doc_id",         sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "path",           sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "content",        sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "anchors",        sql: "TEXT NOT NULL DEFAULT '[]'" },
+  { name: "tier",           sql: "TEXT NOT NULL DEFAULT 'fast'" },
+  { name: "status",         sql: "TEXT NOT NULL DEFAULT 'active'" },
+  { name: "project",        sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
+  { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
+  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+]);
+
 // ── Module-load lint ────────────────────────────────────────────────────────
 
 /**
@@ -249,6 +282,7 @@ validateSchema("SKILLS_COLUMNS", SKILLS_COLUMNS);
 validateSchema("RULES_COLUMNS", RULES_COLUMNS);
 validateSchema("GOALS_COLUMNS", GOALS_COLUMNS);
 validateSchema("KPIS_COLUMNS", KPIS_COLUMNS);
+validateSchema("DOCS_COLUMNS", DOCS_COLUMNS);
 validateSchema("CODEBASE_COLUMNS", CODEBASE_COLUMNS);
 
 // ── SQL builders ────────────────────────────────────────────────────────────
