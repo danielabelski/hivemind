@@ -7,7 +7,7 @@
  * No imports from any module that touches `fetch` belong here.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -45,13 +45,25 @@ export interface Credentials {
 // correct AND simplifies coverage to a single fall-through path.
 
 export function loadCredentials(): Credentials | null {
-  try {
-    return JSON.parse(readFileSync(credsPath(), "utf-8"));
-  } catch {
-    // Missing file (ENOENT), permission error, or malformed JSON — all map
-    // to "no usable credentials." Caller treats null as "not logged in."
-    return null;
+  // Read up to twice. A genuinely-absent file (ENOENT) is final → null with no
+  // retry. But a JSON.parse failure can be a TRANSIENT torn read: another
+  // process rewriting credentials.json at the same instant. saveCredentials()
+  // now writes atomically (temp + rename), so this version can't tear its own
+  // writes — but an older plugin build sharing this machine still might, and a
+  // crashed writer can leave a half-file. One immediate re-read recovers from
+  // that window instead of falsely reporting "not logged in" for the session.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return JSON.parse(readFileSync(credsPath(), "utf-8"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      if (attempt === 0) continue;
+      // Persistent permission error or malformed JSON — treat as "no usable
+      // credentials." Caller treats null as "not logged in."
+      return null;
+    }
   }
+  return null;
 }
 
 export function saveCredentials(creds: Credentials): void {
@@ -60,7 +72,29 @@ export function saveCredentials(creds: Credentials): void {
   // node:fs docs). Calling it unconditionally removes the existsSync
   // guard without behaviour change.
   mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(credsPath(), JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+
+  // Atomic write: serialize into a unique temp file in the same directory,
+  // then rename() it over the target. rename(2) is atomic on a POSIX
+  // filesystem, so a concurrent loadCredentials() reader always observes
+  // either the complete previous file or the complete new one — never a
+  // half-written one. A plain writeFileSync truncates-then-writes, so a
+  // reader landing mid-write (common for a power user running many parallel
+  // agent sessions, each of which rewrites creds at SessionStart via
+  // healDriftedOrgToken) gets partial bytes → JSON.parse throws → a spurious
+  // "not logged in / Hivemind unavailable" banner. The temp name is unique
+  // per (process, call) so two concurrent writers never clobber each other's
+  // staging file. Same directory guarantees the rename stays on one fs.
+  const target = credsPath();
+  const tmp = `${target}.${process.pid}.${process.hrtime.bigint()}.tmp`;
+  const body = JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2);
+  try {
+    writeFileSync(tmp, body, { mode: 0o600 });
+    renameSync(tmp, target);
+  } catch (err) {
+    // Best-effort cleanup so a failed write doesn't leak a staging file.
+    try { unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    throw err;
+  }
 }
 
 export function deleteCredentials(): boolean {

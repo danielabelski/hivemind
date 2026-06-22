@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -82,7 +82,18 @@ describe("loadCredentials", () => {
     mkdirSync(configDir(), { recursive: true, mode: 0o700 });
     writeFileSync(credsPath(), "not json {");
     expect(() => loadCredentials()).not.toThrow();
+    // Persistently-malformed file: the read is retried once, then gives up and
+    // returns null (exercises the attempt===0 → continue → attempt===1 path).
     expect(loadCredentials()).toBeNull();
+  });
+
+  it("ignores a stray *.tmp staging file left by a crashed writer", () => {
+    saveCredentials({ token: "tok", orgId: "org", savedAt: "" });
+    // Simulate a previous writer that died after writing the temp but before
+    // rename — a half-written staging file in the same dir must not affect the
+    // real credentials.json read.
+    writeFileSync(`${credsPath()}.999999.deadbeef.tmp`, "{ partial");
+    expect(loadCredentials()).toMatchObject({ token: "tok", orgId: "org" });
   });
 });
 
@@ -122,6 +133,27 @@ describe("saveCredentials", () => {
     writeFileSync(join(configDir(), "sentinel"), "x");
     saveCredentials(baseCreds);
     expect(existsSync(join(configDir(), "sentinel"))).toBe(true);
+  });
+
+  it("writes atomically: leaves no *.tmp staging file behind", () => {
+    saveCredentials(baseCreds);
+    const leftovers = readdirSync(configDir()).filter(f => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+    // and the committed file is complete, valid JSON
+    expect(() => JSON.parse(readFileSync(credsPath(), "utf-8"))).not.toThrow();
+  });
+
+  it("repeated rewrites never leave a partial/unreadable credentials.json", () => {
+    // Each SessionStart can rewrite creds; a heavy concurrent user triggers
+    // many of these. Every committed state must be a complete, loadable file —
+    // and no staging files may accumulate.
+    for (let i = 0; i < 100; i++) {
+      saveCredentials({ token: `tok-${i}`, orgId: "org", savedAt: "" });
+      const got = loadCredentials();
+      expect(got).not.toBeNull();
+      expect(got?.token).toBe(`tok-${i}`);
+    }
+    expect(readdirSync(configDir()).filter(f => f.endsWith(".tmp"))).toEqual([]);
   });
 });
 
