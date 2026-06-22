@@ -6,7 +6,9 @@
  * On a *recall-worthy* prompt (cheap gate first — NOT every prompt), search the
  * team's summaries and, if the top hit clears a relevance bar, inject ONE
  * attributed snippet ("recalled from <teammate> · <date>") into the model
- * context. Logs a structured `recall` event so value is measurable.
+ * context. Every recall-worthy invocation is recorded to an always-on
+ * `~/.deeplake/recall-events.jsonl` sink (independent of HIVEMIND_DEBUG) so
+ * usage / hit-rate is directly measurable.
  *
  * Search mode: SEMANTIC (cosine) when embeddings are available, else falls back
  * to LEXICAL (ILIKE keyword overlap) — so recall works WITHOUT the embeddings
@@ -38,6 +40,7 @@ import {
 import { recallTopHit, recallTopHitLexical } from "./shared/recall-query.js";
 import { formatRecallContext, type RecallHit } from "./shared/recall-format.js";
 import { withDeadline } from "./shared/with-deadline.js";
+import { recordRecallEvent } from "./shared/recall-events.js";
 
 const log = (msg: string) => _log("recall", msg);
 
@@ -123,27 +126,46 @@ async function main(): Promise<void> {
   const { recall, reason } = shouldRecall(input.prompt);
   if (!recall) { log(`skip gate=${reason}`); return; }
 
+  const session = input.session_id;
   const config = loadConfig();
-  if (!config?.token) { log("skip no-config"); return; }
+  if (!config?.token) {
+    log("skip no-config");
+    recordRecallEvent({ event: "no-config", gate: reason, session });
+    return;
+  }
 
   // Bound the whole search path so the turn never stalls beyond the budget.
   const res = await withDeadline(findHit(input, config), RECALL_BUDGET_MS, TIMED_OUT);
-  if (res.kind === "timeout") { log(`skip timeout budget=${RECALL_BUDGET_MS}ms`); return; }
-  if (res.kind === "none") { log(`searched gate=${reason} hit=none`); return; }
+  if (res.kind === "timeout") {
+    log(`skip timeout budget=${RECALL_BUDGET_MS}ms`);
+    recordRecallEvent({ event: "timeout", gate: reason, session });
+    return;
+  }
+  if (res.kind === "none") {
+    log(`searched gate=${reason} hit=none`);
+    recordRecallEvent({ event: "none", gate: reason, session });
+    return;
+  }
 
   const hit = res.hit;
   const teammate = hit.author !== config.userName;
   const bar = hit.mode === "semantic" ? `thr=${RECALL_THRESHOLD}` : `min=${MIN_LEXICAL_OVERLAP}`;
   if (!hitPasses(hit)) {
     log(`searched mode=${hit.mode} hit=below score=${hit.score} ${bar} author=${hit.author}`);
+    recordRecallEvent({ event: "below", gate: reason, mode: hit.mode, score: hit.score, author: hit.author, teammate, project: hit.project, session });
     return;
   }
 
   const additionalContext = formatRecallContext({ hit, currentUser: config.userName, now: Date.now() });
-  if (!additionalContext) { log(`searched mode=${hit.mode} hit=unattributable score=${hit.score}`); return; }
+  if (!additionalContext) {
+    log(`searched mode=${hit.mode} hit=unattributable score=${hit.score}`);
+    recordRecallEvent({ event: "unattributable", mode: hit.mode, score: hit.score, session });
+    return;
+  }
 
-  // Structured, greppable recall event (the measurable value signal).
+  // Structured recall event — debug log (opt-in) + always-on JSONL sink.
   log(`injected mode=${hit.mode} score=${hit.score} author=${hit.author} teammate=${teammate} project=${hit.project}`);
+  recordRecallEvent({ event: "injected", gate: reason, mode: hit.mode, score: hit.score, author: hit.author, teammate, project: hit.project, session });
   emit(additionalContext);
 }
 

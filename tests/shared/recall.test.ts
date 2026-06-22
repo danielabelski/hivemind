@@ -13,6 +13,12 @@ import {
 } from "../../src/hooks/shared/recall-format.js";
 import { recallTopHit, recallTopHitLexical } from "../../src/hooks/shared/recall-query.js";
 import { withDeadline } from "../../src/hooks/shared/with-deadline.js";
+import { recordRecallEvent } from "../../src/hooks/shared/recall-events.js";
+import { setFakeHome, clearFakeHome } from "./fake-home.js";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach } from "vitest";
 
 describe("shouldRecall — the precision gate (NOT every prompt)", () => {
   it("skips short acknowledgements / continuations", () => {
@@ -223,5 +229,34 @@ describe("recallTopHitLexical — ILIKE keyword-overlap fallback", () => {
     const hit = await recallTopHitLexical(async () => { called = true; return []; }, "t", ["only"], {});
     expect(hit).toBeNull();
     expect(called).toBe(false);
+  });
+});
+
+describe("recordRecallEvent — always-on JSONL sink", () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), "recall-ev-")); setFakeHome(home); });
+  afterEach(() => { clearFakeHome(); rmSync(home, { recursive: true, force: true }); });
+
+  it("appends a JSONL line with ts + event fields to ~/.deeplake/recall-events.jsonl", () => {
+    recordRecallEvent({ event: "injected", mode: "lexical", score: 5, author: "levon", teammate: true, project: "indra" }, "2026-06-21T00:00:00Z");
+    const obj = JSON.parse(readFileSync(join(home, ".deeplake", "recall-events.jsonl"), "utf-8").trim());
+    expect(obj).toMatchObject({
+      ts: "2026-06-21T00:00:00Z", event: "injected", mode: "lexical",
+      score: 5, author: "levon", teammate: true, project: "indra",
+    });
+  });
+
+  it("appends (not overwrites) across calls — one line per event", () => {
+    recordRecallEvent({ event: "none" }, "t1");
+    recordRecallEvent({ event: "injected", score: 3 }, "t2");
+    const lines = readFileSync(join(home, ".deeplake", "recall-events.jsonl"), "utf-8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1]).event).toBe("injected");
+  });
+
+  it("never throws when the path is unwritable (telemetry must not break the hook)", () => {
+    setFakeHome("/proc/nonexistent/cannot-write");
+    expect(() => recordRecallEvent({ event: "none" })).not.toThrow();
+    expect(existsSync(join(home, ".deeplake", "recall-events.jsonl"))).toBe(false);
   });
 });

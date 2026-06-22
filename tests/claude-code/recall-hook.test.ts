@@ -19,7 +19,9 @@ const pluginEnabledMock = vi.fn();
 const embedMock = vi.fn();
 const queryMock = vi.fn();
 const debugLogMock = vi.fn();
+const recordEventMock = vi.fn();
 
+vi.mock("../../src/hooks/shared/recall-events.js", () => ({ recordRecallEvent: (...a: unknown[]) => recordEventMock(...a) }));
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
 vi.mock("../../src/embeddings/disable.js", () => ({ embeddingsDisabled: (...a: unknown[]) => embeddingsDisabledMock(...a) }));
@@ -77,6 +79,7 @@ beforeEach(() => {
   embedMock.mockReset().mockResolvedValue([0.1, 0.2, 0.3]);
   queryMock.mockReset().mockResolvedValue([]);
   debugLogMock.mockReset();
+  recordEventMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -126,6 +129,8 @@ describe("recall hook — lexical path (no embeddings)", () => {
     expect(queryMock.mock.calls[0][0]).not.toContain("<#>");
     expect(embedMock).not.toHaveBeenCalled();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("injected mode=lexical"));
+    // Always-on telemetry records the injection.
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "injected", mode: "lexical", teammate: true }));
   });
 
   it("does NOT inject when the lexical overlap is below the floor", async () => {
@@ -133,6 +138,7 @@ describe("recall hook — lexical path (no embeddings)", () => {
     const out = await runHook();
     expect(out).toBeNull();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("hit=below"));
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "below" }));
   });
 
   it("does not search when the prompt yields fewer than 2 keywords", async () => {
@@ -209,5 +215,12 @@ describe("recall hook — latency budget + failure isolation", () => {
     const out = await runHook();
     expect(out).toBeNull();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("hit=none"));
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "none" }));
+  });
+
+  it("records a no-config event when not logged in (telemetry even on the unhappy path)", async () => {
+    loadConfigMock.mockReturnValue(null);
+    await runHook();
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "no-config" }));
   });
 });
