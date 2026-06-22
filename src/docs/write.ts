@@ -42,6 +42,25 @@ export interface InsertDocInput {
   plugin_version?: string;
 }
 
+export interface SetDocInput {
+  /** Documented source file path, e.g. `src/shell/deeplake-fs.ts`. Stable key. */
+  doc_id: string;
+  /** VFS path the doc is read from, e.g. `/docs/<project>/<file>.md`. */
+  path: string;
+  /** Markdown body. */
+  content: string;
+  /** Anchors tying doc sections to graph nodes. Default []. */
+  anchors?: DocAnchor[];
+  /** `fast` (per-file, default) or `slow` (protected project knowledge). */
+  tier?: DocTier;
+  /** Project key the doc belongs to. */
+  project?: string;
+  /** Status to set. Defaults to keeping the previous (or 'active' on first write). */
+  status?: "active" | "archived";
+  agent?: string;
+  plugin_version?: string;
+}
+
 export interface EditDocInput {
   /** Stable doc_id (the source file path). */
   doc_id: string;
@@ -142,6 +161,65 @@ export async function editDoc(
     throw new Error(`Doc not found: ${input.doc_id}`);
   }
   return appendVersion(query, tableName, previous, input);
+}
+
+/**
+ * Idempotent upsert by `doc_id` — the public entry point CLI / worker code
+ * should use. Reads the latest version: if the doc exists it appends a new
+ * version (carrying the immutable `created_at`); if not it inserts v1.
+ *
+ * This is what makes `doc_id = file path` safe as a caller-supplied key.
+ * Calling `insertDoc` directly for an already-documented file would fork
+ * history into two parallel `version=1` rows — `setDoc` never does, because
+ * the file path identity always resolves to one version chain.
+ */
+export async function setDoc(
+  query: QueryFn,
+  tableName: string,
+  input: SetDocInput,
+): Promise<WriteResult> {
+  const previous = await getDocLatest(query, tableName, input.doc_id);
+  if (!previous) {
+    return insertDoc(query, tableName, {
+      doc_id: input.doc_id,
+      path: input.path,
+      content: input.content,
+      anchors: input.anchors,
+      tier: input.tier,
+      project: input.project,
+      agent: input.agent,
+      plugin_version: input.plugin_version,
+    });
+  }
+  return appendVersion(query, tableName, previous, {
+    doc_id: input.doc_id,
+    content: input.content,
+    anchors: input.anchors,
+    tier: input.tier,
+    status: input.status,
+    path: input.path,
+    agent: input.agent,
+    plugin_version: input.plugin_version,
+  });
+}
+
+/**
+ * Archive a doc (soft delete) — appends a version with status='archived',
+ * preserving content + audit trail. Throws when the doc_id does not exist.
+ * Used as the delete primitive for the `doc_id = path` lifecycle: when a
+ * source file is removed, its doc is archived rather than hard-deleted.
+ */
+export async function archiveDoc(
+  query: QueryFn,
+  tableName: string,
+  input: { doc_id: string; agent?: string; plugin_version?: string },
+): Promise<WriteResult> {
+  return editDoc(query, tableName, {
+    doc_id: input.doc_id,
+    status: "archived",
+    agent: input.agent,
+    plugin_version: input.plugin_version,
+  });
 }
 
 async function appendVersion(

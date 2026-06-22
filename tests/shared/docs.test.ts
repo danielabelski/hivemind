@@ -2,6 +2,8 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
   insertDoc,
   editDoc,
+  setDoc,
+  archiveDoc,
   listDocs,
   getDocLatest,
   parseAnchors,
@@ -224,6 +226,71 @@ describe("editDoc", () => {
       editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", content: "" }),
     ).rejects.toThrow(/must not be empty/);
     expect(calls).toHaveLength(1); // SELECT only
+  });
+});
+
+// ── setDoc (idempotent upsert — the fork-history fix) ─────────────────────────
+
+describe("setDoc", () => {
+  it("INSERTs v1 when the doc_id does not exist yet", async () => {
+    const { calls, query } = mockQuery([
+      () => [], // getDocLatest → none
+      () => [], // INSERT
+    ]);
+    const result = await setDoc(query, TBL, {
+      doc_id: "src/a.ts",
+      path: "/docs/p/a.ts.md",
+      content: "first",
+      project: "p",
+    });
+    expect(result).toEqual({ doc_id: "src/a.ts", version: 1 });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatch(/^SELECT .* WHERE doc_id = 'src\/a.ts'/);
+    expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
+    expect(calls[1]).toMatch(/, 1, /);
+  });
+
+  it("APPENDS version+1 when the doc_id already exists — never forks a second v1", async () => {
+    const { calls, query } = mockQuery([
+      () => [fakeRow({ doc_id: "src/a.ts", version: 4, created_at: "2026-01-01T00:00:00.000Z" })],
+      () => [],
+    ]);
+    const result = await setDoc(query, TBL, {
+      doc_id: "src/a.ts",
+      path: "/docs/p/a.ts.md",
+      content: "updated",
+      project: "p",
+    });
+    expect(result).toEqual({ doc_id: "src/a.ts", version: 5 });
+    expect(calls).toHaveLength(2);
+    // The INSERT is version 5, NOT a second version 1 — the fork-history bug
+    // Codex flagged is impossible through setDoc.
+    expect(calls[1]).toContain(", 5, ");
+    expect(calls[1]).not.toMatch(/, 1, /);
+    // immutable created_at carried from the existing chain
+    expect(calls[1]).toContain("'2026-01-01T00:00:00.000Z'");
+    expect(calls[1]).toContain(`E'updated'`);
+  });
+});
+
+// ── archiveDoc (soft delete primitive) ────────────────────────────────────────
+
+describe("archiveDoc", () => {
+  it("appends a version with status='archived', preserving content", async () => {
+    const { calls, query } = mockQuery([
+      () => [fakeRow({ doc_id: "src/gone.ts", version: 2, content: "keep me" })],
+      () => [],
+    ]);
+    const result = await archiveDoc(query, TBL, { doc_id: "src/gone.ts" });
+    expect(result.version).toBe(3);
+    expect(calls[1]).toContain("'archived'");
+    expect(calls[1]).toContain(`E'keep me'`);
+  });
+
+  it("throws when archiving a doc that does not exist", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await expect(archiveDoc(query, TBL, { doc_id: "nope.ts" })).rejects.toThrow(/Doc not found/);
+    expect(calls).toHaveLength(1);
   });
 });
 
