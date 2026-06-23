@@ -67,16 +67,21 @@ export interface RecallDecision {
 
 /**
  * Decide whether `prompt` warrants a proactive memory search.
- * Layer 0 (cheap reject): empty / very short / acknowledgement.
- * Layer 1 (signal gate): error/intent markers, else substantive prose only.
+ * Order matters: acks and explicit signals are evaluated BEFORE the length
+ * gate, so short-but-high-signal prompts ("TypeError in auth", "segfault on
+ * scan", "how did we fix X?") still recall; the length/word gate only
+ * suppresses short LOW-signal instructions.
  */
 export function shouldRecall(prompt: string | undefined | null): RecallDecision {
   const text = (prompt ?? "").trim();
-  if (text.length < MIN_PROMPT_CHARS) return { recall: false, reason: "too-short" };
+  if (!text) return { recall: false, reason: "empty" };
+  // Acks/continuations are never recall-worthy, regardless of length.
   if (ACK_RE.test(text)) return { recall: false, reason: "ack" };
+  // Explicit error / recall / how-to signals win regardless of length.
   if (SIGNAL_RES.some((re) => re.test(text))) return { recall: true, reason: "signal" };
   // No explicit signal — only search genuinely substantive prose (a real
   // request/description), not a terse mid-task instruction.
+  if (text.length < MIN_PROMPT_CHARS) return { recall: false, reason: "too-short" };
   const words = text.split(/\s+/).filter(Boolean).length;
   if (words >= MIN_PROMPT_WORDS) return { recall: true, reason: "substantive" };
   return { recall: false, reason: "low-signal" };
@@ -92,7 +97,14 @@ export function passesThreshold(score: number, threshold: number = RECALL_THRESH
  * LEXICAL (no-embeddings) recall to inject. Lexical hits have no relevance
  * score, so co-occurrence of >=N meaningful terms is the precision proxy.
  */
-export const MIN_LEXICAL_OVERLAP = Number(process.env.HIVEMIND_RECALL_MIN_OVERLAP ?? "2");
+/** Parse a positive-number env override; fall back on NaN / 0 / negative so a
+ *  bad value can't silently break a timeout or relevance threshold. */
+export function parsePositive(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export const MIN_LEXICAL_OVERLAP = parsePositive(process.env.HIVEMIND_RECALL_MIN_OVERLAP, 2);
 
 // Common words carry no recall signal — matching them would surface noise.
 const STOPWORDS = new Set([

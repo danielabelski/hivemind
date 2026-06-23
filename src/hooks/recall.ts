@@ -32,6 +32,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
+import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -40,6 +41,7 @@ import {
   passesThreshold,
   extractKeywords,
   proactiveRecallDisabled,
+  parsePositive,
   RECALL_THRESHOLD,
   MIN_LEXICAL_OVERLAP,
 } from "./shared/recall-gate.js";
@@ -51,11 +53,11 @@ import { recordRecallEvent } from "./shared/recall-events.js";
 const log = (msg: string) => _log("recall", msg);
 
 const SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
-const EMBED_TIMEOUT_MS = Number(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS ?? "500");
+const EMBED_TIMEOUT_MS = parsePositive(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS, 500);
 // Hard ceiling on the recall critical path. recall runs SYNCHRONOUSLY on
 // UserPromptSubmit — it blocks the turn — so we cap the worst case to a
 // predictable budget and degrade to "skip" rather than stall on a slow backend.
-const RECALL_BUDGET_MS = Number(process.env.HIVEMIND_RECALL_TIMEOUT_MS ?? "1000");
+const RECALL_BUDGET_MS = parsePositive(process.env.HIVEMIND_RECALL_TIMEOUT_MS, 1000);
 
 type FindResult =
   | { kind: "hit"; hit: RecallHit }
@@ -95,6 +97,10 @@ async function findHit(
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
   const q = (sql: string) => api.query(sql) as Promise<Array<Record<string, unknown>>>;
   const opts = {
+    // Scope to the CURRENT project: same-project summaries from any teammate
+    // (the cross-teammate value) without injecting unrelated context from
+    // other repos in the org. Org-wide only as a fallback when cwd is absent.
+    project: input.cwd ? projectNameFromCwd(input.cwd) : undefined,
     excludePath: input.session_id ? `/summaries/${config.userName}/${input.session_id}.md` : undefined,
     limit: 3,
   };

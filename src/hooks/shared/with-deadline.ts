@@ -5,7 +5,9 @@
  * than stall the turn. The timer is always cleared so the process can exit.
  */
 export function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
-  if (!(ms > 0)) return p;
+  // Non-positive deadline → no timer, but still degrade a rejection to the
+  // fallback so callers on the critical path never see an unhandled throw.
+  if (!(ms > 0)) return p.catch(() => fallback);
   return new Promise<T>((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -13,7 +15,7 @@ export function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise
       settled = true;
       resolve(fallback);
     }, ms);
-    if (typeof timer.unref === "function") timer.unref();
+    timer.unref(); // Node Timeout — don't keep the process alive for the timer
     p.then(
       (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
       () => { if (!settled) { settled = true; clearTimeout(timer); resolve(fallback); } },
