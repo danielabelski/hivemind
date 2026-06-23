@@ -49,6 +49,8 @@ export interface FormatRecallInput {
   hit: RecallHit;
   /** Current user's name — used to mark "you" vs a teammate. */
   currentUser: string;
+  /** Configured memory root (config.memoryPath) for the summary pointer. */
+  memoryRoot: string;
   /** Epoch ms used for the relative date (injected for testability). */
   now: number;
 }
@@ -58,7 +60,7 @@ export interface FormatRecallInput {
  * (we never inject an un-attributable snippet — attribution is the point).
  */
 export function formatRecallContext(input: FormatRecallInput): string {
-  const { hit, currentUser, now } = input;
+  const { hit, currentUser, memoryRoot, now } = input;
 
   // Attribute from the row's own `author` column (the query selects it), so
   // LEGACY summary rows whose path doesn't match /summaries/<author>/<session>
@@ -77,8 +79,9 @@ export function formatRecallContext(input: FormatRecallInput): string {
   // just omit the pointer; the recall still injects.
   const parsed = parseSummaryPath(hit.path);
   const safeSeg = /^[A-Za-z0-9._-]+$/;
+  const root = memoryRoot.replace(/\/+$/, "");
   const pathLine = parsed && safeSeg.test(parsed.author) && safeSeg.test(parsed.session)
-    ? `  Full summary: ~/.deeplake/memory/summaries/${parsed.author}/${parsed.session}.md`
+    ? `  Full summary: ${root}/summaries/${parsed.author}/${parsed.session}.md`
     : "";
 
   return [

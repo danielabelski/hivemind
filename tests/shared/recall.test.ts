@@ -164,7 +164,7 @@ describe("formatRecallContext", () => {
   };
 
   it("attributes a teammate's hit with relative date + project", () => {
-    const out = formatRecallContext({ hit: base, currentUser: "sasun", now });
+    const out = formatRecallContext({ hit: base, currentUser: "sasun", memoryRoot: "~/.deeplake/memory", now });
     expect(out).toContain("HIVEMIND RECALL");
     expect(out).toContain("levon"); // teammate name surfaced
     expect(out).toContain("2d ago");
@@ -175,30 +175,35 @@ describe("formatRecallContext", () => {
   });
 
   it("says 'you' when the hit is the current user's own work", () => {
-    const out = formatRecallContext({ hit: base, currentUser: "levon", now });
+    const out = formatRecallContext({ hit: base, currentUser: "levon", memoryRoot: "~/.deeplake/memory", now });
     expect(out).toContain("you");
     expect(out).not.toMatch(/•\s+levon/);
   });
 
+  it("builds the summary pointer from the configured memory root (custom HIVEMIND_MEMORY_PATH)", () => {
+    const out = formatRecallContext({ hit: base, currentUser: "x", memoryRoot: "/srv/mem/", now });
+    expect(out).toContain("Full summary: /srv/mem/summaries/levon/sess-1.md"); // trailing slash normalized
+  });
+
   it("returns empty string only when there is no author to credit", () => {
-    const out = formatRecallContext({ hit: { ...base, author: "" }, currentUser: "sasun", now });
+    const out = formatRecallContext({ hit: { ...base, author: "" }, currentUser: "sasun", memoryRoot: "~/.deeplake/memory", now });
     expect(out).toBe("");
   });
 
   it("injects a LEGACY row (non-canonical path) using the row's author, just without the path line", () => {
-    const out = formatRecallContext({ hit: { ...base, path: "/sessions/x/y.jsonl" }, currentUser: "sasun", now });
+    const out = formatRecallContext({ hit: { ...base, path: "/sessions/x/y.jsonl" }, currentUser: "sasun", memoryRoot: "~/.deeplake/memory", now });
     expect(out).toContain("HIVEMIND RECALL");
     expect(out).toContain("levon");          // attributed from hit.author
     expect(out).not.toContain("Full summary:"); // path not canonical → no pointer
   });
 
   it("frames the block as context, not an instruction (prompt-injection hygiene)", () => {
-    const out = formatRecallContext({ hit: base, currentUser: "sasun", now });
+    const out = formatRecallContext({ hit: base, currentUser: "sasun", memoryRoot: "~/.deeplake/memory", now });
     expect(out.toLowerCase()).toContain("not an instruction");
   });
 
   it("renders each relative-date bucket (today/yesterday/days/weeks/months/unknown)", () => {
-    const at = (iso: string) => formatRecallContext({ hit: { ...base, lastUpdate: iso }, currentUser: "x", now });
+    const at = (iso: string) => formatRecallContext({ hit: { ...base, lastUpdate: iso }, currentUser: "x", memoryRoot: "~/.deeplake/memory", now });
     expect(at("2026-06-20T09:00:00Z")).toContain("today");
     expect(at("2026-06-19T09:00:00Z")).toContain("yesterday");
     expect(at("2026-06-15T09:00:00Z")).toContain("5d ago");
@@ -209,13 +214,13 @@ describe("formatRecallContext", () => {
   });
 
   it("omits the path line when a path segment is shell-unsafe (defense-in-depth)", () => {
-    const out = formatRecallContext({ hit: { ...base, path: "/summaries/levon/ev;il.md" }, currentUser: "x", now });
+    const out = formatRecallContext({ hit: { ...base, path: "/summaries/levon/ev;il.md" }, currentUser: "x", memoryRoot: "~/.deeplake/memory", now });
     expect(out).toContain("HIVEMIND RECALL"); // still injects the recall
     expect(out).not.toContain("Full summary:"); // but drops the unsafe path
   });
 
   it("omits the description line when there is no description", () => {
-    const out = formatRecallContext({ hit: { ...base, description: "" }, currentUser: "x", now });
+    const out = formatRecallContext({ hit: { ...base, description: "" }, currentUser: "x", memoryRoot: "~/.deeplake/memory", now });
     expect(out).toContain("HIVEMIND RECALL");
   });
 });

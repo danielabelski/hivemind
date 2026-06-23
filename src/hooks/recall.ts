@@ -53,11 +53,14 @@ import { recordRecallEvent } from "./shared/recall-events.js";
 const log = (msg: string) => _log("recall", msg);
 
 const SEMANTIC_ENABLED = process.env.HIVEMIND_SEMANTIC_SEARCH !== "false" && !embeddingsDisabled();
-const EMBED_TIMEOUT_MS = parsePositive(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS, 500);
 // Hard ceiling on the recall critical path. recall runs SYNCHRONOUSLY on
 // UserPromptSubmit — it blocks the turn — so we cap the worst case to a
 // predictable budget and degrade to "skip" rather than stall on a slow backend.
 const RECALL_BUDGET_MS = parsePositive(process.env.HIVEMIND_RECALL_TIMEOUT_MS, 1000);
+// The embed self-timeout is clamped to the budget so EmbedClient.embed() (which
+// has no abort hook) can never outlast the overall recall budget, even if a
+// user sets HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS higher than the budget.
+const EMBED_TIMEOUT_MS = Math.min(parsePositive(process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS, 500), RECALL_BUDGET_MS);
 
 type FindResult =
   | { kind: "hit"; hit: RecallHit }
@@ -207,7 +210,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const additionalContext = formatRecallContext({ hit, currentUser: config.userName, now: Date.now() });
+  const additionalContext = formatRecallContext({ hit, currentUser: config.userName, memoryRoot: config.memoryPath, now: Date.now() });
   if (!additionalContext) {
     log(`searched mode=${hit.mode} hit=unattributable score=${hit.score}`);
     recordRecallEvent({ event: "unattributable", mode: hit.mode, score: hit.score, session });

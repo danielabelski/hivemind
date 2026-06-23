@@ -37,6 +37,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
 const CONFIG = {
   token: "t", apiUrl: "https://api", orgId: "o", workspaceId: "w",
   userName: "sasun", tableName: "mem", sessionsTableName: "sess",
+  memoryPath: "/home/u/.deeplake/memory",
 };
 
 function row(over: Record<string, unknown> = {}): Record<string, unknown> {
