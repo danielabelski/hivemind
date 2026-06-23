@@ -32,9 +32,15 @@ import {
   archiveDoc,
   listDocs,
   getDocLatest,
+  computeImpactedDocs,
+  refreshDocs,
+  buildAnchor,
   type DocRow,
   type DocTier,
+  type DocAnchor,
 } from "../docs/index.js";
+import { makeClaudeGenerate } from "../docs/refresh-llm.js";
+import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 
 const USAGE = `
@@ -45,6 +51,10 @@ Usage:
   hivemind docs show <doc-id>
   hivemind docs list [--project P] [--status active|archived|all] [--limit N]
   hivemind docs archive <doc-id>
+  hivemind docs refresh [--cwd <dir>] [--dry-run]
+      Detect docs whose anchored code drifted (vs the current graph) and
+      regenerate them via the host LLM, gated. --dry-run only reports the
+      impacted docs without calling the LLM or writing anything.
 `.trim();
 
 function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
@@ -65,6 +75,21 @@ function flagValue(args: string[], name: string): string | undefined {
   const idx = args.findIndex(a => a === name || a.startsWith(`${name}=`));
   if (idx === -1) return undefined;
   return args[idx].includes("=") ? args[idx].split("=", 2)[1] : args[idx + 1];
+}
+
+/** Collect ALL values of a repeatable flag (e.g. --anchor X --anchor Y). */
+function flagValues(args: string[], name: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === name) {
+      if (args[i + 1] !== undefined) out.push(args[i + 1]);
+      i++;
+    } else if (a.startsWith(`${name}=`)) {
+      out.push(a.split("=", 2)[1]);
+    }
+  }
+  return out;
 }
 
 function parseStatus(args: string[]): "active" | "archived" | "all" {
@@ -97,7 +122,7 @@ function parseLimit(args: string[]): number {
   return n;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -149,7 +174,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
 
   // Only write subcommands need DDL — read-only show/list fall back to
   // isMissingTableError so a fresh-install user doesn't pay a CREATE round-trip.
-  const WRITE_SUBS = new Set(["set", "archive"]);
+  const WRITE_SUBS = new Set(["set", "archive", "refresh"]);
   if (WRITE_SUBS.has(sub)) {
     await api.ensureDocsTable(tableName);
   }
@@ -166,11 +191,41 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const content = resolveContent(positional[1], args);
     const path = flagValue(args, "--path") ?? defaultVfsPath(project, docId);
     const tier = parseTier(args);
+    // Optional anchors: build from the current graph so the doc is tied to the
+    // code it describes (enables drift detection by `docs refresh`).
+    const anchorIds = flagValues(args, "--anchor");
+    let anchors: DocAnchor[] | undefined;
+    if (anchorIds.length > 0) {
+      const snap = loadCurrentSnapshot(flagValue(args, "--cwd") ?? process.cwd());
+      if (!snap) {
+        console.error("--anchor needs a built graph. Run `hivemind graph build` first.");
+        process.exit(1);
+        throw new Error("unreachable");
+      }
+      const nodeById = new Map(snap.nodes.map((n) => [n.id, n]));
+      anchors = [];
+      for (const sid of anchorIds) {
+        const node = nodeById.get(sid);
+        if (!node) {
+          console.error(`--anchor: symbol not in graph: ${sid}`);
+          process.exit(1);
+          throw new Error("unreachable");
+        }
+        const a = buildAnchor(node, flagValue(args, "--cwd") ?? process.cwd());
+        if (!a) {
+          console.error(`--anchor: could not read source for ${sid}`);
+          process.exit(1);
+          throw new Error("unreachable");
+        }
+        anchors.push(a);
+      }
+    }
     try {
       const out = await setDoc(query, tableName, {
         doc_id: docId,
         path,
         content,
+        anchors,
         tier,
         project,
         agent: cfg.userName,
@@ -246,6 +301,53 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     } catch (err) {
       console.error(`Archive failed: ${(err as Error).message}`);
       process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === "refresh") {
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const dryRun = args.includes("--dry-run");
+    const snap = loadCurrentSnapshot(cwd);
+    if (!snap) {
+      console.error("No local graph for this directory. Run `hivemind graph build` first.");
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+    let docs: DocRow[] = [];
+    try {
+      docs = await listDocs(query, tableName, { status: "active", limit: 100000 });
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+    }
+    const impacted = computeImpactedDocs({ snap, docs, repoRoot: cwd });
+    if (impacted.length === 0) {
+      console.log("(no docs need refreshing — all anchors fresh)");
+      return;
+    }
+    if (dryRun) {
+      console.log(`${impacted.length} doc(s) would be refreshed:`);
+      for (const i of impacted) {
+        console.log(`  ${i.doc_id}  [${i.reasons.map((r) => r.kind).join(", ")}]`);
+      }
+      return;
+    }
+    const docsById = new Map(docs.map((d) => [d.doc_id, d]));
+    const report = await refreshDocs({
+      query,
+      tableName,
+      snap,
+      repoRoot: cwd,
+      impacted,
+      docsById,
+      generate: makeClaudeGenerate(),
+      agent: cfg.userName,
+      pluginVersion,
+    });
+    console.log(`Refreshed ${report.refreshed}, rejected ${report.rejected}, skipped ${report.skipped}.`);
+    for (const o of report.outcomes) {
+      if (o.status === "refreshed") console.log(`  refreshed ${o.doc_id} → v${o.version}`);
+      else console.log(`  ${o.status} ${o.doc_id}: ${(o.reasons ?? []).join("; ")}`);
     }
     return;
   }
