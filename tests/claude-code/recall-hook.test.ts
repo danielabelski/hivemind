@@ -188,12 +188,24 @@ describe("recall hook — semantic path (embeddings on)", () => {
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("injected mode=semantic"));
   });
 
-  it("does NOT inject when the cosine score is below threshold", async () => {
+  it("records 'below' (no inject) when semantic is below threshold AND lexical also misses", async () => {
     embeddingsDisabledMock.mockReturnValue(false);
-    queryMock.mockResolvedValue([row({ score: 0.2 })]);
+    queryMock.mockResolvedValue([row({ score: 0.2 })]); // semantic below; lexical overlap 0.2 < 2
     const out = await runHook();
     expect(out).toBeNull();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("mode=semantic hit=below"));
+  });
+
+  it("HYBRID: a below-threshold semantic hit does not suppress a passing lexical match", async () => {
+    embeddingsDisabledMock.mockReturnValue(false);
+    queryMock
+      .mockResolvedValueOnce([row({ score: 0.2 })])              // semantic: below threshold
+      .mockResolvedValueOnce([row({ score: 3, author: "levon" })]); // lexical: clears overlap
+    const out = await runHook();
+    expect(parse(out).hookSpecificOutput.additionalContext).toContain("levon");
+    expect(queryMock.mock.calls[0][0]).toContain("<#>");   // semantic tried first
+    expect(queryMock.mock.calls[1][0]).toContain("ILIKE"); // then lexical wins
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("injected mode=lexical"));
   });
 
   it("falls back to lexical when semantic finds no embedded rows", async () => {

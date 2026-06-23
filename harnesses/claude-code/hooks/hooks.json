@@ -35,7 +35,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/recall.js\"",
-            "timeout": 5
+            "timeout": 2
           }
         ]
       }

@@ -105,19 +105,29 @@ async function findHit(
     limit: 3,
   };
 
+  // Hybrid: prefer a semantic hit that clears the threshold; otherwise fall
+  // through to lexical (exact keyword/identifier match), the same way the grep
+  // path blends both. A below-threshold semantic hit must NOT suppress a good
+  // lexical match (stack traces / exact error names).
+  let semanticHit: RecallHit | null = null;
   if (SEMANTIC_ENABLED) {
     const vec = await new EmbedClient({ daemonEntry: resolveDaemonPath(), timeoutMs: EMBED_TIMEOUT_MS })
       .embed(prompt, "query");
     if (vec) {
-      const hit = await recallTopHit(q, config.tableName, vec, opts);
-      if (hit) return { kind: "hit", hit }; // else: no embedded rows → lexical
+      semanticHit = await recallTopHit(q, config.tableName, vec, opts);
+      if (semanticHit && passesThreshold(semanticHit.score)) return { kind: "hit", hit: semanticHit };
     }
   }
 
   const keywords = extractKeywords(prompt);
-  if (keywords.length < 2) return { kind: "none" };
-  const hit = await recallTopHitLexical(q, config.tableName, keywords, opts);
-  return hit ? { kind: "hit", hit } : { kind: "none" };
+  if (keywords.length >= 2) {
+    const lex = await recallTopHitLexical(q, config.tableName, keywords, opts);
+    if (lex && lex.score >= MIN_LEXICAL_OVERLAP) return { kind: "hit", hit: lex };
+  }
+
+  // Nothing cleared a bar. Surface the below-threshold semantic hit (so
+  // telemetry records 'below') if we had one; otherwise nothing matched.
+  return semanticHit ? { kind: "hit", hit: semanticHit } : { kind: "none" };
 }
 
 /** Mode-aware relevance gate: cosine threshold for semantic, overlap for lexical. */
