@@ -108,6 +108,7 @@ interface CodexPreToolDeps {
   readCachedIndexContentFn?: typeof readCachedIndexContent;
   writeCachedIndexContentFn?: typeof writeCachedIndexContent;
   runVfsShellFn?: (command: string) => { status: number | null; stdout: string };
+  tryGraphReadFn?: typeof tryGraphRead;
   logFn?: (msg: string) => void;
 }
 
@@ -140,6 +141,7 @@ export async function processCodexPreToolUse(
       });
       return { status: proc.status, stdout: proc.stdout ?? "" };
     },
+    tryGraphReadFn = tryGraphRead,
     logFn = log,
   } = deps;
 
@@ -153,7 +155,7 @@ export async function processCodexPreToolUse(
   // Graph VFS dispatch — a cat/head/tail/ls on the `/graph/*` subtree is
   // answered from the local snapshot, no SQL, no config needed. Runs before
   // the isSafe/grep/shell handling. Shared parser: src/graph/graph-command.ts.
-  const graphBody = tryGraphRead(rewritten, input.cwd ?? process.cwd());
+  const graphBody = tryGraphReadFn(rewritten, input.cwd ?? process.cwd());
   if (graphBody !== null) {
     logFn(`graph vfs intercept: ${rewritten}`);
     return { action: "block", output: graphBody, rewrittenCommand: rewritten };
