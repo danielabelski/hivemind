@@ -4,6 +4,7 @@ import {
   passesThreshold,
   extractKeywords,
   proactiveRecallDisabled,
+  parsePositive,
   RECALL_THRESHOLD,
 } from "../../src/hooks/shared/recall-gate.js";
 import {
@@ -28,10 +29,20 @@ describe("shouldRecall — the precision gate (NOT every prompt)", () => {
     }
   });
 
-  it("skips empty / very short prompts", () => {
-    expect(shouldRecall("").recall).toBe(false);
-    expect(shouldRecall("   ").recall).toBe(false);
-    expect(shouldRecall("add log").reason).toBe("too-short");
+  it("skips empty / very short LOW-signal prompts", () => {
+    expect(shouldRecall("").reason).toBe("empty");
+    expect(shouldRecall("   ").reason).toBe("empty");
+    expect(shouldRecall("add log").reason).toBe("too-short"); // short, no signal
+  });
+
+  it("recalls SHORT but high-signal prompts (signal beats the length gate)", () => {
+    // Regression: these are <24 chars but clearly recall-worthy — they must not
+    // be rejected as too-short before SIGNAL_RES is evaluated.
+    for (const p of ["TypeError in auth", "segfault on scan", "how did we fix X?"]) {
+      const d = shouldRecall(p);
+      expect(d.recall, p).toBe(true);
+      expect(d.reason, p).toBe("signal");
+    }
   });
 
   it("recalls on error / failure / stack-trace signals", () => {
@@ -58,9 +69,15 @@ describe("shouldRecall — the precision gate (NOT every prompt)", () => {
     expect(d.reason).toBe("substantive");
   });
 
-  it("skips terse low-signal instructions", () => {
-    expect(shouldRecall("rename that variable").recall).toBe(false);
-    expect(shouldRecall("bump the version number").recall).toBe(false);
+  it("skips terse low-signal instructions (short → too-short)", () => {
+    expect(shouldRecall("rename that variable").reason).toBe("too-short");
+    expect(shouldRecall("bump the version number").reason).toBe("too-short");
+  });
+
+  it("skips longer-but-low-signal instructions (>=24 chars, <6 words, no signal)", () => {
+    const d = shouldRecall("reconfigure the authentication middleware");
+    expect(d.recall).toBe(false);
+    expect(d.reason).toBe("low-signal");
   });
 });
 
@@ -86,6 +103,19 @@ describe("proactiveRecallDisabled — opt-out (enabled by default)", () => {
     expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL: "1" })).toBe(false);
     expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL_DISABLED: "0" })).toBe(false);
     expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL_DISABLED: "" })).toBe(false);
+  });
+});
+
+describe("parsePositive — env override hardening", () => {
+  it("returns the parsed value for a positive number", () => {
+    expect(parsePositive("250", 1000)).toBe(250);
+    expect(parsePositive("3", 2)).toBe(3);
+  });
+  it("falls back on NaN / 0 / negative / undefined", () => {
+    expect(parsePositive("abc", 1000)).toBe(1000);
+    expect(parsePositive("0", 1000)).toBe(1000);
+    expect(parsePositive("-5", 1000)).toBe(1000);
+    expect(parsePositive(undefined, 1000)).toBe(1000);
   });
 });
 
@@ -140,7 +170,8 @@ describe("formatRecallContext", () => {
     expect(out).toContain("2d ago");
     expect(out).toContain("indra");
     expect(out).toContain("Fixed pg-deeplake SIGSEGV");
-    expect(out).toContain("cat ~/.deeplake/memory/summaries/levon/sess-1.md");
+    expect(out).toContain("Full summary: ~/.deeplake/memory/summaries/levon/sess-1.md");
+    expect(out).not.toContain("cat "); // not framed as a shell command
   });
 
   it("says 'you' when the hit is the current user's own work", () => {
@@ -157,6 +188,28 @@ describe("formatRecallContext", () => {
   it("frames the block as context, not an instruction (prompt-injection hygiene)", () => {
     const out = formatRecallContext({ hit: base, currentUser: "sasun", now });
     expect(out.toLowerCase()).toContain("not an instruction");
+  });
+
+  it("renders each relative-date bucket (today/yesterday/days/weeks/months/unknown)", () => {
+    const at = (iso: string) => formatRecallContext({ hit: { ...base, lastUpdate: iso }, currentUser: "x", now });
+    expect(at("2026-06-20T09:00:00Z")).toContain("today");
+    expect(at("2026-06-19T09:00:00Z")).toContain("yesterday");
+    expect(at("2026-06-15T09:00:00Z")).toContain("5d ago");
+    expect(at("2026-06-06T09:00:00Z")).toContain("2w ago");
+    expect(at("2026-04-20T09:00:00Z")).toContain("2mo ago");
+    // Unparseable date → no relative-date token, block still renders.
+    expect(at("not-a-date")).toContain("HIVEMIND RECALL");
+  });
+
+  it("omits the path line when a path segment is shell-unsafe (defense-in-depth)", () => {
+    const out = formatRecallContext({ hit: { ...base, path: "/summaries/levon/ev;il.md" }, currentUser: "x", now });
+    expect(out).toContain("HIVEMIND RECALL"); // still injects the recall
+    expect(out).not.toContain("Full summary:"); // but drops the unsafe path
+  });
+
+  it("omits the description line when there is no description", () => {
+    const out = formatRecallContext({ hit: { ...base, description: "" }, currentUser: "x", now });
+    expect(out).toContain("HIVEMIND RECALL");
   });
 });
 
@@ -176,6 +229,11 @@ describe("withDeadline — bounds the synchronous recall path", () => {
     const r = await withDeadline(Promise.reject(new Error("boom")), 1000, "skip");
     expect(r).toBe("skip");
   });
+
+  it("with a non-positive deadline still degrades a rejection to the fallback", async () => {
+    expect(await withDeadline(Promise.reject(new Error("x")), 0, "skip")).toBe("skip");
+    expect(await withDeadline(Promise.resolve("ok"), -1, "skip")).toBe("ok");
+  });
 });
 
 describe("recallTopHit — focused semantic query", () => {
@@ -190,10 +248,11 @@ describe("recallTopHit — focused semantic query", () => {
         description: "desc", last_update_date: "2026-06-18", score: 0.8,
       }];
     };
-    const hit = await recallTopHit(query, "org_memory", vec, { excludePath: "/summaries/sasun/mine.md", limit: 3 });
+    const hit = await recallTopHit(query, "org_memory", vec, { project: "indra", excludePath: "/summaries/sasun/mine.md", limit: 3 });
     expect(captured).toContain("summary_embedding <#> ARRAY[");
     expect(captured).toContain('FROM "org_memory"');
     expect(captured).toContain("ARRAY_LENGTH(summary_embedding, 1) > 0");
+    expect(captured).toContain("project = 'indra'"); // scoped to current project
     expect(captured).toContain("path <> '/summaries/sasun/mine.md'");
     expect(captured).toContain("ORDER BY score DESC LIMIT 3");
     expect(hit).toMatchObject({ author: "levon", project: "indra", score: 0.8, mode: "semantic" });
@@ -209,6 +268,21 @@ describe("recallTopHit — focused semantic query", () => {
     const hit = await recallTopHit(async () => { called = true; return []; }, "t", [0.1, NaN], {});
     expect(hit).toBeNull();
     expect(called).toBe(false);
+  });
+
+  it("omits project/exclude filters when not provided (org-wide fallback)", async () => {
+    let captured = "";
+    await recallTopHit(async (sql) => { captured = sql; return []; }, "t", vec, {});
+    expect(captured).not.toContain("project =");
+    expect(captured).not.toContain("path <>");
+  });
+
+  it("coerces a non-numeric score to 0", async () => {
+    const hit = await recallTopHit(
+      async () => [{ path: "/summaries/l/s.md", author: "l", project: "p", description: "d", last_update_date: "2026-06-18", score: "oops" }],
+      "t", vec, {},
+    );
+    expect(hit?.score).toBe(0);
   });
 });
 

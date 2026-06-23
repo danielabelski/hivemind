@@ -104,6 +104,12 @@ describe("recall hook — guards (no search, no emit)", () => {
     expect(stdinMock).not.toHaveBeenCalled();
   });
 
+  it("returns immediately inside a nested wiki worker (HIVEMIND_WIKI_WORKER=1)", async () => {
+    const out = await runHook({ HIVEMIND_WIKI_WORKER: "1" });
+    expect(out).toBeNull();
+    expect(stdinMock).not.toHaveBeenCalled();
+  });
+
   it("skips an acknowledgement prompt before any I/O", async () => {
     stdinMock.mockResolvedValue({ prompt: "yes", session_id: "sid" });
     const out = await runHook();
@@ -147,8 +153,11 @@ describe("recall hook — lexical path (no embeddings)", () => {
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "below" }));
   });
 
-  it("does not search when the prompt yields fewer than 2 keywords", async () => {
-    stdinMock.mockResolvedValue({ prompt: "rename the parser", session_id: "sid" });
+  it("does not search when the prompt passes the gate but yields fewer than 2 keywords", async () => {
+    // "TypeError?" passes shouldRecall (signal) but extractKeywords → 1 token,
+    // so the lexical path must bail BEFORE querying (exercises keywords<2, not
+    // the gate's too-short branch).
+    stdinMock.mockResolvedValue({ prompt: "TypeError?", session_id: "sid", cwd: "/repo" });
     const out = await runHook();
     expect(out).toBeNull();
     expect(queryMock).not.toHaveBeenCalled();
@@ -158,6 +167,12 @@ describe("recall hook — lexical path (no embeddings)", () => {
     queryMock.mockResolvedValue([row({ score: 3 })]);
     await runHook();
     expect(queryMock.mock.calls[0][0]).toContain("path <> '/summaries/sasun/sid.md'");
+  });
+
+  it("scopes the search to the current project (derived from cwd)", async () => {
+    queryMock.mockResolvedValue([row({ score: 3 })]);
+    await runHook(); // default fixture cwd = "/repo" → project "repo"
+    expect(queryMock.mock.calls[0][0]).toContain("project = 'repo'");
   });
 });
 
@@ -228,5 +243,14 @@ describe("recall hook — latency budget + failure isolation", () => {
     loadConfigMock.mockReturnValue(null);
     await runHook();
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "no-config" }));
+  });
+
+  it("does not inject (records 'unattributable') when the top hit has an unparseable path", async () => {
+    // Above-threshold hit, but the path isn't a /summaries/<author>/<session>
+    // path, so formatRecallContext yields "" → never inject unattributed.
+    queryMock.mockResolvedValue([row({ score: 4, path: "/sessions/x/raw.jsonl" })]);
+    const out = await runHook();
+    expect(out).toBeNull();
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "unattributable" }));
   });
 });
