@@ -30,3 +30,16 @@ export type { AnchorStatus } from "./anchors.js";
 
 export { computeStaleDocs, widenByBlastRadius, computeImpactedDocs } from "./impact.js";
 export type { StaleReason, ImpactedDoc } from "./impact.js";
+
+export { gateDocEdit, countChangedLines, DEFAULT_MAX_CHANGED_LINES, GATE_MAX_CONTENT_LENGTH } from "./gate.js";
+export type { GateInput, GateResult } from "./gate.js";
+
+export { refreshDocs, buildRefreshPrompt } from "./refresh.js";
+export type {
+  GenerateFn,
+  RefreshContext,
+  RefreshArgs,
+  RefreshReport,
+  RefreshOutcome,
+  ChangedSymbol,
+} from "./refresh.js";
