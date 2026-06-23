@@ -17,3 +17,16 @@ export type {
   ListDocsOpts,
   QueryFn,
 } from "./read.js";
+
+export {
+  parseSourceLocation,
+  readSymbolSource,
+  hashSource,
+  computeSymbolHash,
+  buildAnchor,
+  anchorStatus,
+} from "./anchors.js";
+export type { AnchorStatus } from "./anchors.js";
+
+export { computeStaleDocs, widenByBlastRadius, computeImpactedDocs } from "./impact.js";
+export type { StaleReason, ImpactedDoc } from "./impact.js";
