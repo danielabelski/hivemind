@@ -41,7 +41,9 @@ export async function recallTopHit(
   const vecLit = serializeFloat4Array(queryEmbedding);
   if (vecLit === "NULL") return null;
 
-  const filters = [`ARRAY_LENGTH(summary_embedding, 1) > 0`];
+  // Only session SUMMARIES — the memory table also holds notes/goals/files;
+  // a non-summary row must never be injected as "prior work".
+  const filters = [`path LIKE '/summaries/%'`, `ARRAY_LENGTH(summary_embedding, 1) > 0`];
   if (opts.project) filters.push(`project = '${sqlStr(opts.project)}'`);
   if (opts.excludePath) filters.push(`path <> '${sqlStr(opts.excludePath)}'`);
 
@@ -74,7 +76,8 @@ export async function recallTopHitLexical(
     .join(" + ");
   const anyMatch = keywords.map((k) => `${field} ILIKE '%${sqlLike(k)}%'`).join(" OR ");
 
-  const filters = [`(${anyMatch})`];
+  // Summaries only (the memory table also holds notes/goals/files).
+  const filters = [`path LIKE '/summaries/%'`, `(${anyMatch})`];
   if (opts.project) filters.push(`project = '${sqlStr(opts.project)}'`);
   if (opts.excludePath) filters.push(`path <> '${sqlStr(opts.excludePath)}'`);
 

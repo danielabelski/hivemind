@@ -264,8 +264,9 @@ describe("recallTopHit — focused semantic query", () => {
     const hit = await recallTopHit(query, "org_memory", vec, { project: "indra", excludePath: "/summaries/sasun/mine.md", limit: 3 });
     expect(captured).toContain("summary_embedding <#> ARRAY[");
     expect(captured).toContain('FROM "org_memory"');
+    expect(captured).toContain("path LIKE '/summaries/%'"); // summaries only
     expect(captured).toContain("ARRAY_LENGTH(summary_embedding, 1) > 0");
-    expect(captured).toContain("project = 'indra'"); // scoped to current project
+    expect(captured).toContain("project = 'indra'"); // project option still supported
     expect(captured).toContain("path <> '/summaries/sasun/mine.md'");
     expect(captured).toContain("ORDER BY score DESC LIMIT 3");
     expect(hit).toMatchObject({ author: "levon", project: "indra", score: 0.8, mode: "semantic" });
@@ -328,6 +329,7 @@ describe("recallTopHitLexical — ILIKE keyword-overlap fallback", () => {
       return [{ path: "/summaries/levon/s.md", author: "levon", project: "indra", description: "d", last_update_date: "2026-06-18", score: 2 }];
     };
     const hit = await recallTopHitLexical(query, "org_memory", kw, { excludePath: "/summaries/me/x.md" });
+    expect(captured).toContain("path LIKE '/summaries/%'"); // summaries only
     expect(captured).toContain("ILIKE '%parser%'");
     expect(captured).toContain("ILIKE '%typeerror%'");
     expect(captured).toContain("CASE WHEN"); // overlap count

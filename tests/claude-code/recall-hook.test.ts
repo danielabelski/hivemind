@@ -172,10 +172,12 @@ describe("recall hook — lexical path (no embeddings)", () => {
     expect(queryMock.mock.calls[0][0]).toContain("path <> '/summaries/sasun/sid.md'");
   });
 
-  it("scopes the search to the current project (derived from cwd)", async () => {
+  it("restricts the search to summary rows and does NOT project-scope by cwd basename", async () => {
     queryMock.mockResolvedValue([row({ score: 3 })]);
-    await runHook(); // default fixture cwd = "/repo" → project "repo"
-    expect(queryMock.mock.calls[0][0]).toContain("project = 'repo'");
+    await runHook(); // default fixture cwd = "/repo"
+    const sql = queryMock.mock.calls[0][0];
+    expect(sql).toContain("path LIKE '/summaries/%'"); // summaries only
+    expect(sql).not.toContain("project ="); // no fragile basename scoping
   });
 });
 

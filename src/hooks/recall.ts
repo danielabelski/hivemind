@@ -32,7 +32,6 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
-import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -104,16 +103,13 @@ async function findHit(
   // query rather than leaving the socket/retry loop running.
   const q = (sql: string) => api.query(sql, signal) as Promise<Array<Record<string, unknown>>>;
   const opts = {
-    // Scope to the CURRENT project: same-project summaries from any teammate
-    // (the cross-teammate value) without injecting unrelated context from
-    // other repos in the org. Org-wide only as a fallback when cwd is absent.
-    // NOTE: `project` is the cwd basename — the SAME value capture tags rows
-    // with — so this filter is exactly as precise as the stored data. Repos
-    // that share a leaf directory name (…/foo/api and …/bar/api) collide; fully
-    // disambiguating them needs a more-unique project key on summary rows (a
-    // capture/schema change + migration), tracked separately. Basename scoping
-    // is still strictly better than the org-wide search it replaced.
-    project: input.cwd ? projectNameFromCwd(input.cwd) : undefined,
+    // No project filter: summaries are tagged with the cwd BASENAME at capture
+    // time, so a basename filter both collides (…/foo/api vs …/bar/api) and —
+    // worse — silently drops valid history when the user prompts from a
+    // subdirectory (session tagged `repo`, prompt from `repo/src` → `src`).
+    // Precision instead comes from the `/summaries/%` row filter + the
+    // relevance threshold. Robust project-aware scoping needs a stable project
+    // key on summary rows (capture/schema change) — tracked as a follow-up.
     excludePath: input.session_id ? `/summaries/${config.userName}/${input.session_id}.md` : undefined,
     limit: 3,
   };
