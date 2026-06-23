@@ -20,7 +20,9 @@ const embedMock = vi.fn();
 const queryMock = vi.fn();
 const debugLogMock = vi.fn();
 const recordEventMock = vi.fn();
+const selfHealMock = vi.fn();
 
+vi.mock("../../src/embeddings/self-heal.js", () => ({ ensurePluginNodeModulesLink: (...a: unknown[]) => selfHealMock(...a) }));
 vi.mock("../../src/hooks/shared/recall-events.js", () => ({ recordRecallEvent: (...a: unknown[]) => recordEventMock(...a) }));
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
@@ -81,6 +83,7 @@ beforeEach(() => {
   queryMock.mockReset().mockResolvedValue([]);
   debugLogMock.mockReset();
   recordEventMock.mockReset();
+  selfHealMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -191,6 +194,25 @@ describe("recall hook — semantic path (embeddings on)", () => {
     expect(queryMock.mock.calls[0][0]).toContain("<#>"); // cosine query
     expect(embedMock).toHaveBeenCalled();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("injected mode=semantic"));
+  });
+
+  it("self-heals the plugin deps symlink BEFORE building the EmbedClient (post-upgrade)", async () => {
+    embeddingsDisabledMock.mockReturnValue(false);
+    queryMock.mockResolvedValue([row({ score: 0.8 })]);
+    await runHook();
+    expect(selfHealMock).toHaveBeenCalledTimes(1);
+    expect(selfHealMock).toHaveBeenCalledWith(expect.objectContaining({ bundleDir: expect.any(String) }));
+    // ordering: the repair must run before the embed call so the daemon's deps exist
+    expect(selfHealMock.mock.invocationCallOrder[0]).toBeLessThan(embedMock.mock.invocationCallOrder[0]);
+  });
+
+  it("still recalls when the self-heal repair throws (best-effort, non-fatal)", async () => {
+    embeddingsDisabledMock.mockReturnValue(false);
+    selfHealMock.mockImplementation(() => { throw new Error("symlink EACCES"); });
+    queryMock.mockResolvedValue([row({ score: 0.8, author: "levon" })]);
+    const out = await runHook();
+    expect(parse(out).hookSpecificOutput.additionalContext).toContain("levon");
+    expect(embedMock).toHaveBeenCalled(); // proceeded to embed despite repair failure
   });
 
   it("records 'below' (no inject) when semantic is below threshold AND lexical also misses", async () => {

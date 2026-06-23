@@ -31,6 +31,7 @@ import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
+import { ensurePluginNodeModulesLink } from "../embeddings/self-heal.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
 import { log as _log } from "../utils/debug.js";
 import { fileURLToPath } from "node:url";
@@ -69,8 +70,10 @@ type FindResult =
 
 const TIMED_OUT: FindResult = { kind: "timeout" };
 
+const __bundleDir = dirname(fileURLToPath(import.meta.url));
+
 function resolveDaemonPath(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "embeddings", "embed-daemon.js");
+  return join(__bundleDir, "embeddings", "embed-daemon.js");
 }
 
 interface RecallInput {
@@ -123,6 +126,15 @@ async function findHit(
     // lexical match (stack traces / exact error names).
     let semanticHit: RecallHit | null = null;
     if (SEMANTIC_ENABLED) {
+      // Self-heal the shared-deps symlink BEFORE building the EmbedClient.
+      // A marketplace auto-upgrade drops a new versioned cache dir without the
+      // `node_modules` symlink that `hivemind embeddings install` created.
+      // capture.js repairs this too, but recall and capture are independent
+      // async UserPromptSubmit hooks — recall can run first, so without this
+      // the first prompt after an upgrade would silently lose semantic recall
+      // (falling back to lexical/null) even though embeddings are installed.
+      // Best-effort: a failure here just means we degrade to lexical.
+      try { ensurePluginNodeModulesLink({ bundleDir: __bundleDir }); } catch { /* best-effort */ }
       const vec = await new EmbedClient({ daemonEntry: resolveDaemonPath(), timeoutMs: EMBED_TIMEOUT_MS })
         .embed(prompt, "query");
       if (vec) {
