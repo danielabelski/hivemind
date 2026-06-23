@@ -463,6 +463,31 @@ describe("processCodexPreToolUse: memory write redirect (F3 — no double execut
     expect(d.replacementCommand).toBe(`printf '%s\\n' 'it'\\''s done'`);
   });
 
+  it("treats a no-space redirect (echo foo>file) as a write → allow, not block", async () => {
+    // CodeRabbit #284: `/\s>>?\s/` missed `echo foo>file`, misrouting it to block
+    // and re-surfacing the F3 "write looks failed" symptom. The relaxed guard
+    // must recognize the redirect regardless of surrounding whitespace.
+    const runVfsShellFn = vi.fn(() => ({ status: 0, stdout: "(done)" }));
+    const d = await processCodexPreToolUse(
+      toolInput("echo 'hello'>~/.deeplake/memory/h2h/relay-codex.md"),
+      writeDeps({ runVfsShellFn }),
+    );
+    expect(d.action).toBe("allow");
+    expect(d.replacementCommand).toBe("printf '%s\\n' '(done)'");
+  });
+
+  it("does NOT treat an fd redirect (echo ... 2>file) as a write → stays block", async () => {
+    // `2>`/`&>` are file-descriptor redirects, not memory writes. The `[^0-9&>]`
+    // guard must keep them on the block path (no allow rewrite).
+    const runVfsShellFn = vi.fn(() => ({ status: 0, stdout: "x" }));
+    const d = await processCodexPreToolUse(
+      toolInput("echo hello 2>~/.deeplake/memory/h2h/err.md"),
+      writeDeps({ runVfsShellFn }),
+    );
+    expect(d.action).toBe("block");
+    expect(d.replacementCommand).toBeUndefined();
+  });
+
   it("falls back to block+guidance when the VFS shell fails (non-zero, no stdout)", async () => {
     const runVfsShellFn = vi.fn(() => ({ status: 1, stdout: "" }));
     const d = await processCodexPreToolUse(toolInput(writeCmd), writeDeps({ runVfsShellFn }));

@@ -392,10 +392,14 @@ export async function processCodexPreToolUse(
   //     never re-runs the original redirect against the on-disk mount (F3).
   //   "block" (exit 2) — everything else (pipes, finds, reads) to prevent host
   //     execution and inject the result/guidance via stderr.
-  // The write-redirect guard stays narrow: a generic ">>" check would match mixed
-  // commands like `sort /etc/passwd > /vfs/out`. Anchoring to echo/printf/tee keeps
-  // the rewrite to pure-output commands whose side effect is only the SQL write.
-  const isWriteRedirect = /^\s*(echo|printf|tee)\b/.test(rewritten) && /\s>>?\s/.test(rewritten);
+  // The write-redirect guard stays narrow: anchoring to echo/printf/tee keeps the
+  // rewrite to pure-output commands whose side effect is only the SQL write (a bare
+  // ">>" check would match mixed commands like `sort /etc/passwd > /vfs/out`).
+  // The redirect test is whitespace-agnostic — `echo foo>file` is as valid as
+  // `echo foo > file`; requiring spaces would misroute the no-space form to `block`
+  // and re-surface the F3 "write looks failed" symptom. `[^0-9&>]` before the `>`
+  // excludes fd redirects (`2>`, `&>`) so those still fall through to block.
+  const isWriteRedirect = /^\s*(echo|printf|tee)\b/.test(rewritten) && /(^|[^0-9&>])>>?/.test(rewritten);
   logFn(`unroutable memory command, falling back to VFS shell: ${rewritten}`);
   try {
     const proc = runVfsShellFn(rewritten);
