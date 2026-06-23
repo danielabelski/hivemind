@@ -180,9 +180,16 @@ describe("formatRecallContext", () => {
     expect(out).not.toMatch(/•\s+levon/);
   });
 
-  it("returns empty string for an unattributable path (never inject unattributed)", () => {
-    const out = formatRecallContext({ hit: { ...base, path: "/sessions/x/y.jsonl" }, currentUser: "sasun", now });
+  it("returns empty string only when there is no author to credit", () => {
+    const out = formatRecallContext({ hit: { ...base, author: "" }, currentUser: "sasun", now });
     expect(out).toBe("");
+  });
+
+  it("injects a LEGACY row (non-canonical path) using the row's author, just without the path line", () => {
+    const out = formatRecallContext({ hit: { ...base, path: "/sessions/x/y.jsonl" }, currentUser: "sasun", now });
+    expect(out).toContain("HIVEMIND RECALL");
+    expect(out).toContain("levon");          // attributed from hit.author
+    expect(out).not.toContain("Full summary:"); // path not canonical → no pointer
   });
 
   it("frames the block as context, not an instruction (prompt-injection hygiene)", () => {

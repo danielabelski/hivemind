@@ -141,8 +141,14 @@ function getQueryTimeoutMs(): number {
   return Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 10_000);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    // An abort during the backoff short-circuits the wait (and clears the
+    // timer) so a caller's deadline isn't kept alive by the retry sleep.
+    signal?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("aborted")); }, { once: true });
+  });
 }
 
 function isTimeoutError(error: unknown): boolean {
@@ -272,7 +278,7 @@ export class DeeplakeApi {
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay);
+          await sleep(delay, externalSignal);
           continue;
         }
         throw lastError;
@@ -296,7 +302,7 @@ export class DeeplakeApi {
       if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay);
+        await sleep(delay, externalSignal);
         continue;
       }
       // Surface a session-start banner for the "out of credits" case before

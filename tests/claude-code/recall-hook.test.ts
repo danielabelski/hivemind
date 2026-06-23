@@ -263,10 +263,11 @@ describe("recall hook — latency budget + failure isolation", () => {
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "no-config" }));
   });
 
-  it("does not inject (records 'unattributable') when the top hit has an unparseable path", async () => {
-    // Above-threshold hit, but the path isn't a /summaries/<author>/<session>
-    // path, so formatRecallContext yields "" → never inject unattributed.
-    queryMock.mockResolvedValue([row({ score: 4, path: "/sessions/x/raw.jsonl" })]);
+  it("does not inject (records 'unattributable') when the top hit has no author", async () => {
+    // Above-threshold hit but no author to credit → formatRecallContext yields
+    // "" → never inject unattributed. (A non-canonical PATH still injects via
+    // the row's author — that's covered in the format unit tests.)
+    queryMock.mockResolvedValue([row({ score: 4, author: "" })]);
     const out = await runHook();
     expect(out).toBeNull();
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "unattributable" }));

@@ -59,20 +59,25 @@ export interface FormatRecallInput {
  */
 export function formatRecallContext(input: FormatRecallInput): string {
   const { hit, currentUser, now } = input;
-  const parsed = parseSummaryPath(hit.path);
-  if (!parsed) return "";
 
-  const isMine = parsed.author === currentUser;
-  const who = isMine ? "you" : parsed.author;
+  // Attribute from the row's own `author` column (the query selects it), so
+  // LEGACY summary rows whose path doesn't match /summaries/<author>/<session>
+  // still recall. Only skip when there is genuinely no author to credit.
+  const author = (hit.author || "").trim();
+  if (!author) return "";
+
+  const who = author === currentUser ? "you" : author;
   const when = relativeDay(hit.lastUpdate, now);
   const meta = [who, when, hit.project].filter(Boolean).join(" · ");
   const desc = (hit.description || "").trim().replace(/\s+/g, " ");
 
-  // Print a path pointer (not a shell command) built from the VALIDATED path
-  // segments, and only when both segments are safe — so DB-derived values can
-  // never produce unsafe command text if the model copies/runs it.
+  // Print a path pointer (not a shell command) only when the path parses to the
+  // canonical /summaries/<author>/<session> shape AND both segments are safe —
+  // so DB-derived values can't produce unsafe command text. Legacy/odd paths
+  // just omit the pointer; the recall still injects.
+  const parsed = parseSummaryPath(hit.path);
   const safeSeg = /^[A-Za-z0-9._-]+$/;
-  const pathLine = safeSeg.test(parsed.author) && safeSeg.test(parsed.session)
+  const pathLine = parsed && safeSeg.test(parsed.author) && safeSeg.test(parsed.session)
     ? `  Full summary: ~/.deeplake/memory/summaries/${parsed.author}/${parsed.session}.md`
     : "";
 
