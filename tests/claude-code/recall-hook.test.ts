@@ -71,7 +71,7 @@ function parse(out: string | null): any {
 }
 
 beforeEach(() => {
-  for (const k of ["HIVEMIND_RECALL", "HIVEMIND_SEMANTIC_SEARCH", "HIVEMIND_RECALL_TIMEOUT_MS", "HIVEMIND_RECALL_MIN_OVERLAP", "HIVEMIND_WIKI_WORKER"]) delete process.env[k];
+  for (const k of ["HIVEMIND_PROACTIVE_RECALL", "HIVEMIND_PROACTIVE_RECALL_DISABLED", "HIVEMIND_SEMANTIC_SEARCH", "HIVEMIND_RECALL_TIMEOUT_MS", "HIVEMIND_RECALL_MIN_OVERLAP", "HIVEMIND_WIKI_WORKER"]) delete process.env[k];
   stdinMock.mockReset().mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid", cwd: "/repo" });
   loadConfigMock.mockReset().mockReturnValue(CONFIG);
   pluginEnabledMock.mockReset().mockReturnValue(true);
@@ -85,8 +85,14 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("recall hook — guards (no search, no emit)", () => {
-  it("returns immediately when HIVEMIND_RECALL=false", async () => {
-    const out = await runHook({ HIVEMIND_RECALL: "false" });
+  it("returns immediately when proactive recall is opted out (HIVEMIND_PROACTIVE_RECALL=false)", async () => {
+    const out = await runHook({ HIVEMIND_PROACTIVE_RECALL: "false" });
+    expect(out).toBeNull();
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("returns immediately via the dedicated HIVEMIND_PROACTIVE_RECALL_DISABLED=1 flag", async () => {
+    const out = await runHook({ HIVEMIND_PROACTIVE_RECALL_DISABLED: "1" });
     expect(out).toBeNull();
     expect(queryMock).not.toHaveBeenCalled();
   });

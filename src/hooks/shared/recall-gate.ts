@@ -13,6 +13,27 @@
  * lives in the exported constants.
  */
 
+/**
+ * Opt-out for PROACTIVE RECALL specifically — the aggressive behavior of
+ * auto-searching team memory on every recall-worthy prompt and INJECTING a hit
+ * into the agent's context. This is distinct from:
+ *   - session CAPTURE (HIVEMIND_CAPTURE) — storing your sessions, and
+ *   - the agent's own REACTIVE recall (grep / the memory skill) — which it
+ *     initiates itself.
+ * Disabling this leaves capture and reactive recall untouched; it only stops
+ * the automatic search-and-inject.
+ *
+ * ENABLED BY DEFAULT. Disable via EITHER (both accepted; case-insensitive,
+ * whitespace-tolerant):
+ *   - HIVEMIND_PROACTIVE_RECALL          = 0 | false | no | off
+ *   - HIVEMIND_PROACTIVE_RECALL_DISABLED = 1 | true | yes | on
+ */
+export function proactiveRecallDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (/^(1|true|yes|on)$/i.test((env.HIVEMIND_PROACTIVE_RECALL_DISABLED ?? "").trim())) return true;
+  if (/^(0|false|no|off)$/i.test((env.HIVEMIND_PROACTIVE_RECALL ?? "").trim())) return true;
+  return false;
+}
+
 /** Cosine score (0..1, higher = closer) a hit must clear to be injected. */
 export const RECALL_THRESHOLD = 0.55;
 

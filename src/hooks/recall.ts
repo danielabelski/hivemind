@@ -19,6 +19,11 @@
  *   - Failure-isolated: any error → emit nothing, never block the prompt.
  *   - Latency-bounded: the whole search path is capped (withDeadline).
  *   - additionalContext on Claude Code is model-only (invisible to the user).
+ *
+ * Opt-out: this auto-search-and-inject is ENABLED BY DEFAULT. A user turns it
+ * off (without affecting session capture or the agent's own reactive recall)
+ * via HIVEMIND_PROACTIVE_RECALL_DISABLED=1 (or HIVEMIND_PROACTIVE_RECALL=0).
+ * See proactiveRecallDisabled() in shared/recall-gate.ts.
  */
 
 import { readStdin } from "../utils/stdin.js";
@@ -34,6 +39,7 @@ import {
   shouldRecall,
   passesThreshold,
   extractKeywords,
+  proactiveRecallDisabled,
   RECALL_THRESHOLD,
   MIN_LEXICAL_OVERLAP,
 } from "./shared/recall-gate.js";
@@ -116,7 +122,7 @@ function hitPasses(hit: RecallHit): boolean {
 }
 
 async function main(): Promise<void> {
-  if (process.env.HIVEMIND_RECALL === "false") return;
+  if (proactiveRecallDisabled()) return; // on by default; opt out: HIVEMIND_PROACTIVE_RECALL_DISABLED=1
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
   if (!isHivemindPluginEnabled()) return;
 

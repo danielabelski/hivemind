@@ -3,6 +3,7 @@ import {
   shouldRecall,
   passesThreshold,
   extractKeywords,
+  proactiveRecallDisabled,
   RECALL_THRESHOLD,
 } from "../../src/hooks/shared/recall-gate.js";
 import {
@@ -60,6 +61,31 @@ describe("shouldRecall — the precision gate (NOT every prompt)", () => {
   it("skips terse low-signal instructions", () => {
     expect(shouldRecall("rename that variable").recall).toBe(false);
     expect(shouldRecall("bump the version number").recall).toBe(false);
+  });
+});
+
+describe("proactiveRecallDisabled — opt-out (enabled by default)", () => {
+  it("is ENABLED by default (no env set)", () => {
+    expect(proactiveRecallDisabled({})).toBe(false);
+  });
+
+  it("disables via HIVEMIND_PROACTIVE_RECALL on/off forms", () => {
+    for (const v of ["0", "false", "no", "off", "FALSE", " Off "]) {
+      expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL: v }), v).toBe(true);
+    }
+  });
+
+  it("disables via the dedicated HIVEMIND_PROACTIVE_RECALL_DISABLED flag", () => {
+    for (const v of ["1", "true", "yes", "on", "TRUE"]) {
+      expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL_DISABLED: v }), v).toBe(true);
+    }
+  });
+
+  it("stays enabled for affirmative / unrelated values", () => {
+    expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL: "true" })).toBe(false);
+    expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL: "1" })).toBe(false);
+    expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL_DISABLED: "0" })).toBe(false);
+    expect(proactiveRecallDisabled({ HIVEMIND_PROACTIVE_RECALL_DISABLED: "" })).toBe(false);
   });
 });
 
