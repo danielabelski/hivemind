@@ -43,6 +43,7 @@ import type {
   GraphObservation,
 } from "../graph/types.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
+import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
 
 const USAGE = `hivemind graph — codebase-graph commands (Phase 1.5)
 
@@ -536,6 +537,13 @@ export async function runBuildCommand(args: string[]): Promise<void> {
     case "error":
       console.warn(`Cloud:         push error (non-fatal): ${pushOutcome.message}`);
       break;
+  }
+
+  // Step 8: after the snapshot is fresh on disk, optionally refresh any docs
+  // whose anchored code drifted. Opt-in (HIVEMIND_DOCS_AUTO_REFRESH=1),
+  // detached, best-effort — never blocks the build.
+  if (maybeSpawnDocsRefresh(cwd)) {
+    console.log("Docs:          spawned drift refresh (HIVEMIND_DOCS_AUTO_REFRESH=1)");
   }
 }
 
