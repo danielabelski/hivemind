@@ -123,6 +123,8 @@ function parseLimit(args: string[]): number {
 }
 
 const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor"]);
+/** Flags that take NO value — they must not consume the following token. */
+const BOOLEAN_FLAGS = new Set(["--dry-run"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -130,7 +132,7 @@ function stripKnownFlags(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (KNOWN_FLAGS.has(a)) {
-      i++;
+      if (!BOOLEAN_FLAGS.has(a)) i++; // value-taking flags also skip their value
       continue;
     }
     if (KNOWN_FLAGS.has(a.split("=", 2)[0])) continue;
@@ -172,9 +174,11 @@ export async function runDocsCommand(args: string[]): Promise<void> {
   const query = api.query.bind(api);
   const pluginVersion = getVersion();
 
-  // Only write subcommands need DDL — read-only show/list fall back to
-  // isMissingTableError so a fresh-install user doesn't pay a CREATE round-trip.
-  const WRITE_SUBS = new Set(["set", "archive", "refresh"]);
+  // Only write subcommands need DDL — read-only show/list (and refresh
+  // --dry-run) fall back to isMissingTableError so they don't pay a CREATE
+  // round-trip. `refresh` ensures the table itself, but only when it will
+  // actually write (handled inside its branch so --dry-run stays read-only).
+  const WRITE_SUBS = new Set(["set", "archive"]);
   if (WRITE_SUBS.has(sub)) {
     await api.ensureDocsTable(tableName);
   }
@@ -332,6 +336,8 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       }
       return;
     }
+    // Real refresh writes — ensure the table now (dry-run above already returned).
+    await api.ensureDocsTable(tableName);
     const docsById = new Map(docs.map((d) => [d.doc_id, d]));
     const report = await refreshDocs({
       query,

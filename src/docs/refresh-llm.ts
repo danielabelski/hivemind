@@ -17,6 +17,19 @@ import { buildClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { buildRefreshPrompt, type GenerateFn } from "./refresh.js";
 
+/**
+ * Defensively unwrap the model's output. The prompt asks for raw markdown,
+ * but models sometimes wrap the whole body in a single ```fence``` (with an
+ * optional language tag). Strip exactly that outer fence so it doesn't leak
+ * into the stored doc; leave inner/partial fences untouched. Returns the
+ * trimmed body otherwise.
+ */
+export function unwrapModelOutput(raw: string): string {
+  const text = raw.trim();
+  const fence = /^```[^\n]*\n([\s\S]*?)\n```$/.exec(text);
+  return fence ? fence[1].trim() : text;
+}
+
 /** Build a GenerateFn backed by the host `claude` CLI. */
 export function makeClaudeGenerate(claudeBin?: string, timeoutMs = 120_000): GenerateFn {
   const bin = claudeBin ?? resolveCliBin("claude");
@@ -29,6 +42,6 @@ export function makeClaudeGenerate(claudeBin?: string, timeoutMs = 120_000): Gen
       timeout: timeoutMs,
       env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
     });
-    return (out ?? "").toString().trim();
+    return unwrapModelOutput((out ?? "").toString());
   };
 }

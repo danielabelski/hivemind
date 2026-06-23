@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({
   execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
 }));
 
-import { makeClaudeGenerate } from "../../src/docs/refresh-llm.js";
+import { makeClaudeGenerate, unwrapModelOutput } from "../../src/docs/refresh-llm.js";
 import type { RefreshContext } from "../../src/docs/index.js";
 
 const ctx: RefreshContext = {
@@ -47,5 +47,27 @@ describe("makeClaudeGenerate", () => {
     execFileSyncMock.mockReturnValue(undefined);
     const gen = makeClaudeGenerate("/usr/bin/claude");
     expect(await gen(ctx)).toBe("");
+  });
+
+  it("unwraps an outer code fence the model may add around the whole body", async () => {
+    execFileSyncMock.mockReturnValue("```markdown\n# Doc\nbody\n```");
+    const gen = makeClaudeGenerate("/usr/bin/claude");
+    expect(await gen(ctx)).toBe("# Doc\nbody");
+  });
+});
+
+describe("unwrapModelOutput", () => {
+  it("strips a single outer fence with a language tag", () => {
+    expect(unwrapModelOutput("```md\nhello\nworld\n```")).toBe("hello\nworld");
+  });
+  it("strips a bare outer fence", () => {
+    expect(unwrapModelOutput("```\nhello\n```")).toBe("hello");
+  });
+  it("leaves un-fenced content (just trims)", () => {
+    expect(unwrapModelOutput("  # Title\nbody  ")).toBe("# Title\nbody");
+  });
+  it("does NOT strip inner/partial fences in normal markdown", () => {
+    const md = "# Doc\n\n```ts\nconst x = 1;\n```\n\nmore";
+    expect(unwrapModelOutput(md)).toBe(md);
   });
 });
