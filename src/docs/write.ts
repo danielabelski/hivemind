@@ -74,6 +74,8 @@ export interface EditDocInput {
   status?: "active" | "archived";
   /** New VFS path. Omit to keep the previous path. */
   path?: string;
+  /** New project. Omit to keep the previous project. */
+  project?: string;
   agent?: string;
   plugin_version?: string;
 }
@@ -198,6 +200,7 @@ export async function setDoc(
     tier: input.tier,
     status: input.status,
     path: input.path,
+    project: input.project,
     agent: input.agent,
     plugin_version: input.plugin_version,
   });
@@ -238,6 +241,7 @@ async function appendVersion(
   const tier: DocTier = next.tier ?? previous.tier;
   const status = next.status ?? (previous.status as "active" | "archived");
   const path = next.path ?? previous.path;
+  const project = next.project ?? previous.project;
 
   const sql =
     `INSERT INTO "${safe}" ` +
@@ -251,7 +255,7 @@ async function appendVersion(
     `E'${sqlStr(anchors)}', ` +
     `'${sqlStr(tier)}', ` +
     `'${sqlStr(status)}', ` +
-    `'${sqlStr(previous.project)}', ` +
+    `'${sqlStr(project)}', ` +
     `${nextVersion}, ` +
     // created_at carried from the original row — immutable creation stamp.
     `'${sqlStr(previous.created_at)}', ` +

@@ -250,6 +250,21 @@ describe("setDoc", () => {
     expect(calls[1]).toMatch(/, 1, /);
   });
 
+  it("propagates a new project on a version bump (not frozen at the old value)", async () => {
+    const { calls, query } = mockQuery([
+      () => [fakeRow({ doc_id: "src/a.ts", version: 1, project: "old-proj" })],
+      () => [],
+    ]);
+    await setDoc(query, TBL, {
+      doc_id: "src/a.ts",
+      path: "/docs/p/a.ts.md",
+      content: "updated",
+      project: "new-proj",
+    });
+    expect(calls[1]).toContain("'new-proj'");
+    expect(calls[1]).not.toContain("'old-proj'");
+  });
+
   it("APPENDS version+1 when the doc_id already exists — never forks a second v1", async () => {
     const { calls, query } = mockQuery([
       () => [fakeRow({ doc_id: "src/a.ts", version: 4, created_at: "2026-01-01T00:00:00.000Z" })],
