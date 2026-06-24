@@ -192,7 +192,6 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       throw new Error("unreachable");
     }
     const project = flagValue(args, "--project") ?? "";
-    const content = resolveContent(positional[1], args);
     const path = flagValue(args, "--path") ?? defaultVfsPath(project, docId);
     const tier = parseTier(args);
     // Optional anchors: build from the current graph so the doc is tied to the
@@ -225,6 +224,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       }
     }
     try {
+      // resolveContent reads --file / stdin and can throw on a bad path — keep
+      // it inside the guard so it surfaces as a controlled CLI error.
+      const content = resolveContent(positional[1], args);
       const out = await setDoc(query, tableName, {
         doc_id: docId,
         path,
