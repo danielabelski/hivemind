@@ -181,14 +181,18 @@ describe("refreshDocs", () => {
     expect(calls).toHaveLength(0); // nothing written
   });
 
-  it("rejects a slow-tier doc outright", async () => {
+  it("rejects a slow-tier doc WITHOUT calling the LLM (no token spend, no leak)", async () => {
     const d = doc({ tier: "slow", anchors: [{ symbol_id: foo.id, content_hash: "x" }] });
     const { calls, query } = mockQuery([]);
+    const generate = vi.fn(async () => "small");
     const report = await refreshDocs({
       query, tableName: "hivemind_docs", snap: s, repoRoot: dir,
-      impacted: impacted(), docsById: new Map([["a.ts", d]]), generate: async () => "small",
+      impacted: impacted(), docsById: new Map([["a.ts", d]]), generate,
     });
     expect(report.rejected).toBe(1);
+    expect(report.outcomes[0].reasons?.join()).toMatch(/slow-tier/);
+    // The generator is never invoked for slow-tier docs.
+    expect(generate).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
   });
 

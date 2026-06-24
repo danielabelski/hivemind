@@ -77,12 +77,12 @@ export function countChangedLines(prev: string, next: string): number {
 /** Run the gate over a proposed doc edit. */
 export function gateDocEdit(input: GateInput): GateResult {
   const reasons: string[] = [];
-  const changedLines = countChangedLines(input.prevContent, input.newContent);
+  const tooLong = input.newContent.length > GATE_MAX_CONTENT_LENGTH;
 
   if (input.newContent.length === 0) {
     reasons.push("proposed content is empty");
   }
-  if (input.newContent.length > GATE_MAX_CONTENT_LENGTH) {
+  if (tooLong) {
     reasons.push(`proposed content exceeds ${GATE_MAX_CONTENT_LENGTH} chars (got ${input.newContent.length})`);
   }
   if (input.tier === "slow") {
@@ -96,9 +96,15 @@ export function gateDocEdit(input: GateInput): GateResult {
     }
   }
 
-  const budget = input.maxChangedLines ?? DEFAULT_MAX_CHANGED_LINES;
-  if (changedLines > budget) {
-    reasons.push(`edit exceeds the bounded-change budget: ${changedLines} > ${budget} lines`);
+  // Skip the O(n*m) LCS diff when the content is already over the size cap —
+  // it would burn CPU on output that is guaranteed to be rejected anyway.
+  let changedLines = 0;
+  if (!tooLong) {
+    changedLines = countChangedLines(input.prevContent, input.newContent);
+    const budget = input.maxChangedLines ?? DEFAULT_MAX_CHANGED_LINES;
+    if (changedLines > budget) {
+      reasons.push(`edit exceeds the bounded-change budget: ${changedLines} > ${budget} lines`);
+    }
   }
 
   return { ok: reasons.length === 0, reasons, changedLines };

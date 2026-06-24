@@ -141,6 +141,18 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       continue;
     }
 
+    // Slow-tier docs are human-curated; the gate would reject any automatic
+    // edit anyway. Short-circuit BEFORE calling the LLM so we never spend a
+    // token on a guaranteed rejection or send protected content to the model.
+    if (doc.tier === "slow") {
+      outcomes.push({
+        doc_id: imp.doc_id,
+        status: "rejected",
+        reasons: ["slow-tier docs are human-curated; automatic refresh is not allowed"],
+      });
+      continue;
+    }
+
     const newAnchors = reanchor(doc, nodeById, args.repoRoot);
     const changedSymbols = gatherChangedSymbols(imp.reasons, nodeById, args.repoRoot);
 
