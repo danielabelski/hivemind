@@ -298,7 +298,8 @@ describe("recallTopHit — focused semantic query", () => {
     expect(captured).toContain("ARRAY_LENGTH(summary_embedding, 1) > 0");
     expect(captured).toContain("project = 'indra'"); // project option still supported
     expect(captured).toContain("path <> '/summaries/sasun/mine.md'");
-    expect(captured).toContain("ORDER BY score DESC LIMIT 3");
+    // deterministic order: score, then recency, then path (stable total order)
+    expect(captured).toContain("ORDER BY score DESC, last_update_date DESC, path ASC LIMIT 3");
     expect(hit).toMatchObject({ author: "levon", project: "indra", score: 0.8, mode: "semantic" });
   });
 
@@ -365,7 +366,8 @@ describe("recallTopHitLexical — ILIKE keyword-overlap fallback", () => {
     expect(captured).toContain("CASE WHEN"); // overlap count
     expect(captured).toContain('FROM "org_memory"');
     expect(captured).toContain("path <> '/summaries/me/x.md'");
-    expect(captured).toContain("ORDER BY score DESC");
+    // overlap ties are common (small ints) → break deterministically by recency
+    expect(captured).toContain("ORDER BY score DESC, last_update_date DESC, path ASC");
     expect(hit).toMatchObject({ author: "levon", score: 2, mode: "lexical" });
   });
 

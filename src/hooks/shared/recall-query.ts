@@ -15,6 +15,13 @@ import type { RecallHit } from "./recall-format.js";
 
 const SELECT_COLS = "path, author, project, description, last_update_date";
 
+// Deterministic tie-break. Scores tie often on the lexical path (overlap is a
+// small integer) and we inject only the top row, so without a stable secondary
+// sort Postgres could return an arbitrary tied summary — surfacing a STALE fix
+// instead of the newest. Prefer the most recently updated summary, then path
+// as a final total order so the same prompt always recalls the same row.
+const TIE_BREAK = "last_update_date DESC, path ASC";
+
 export interface RecallQueryOptions {
   /** Restrict to this project when set (most relevant); omit for org-wide. */
   project?: string;
@@ -51,7 +58,7 @@ export async function recallTopHit(
     `SELECT ${SELECT_COLS}, ` +
     `(summary_embedding <#> ${vecLit}) AS score ` +
     `FROM "${memoryTable}" WHERE ${filters.join(" AND ")} ` +
-    `ORDER BY score DESC LIMIT ${Math.max(1, opts.limit ?? 3)}`;
+    `ORDER BY score DESC, ${TIE_BREAK} LIMIT ${Math.max(1, opts.limit ?? 3)}`;
 
   return mapTopRow(await query(sql), "semantic");
 }
@@ -84,7 +91,7 @@ export async function recallTopHitLexical(
   const sql =
     `SELECT ${SELECT_COLS}, (${overlap}) AS score ` +
     `FROM "${memoryTable}" WHERE ${filters.join(" AND ")} ` +
-    `ORDER BY score DESC LIMIT ${Math.max(1, opts.limit ?? 3)}`;
+    `ORDER BY score DESC, ${TIE_BREAK} LIMIT ${Math.max(1, opts.limit ?? 3)}`;
 
   return mapTopRow(await query(sql), "lexical");
 }
