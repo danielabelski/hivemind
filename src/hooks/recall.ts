@@ -30,6 +30,7 @@ import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { EmbedClient } from "../embeddings/client.js";
+import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import { ensurePluginNodeModulesLink } from "../embeddings/self-heal.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
@@ -146,15 +147,17 @@ async function findHit(
       // (falling back to lexical/null) even though embeddings are installed.
       // Best-effort: a failure here just means we degrade to lexical.
       try { ensurePluginNodeModulesLink({ bundleDir: __bundleDir }); } catch { /* best-effort */ }
+      // Warm the daemon (spawn + wait for socket, bounded) THEN embed with one
+      // retry, so a cold first prompt doesn't lose semantic recall to the
+      // fire-and-forget spawn OR to the daemon's post-spawn recycle race (the
+      // retry covers the case where the daemon became ready only after attempt
+      // 1 connected). Mirrors the finalize path. Warm sessions pay ~0.
       const client = new EmbedClient({
         daemonEntry: resolveDaemonPath(),
         timeoutMs: EMBED_TIMEOUT_MS,
         spawnWaitMs: WARMUP_BUDGET_MS,
       });
-      // Warm the daemon (spawn + wait for socket, bounded) so a cold first
-      // prompt doesn't lose semantic recall to the fire-and-forget spawn.
-      try { await client.warmup(); } catch { /* best-effort; embed() still tries */ }
-      const vec = await client.embed(prompt, "query");
+      const vec = await embedSummaryWithWarmup(prompt, "query", { client, log });
       if (vec) {
         semanticHit = await recallTopHit(q, config.tableName, vec, opts);
         if (semanticHit && passesThreshold(semanticHit.score)) return { kind: "hit", hit: semanticHit };
