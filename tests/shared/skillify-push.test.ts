@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import {
   runPush,
@@ -69,22 +69,24 @@ describe("readLocalSkill", () => {
     expect(s.body).toBe("## Rules\n1. fire a real event");
   });
 
-  it("throws a clear error when the skill dir is missing", () => {
+  it("throws a clear error naming the exact missing path", () => {
+    const expectedPath = join(root, ".claude", "skills", "ghost", "SKILL.md");
     expect(() => readLocalSkill(join(root, ".claude", "skills"), "ghost"))
-      .toThrow(/not found/);
+      .toThrow(`skill 'ghost' not found at ${expectedPath}`);
   });
 
-  it("throws when the file has no frontmatter", () => {
+  it("throws the exact no-frontmatter message", () => {
     const dir = join(root, ".claude", "skills", "bare");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "SKILL.md"), "just a body, no frontmatter\n");
+    const expectedPath = join(root, ".claude", "skills", "bare", "SKILL.md");
     expect(() => readLocalSkill(join(root, ".claude", "skills"), "bare"))
-      .toThrow(/no valid frontmatter/);
+      .toThrow(`skill 'bare' at ${expectedPath} has no valid frontmatter — cannot push`);
   });
 
-  it("rejects a non-kebab-case / traversal name before touching disk", () => {
+  it("rejects a path-traversal name before touching disk", () => {
     expect(() => readLocalSkill(join(root, ".claude", "skills"), "../etc/passwd"))
-      .toThrow(/path separator|kebab-case/);
+      .toThrow("invalid skill name: contains path separator or '..': ../etc/passwd");
   });
 
   it("defaults version to 1 and omits author for a legacy file without those fields", () => {
@@ -243,8 +245,9 @@ describe("runPush", () => {
     // Write into a *project* dir; with from=global it must NOT be found there.
     writeSkill("only-in-project", FM(['name: only-in-project', 'description: "x"']), "body");
     const query = vi.fn(async () => []);
+    const globalPath = join(homedir(), ".claude", "skills", "only-in-project", "SKILL.md");
     await expect(runPush({ ...baseArgs(), skillName: "only-in-project", from: "global", query }))
-      .rejects.toThrow(/not found/);
+      .rejects.toThrow(`skill 'only-in-project' not found at ${globalPath}`);
   });
 
   it("treats a missing-table error on the version SELECT as a new skill (lazy-create on insert)", async () => {
@@ -274,7 +277,25 @@ describe("runPush", () => {
       if (sql.startsWith("SELECT")) throw new Error("Query failed: 500: boom");
       return [];
     });
-    await expect(runPush({ ...baseArgs(), query })).rejects.toThrow(/boom/);
+    await expect(runPush({ ...baseArgs(), query })).rejects.toThrow("Query failed: 500: boom");
+  });
+
+  it("preserves the remote lineage created_at when the local file has none", async () => {
+    // Legacy local file: no created_at in frontmatter. The remote row already
+    // carries the lineage's original creation time — re-pushing must keep it,
+    // not reset it to now.
+    writeSkill("my-skill", FM(['name: my-skill', 'description: "x"', 'author: kamo', 'version: 1']), "body");
+    let insert = "";
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith("SELECT")) {
+        return [{ name: "my-skill", author: "kamo", version: 3, created_at: "2025-01-01T00:00:00Z" }];
+      }
+      if (sql.includes("INSERT INTO")) insert = sql;
+      return [];
+    });
+    await runPush({ ...baseArgs(), query }); // baseArgs.now = 2026-06-24T00:00:00Z
+    expect(insert).toContain("'2025-01-01T00:00:00Z'"); // created_at preserved from remote
+    expect(insert).toContain("'2026-06-24T00:00:00Z'"); // updated_at = now
   });
 
   it("writes the configured scope onto the row", async () => {

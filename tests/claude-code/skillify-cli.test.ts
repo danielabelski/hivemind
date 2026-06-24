@@ -332,9 +332,10 @@ describe("push", () => {
     runSkillifyCommand(["push", "demo-skill", "--dry-run"]);
     await new Promise(r => setImmediate(r));
     const out = logged.join("\n");
-    expect(out).toMatch(/Source:/);
-    expect(out).toMatch(/would push/);
-    expect(out).toMatch(/Dry run/);
+    // The mocked DeeplakeApi returns version 1, so dry-run previews v1 → v2.
+    expect(out).toContain(`Source:      ${join(process.cwd(), ".claude", "skills")}`);
+    expect(out).toMatch(/→ would push\s+demo-skill\s+v1 → v2\s+\(alice, scope=me\)/);
+    expect(out).toContain("Dry run — nothing written to the org skills table.");
   });
 
   it("real push reports the published version (remote v1 → v2)", async () => {
@@ -342,34 +343,35 @@ describe("push", () => {
     runSkillifyCommand(["push", "demo-skill"]);
     await new Promise(r => setImmediate(r));
     const out = logged.join("\n");
-    expect(out).toMatch(/✓ pushed/);
-    expect(out).toMatch(/Pushed to org skills table as version 2/);
+    expect(out).toMatch(/✓ pushed\s+demo-skill\s+v1 → v2\s+\(alice, scope=me\)/);
+    expect(out).toContain("Pushed to org skills table as version 2. Teammates get it on next `hivemind skillify pull`.");
   });
 
-  it("missing local skill surfaces a 'not found' error and exits 1", async () => {
+  it("missing local skill surfaces the exact 'not found' path error and exits 1", async () => {
     runSkillifyCommand(["push", "no-such-skill"]);
     await new Promise(r => setImmediate(r));
-    expect(erred.join("\n")).toMatch(/not found/);
+    const expectedPath = join(process.cwd(), ".claude", "skills", "no-such-skill", "SKILL.md");
+    expect(erred.join("\n")).toContain(`push error: skill 'no-such-skill' not found at ${expectedPath}`);
   });
 
-  it("invalid --from is rejected", async () => {
+  it("invalid --from is rejected with the exact message", async () => {
     writeProjectSkill("demo-skill");
     runSkillifyCommand(["push", "demo-skill", "--from", "weird"]);
     await new Promise(r => setImmediate(r));
-    expect(erred.join("\n")).toMatch(/Invalid --from/);
+    expect(erred.join("\n")).toContain("Invalid --from 'weird'. Use 'project' or 'global'.");
   });
 
-  it("missing skill name is rejected with usage", async () => {
+  it("missing skill name is rejected with the exact usage line", async () => {
     runSkillifyCommand(["push"]);
     await new Promise(r => setImmediate(r));
-    expect(erred.join("\n")).toMatch(/Usage: hivemind skillify push/);
+    expect(erred.join("\n")).toContain("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
   });
 
-  it("requires login", async () => {
+  it("requires login with the exact message", async () => {
     loadConfigMock.mockReturnValue(null);
     runSkillifyCommand(["push", "demo-skill"]);
     await new Promise(r => setImmediate(r));
-    expect(erred.join("\n")).toMatch(/Not logged in/);
+    expect(erred.join("\n")).toContain("Not logged in. Run: hivemind login");
   });
 });
 
