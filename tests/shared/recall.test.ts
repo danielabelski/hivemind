@@ -318,6 +318,15 @@ describe("recallTopHit — focused semantic query", () => {
     expect(hit).toBeNull();
   });
 
+  it("coerces every missing row field to a safe default (no undefined in the hit)", async () => {
+    // Row carries only a score → mapTopRow must default path/author/project/
+    // description/lastUpdate to "" (the ?? "" branches) rather than emit undefined.
+    const hit = await recallTopHit(async () => [{ score: 5 }], "t", vec, {});
+    expect(hit).toEqual({
+      path: "", author: "", project: "", description: "", lastUpdate: "", score: 5, mode: "semantic",
+    });
+  });
+
   it("returns null for a non-finite embedding (never builds a NULL-vector query)", async () => {
     let called = false;
     const hit = await recallTopHit(async () => { called = true; return []; }, "t", [0.1, NaN], {});
@@ -386,6 +395,13 @@ describe("recallTopHitLexical — ILIKE keyword-overlap fallback", () => {
     const hit = await recallTopHitLexical(async () => { called = true; return []; }, "t", ["only"], {});
     expect(hit).toBeNull();
     expect(called).toBe(false);
+  });
+
+  it("applies the project filter when provided", async () => {
+    let captured = "";
+    await recallTopHitLexical(async (sql) => { captured = sql; return []; }, "t", kw, { project: "indra", limit: 5 });
+    expect(captured).toContain("project = 'indra'");
+    expect(captured).toContain("LIMIT 5"); // explicit limit honored (vs default 3)
   });
 });
 

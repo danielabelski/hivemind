@@ -10,16 +10,15 @@
 export function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   if (!(ms > 0)) return p; // no deadline → behave exactly like p (incl. rejection)
   return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(fallback);
-    }, ms);
+    // A Promise settles once: whichever of the timer or `p` lands first wins,
+    // and the later call is a silent no-op — so no `settled` flag is needed.
+    // We still clearTimeout when `p` lands first so a pending timer can't keep
+    // a worker alive; .unref() covers the reverse (process exit) case.
+    const timer = setTimeout(() => resolve(fallback), ms);
     timer.unref(); // Node Timeout — don't keep the process alive for the timer
     p.then(
-      (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
-      (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } },
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
     );
   });
 }

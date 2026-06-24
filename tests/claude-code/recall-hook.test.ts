@@ -311,4 +311,14 @@ describe("recall hook — latency budget + failure isolation", () => {
     expect(out).toBeNull();
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "unattributable" }));
   });
+
+  it("top-level catch logs 'fatal' and exits 0 when main() itself throws", async () => {
+    // A throw escaping main() (e.g. readStdin rejects) must never crash the
+    // turn — the process exits 0 after logging, so the prompt proceeds.
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((): never => undefined as never));
+    stdinMock.mockRejectedValue(new Error("stdin boom"));
+    await runHook();
+    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin boom"));
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
 });
