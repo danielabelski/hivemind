@@ -295,6 +295,9 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_CAPTURE_ONLY_CLI` | _(none)_                | Set to `true` to capture only interactive CLI sessions. Sessions spawned by the Claude Agent SDK (Python/TypeScript) are skipped; their `CLAUDE_CODE_ENTRYPOINT` is `sdk-py` / `sdk-ts`, so they fail the substring check for `cli`. |
 | `HIVEMIND_SKILLIFY_EVERY_N_TURNS` | `20`              | Assistant turns between auto skill-mining attempts. Lower = more frequent mining (cheaper sessions, noisier output); higher = fewer attempts on longer histories. |
 | `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
+| `HIVEMIND_PROACTIVE_RECALL_DISABLED` | _(none)_       | Set to `1` to disable **proactive recall** (auto-searching team memory on each recall-worthy prompt and injecting a relevant snippet into the agent's context). On by default. Does **not** affect capture or the agent's own grep/skill recall. Alt form: `HIVEMIND_PROACTIVE_RECALL=0`. |
+| `HIVEMIND_RECALL_MIN_OVERLAP` | `2`                   | Proactive recall (lexical mode): min distinct prompt keywords a summary must share to be injected. Higher = stricter. |
+| `HIVEMIND_RECALL_TIMEOUT_MS` | `1000`                 | Proactive recall: hard cap on the synchronous search path; on timeout it skips rather than delay the turn. |
 | `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
 
 ## Semantic search (optional)
@@ -302,6 +305,18 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 Hivemind ships with a local embedding daemon (nomic-embed-text-v1.5) for hybrid semantic + lexical search over `~/.deeplake/memory/`. **Off by default** because the dependency footprint is ~600 MB. Enable with `hivemind embeddings install` (or `hivemind install --with-embeddings`). Without it, search degrades silently to BM25/lexical-only.
 
 Full guide: **[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)**.
+
+## Proactive recall
+
+On a recall-worthy prompt (errors, "how did we…", substantive requests — acks and short follow-ups are skipped), Hivemind automatically searches the team's summaries and, if the top hit clears a relevance bar, injects one attributed snippet (`recalled from <teammate> · <date>`) into the agent's context — so prior work shows up *unprompted*, not only when the agent decides to search. Semantic when embeddings are installed, otherwise lexical (ILIKE keyword overlap), so it works without the embedding model. The search is latency-bounded and skips silently on any miss or error.
+
+**On by default.** To turn it off (capture and the agent's own grep/skill recall are unaffected):
+
+```bash
+HIVEMIND_PROACTIVE_RECALL_DISABLED=1 claude   # or HIVEMIND_PROACTIVE_RECALL=0
+```
+
+Tune precision/latency with `HIVEMIND_RECALL_MIN_OVERLAP` and `HIVEMIND_RECALL_TIMEOUT_MS` (see the table above). Every recall-worthy invocation is recorded to `~/.deeplake/recall-events.jsonl` for usage/hit-rate analysis.
 
 ## Summaries
 
