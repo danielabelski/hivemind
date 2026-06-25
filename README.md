@@ -34,6 +34,10 @@
 
 On [LoCoMo](https://arxiv.org/abs/2402.17753), the public long-context memory benchmark, Hivemind is **25% cheaper, 1.7× fewer tokens, and 31% fewer turns** than running without shared memory. ([See the numbers below.](#benchmarks))
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/activeloopai/hivemind/main/docs/public/hivemind_cursor_readme_banner_dark.png" alt="Cut Cursor spend by 34% with Hivemind" width="100%">
+</p>
+
 **Beyond memory.** Hivemind doesn't just remember. It mines your team's traces for repeated patterns and codifies them into reusable skills that propagate back into every agent on the team. The agent your junior engineer used this morning is sharper because of what your senior engineer's agent figured out last week.
 
 - 📥 **Captures** every session's prompts, tool calls, and responses as structured traces in Deeplake
