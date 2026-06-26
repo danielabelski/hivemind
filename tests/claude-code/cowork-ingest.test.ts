@@ -1,5 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { entriesForLine, extractText, coworkDataNoticeOnce, COWORK_AGENT } from "../../src/mcp/cowork-ingest.js";
+import { mkdtempSync, writeFileSync, utimesSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  entriesForLine,
+  extractText,
+  coworkDataNoticeOnce,
+  summarizeIdleSessions,
+  COWORK_AGENT,
+  type IngestState,
+} from "../../src/mcp/cowork-ingest.js";
+
+const fakeConfig = {} as Parameters<typeof summarizeIdleSessions>[0];
 
 type Line = Parameters<typeof entriesForLine>[0];
 const firstEntry = (line: Line) => entriesForLine(line)[0] ?? null;
@@ -103,6 +115,45 @@ describe("entriesForLine", () => {
 
   it("skips lines without a sessionId", () => {
     expect(entriesForLine({ type: "user", message: { content: "hi" } })).toEqual([]);
+  });
+});
+
+describe("summarizeIdleSessions", () => {
+  const now = 10_000_000;
+  const idleMtimeSec = (now - 6 * 60_000) / 1000; // older than the 5-min idle window
+  const freshMtimeSec = (now - 60_000) / 1000; // 1 min ago — still active
+
+  function transcript(mtimeSec: number): string {
+    const dir = mkdtempSync(join(tmpdir(), "cowork-idle-"));
+    const p = join(dir, "11111111-1111-1111-1111-111111111111.jsonl");
+    writeFileSync(p, "{}\n");
+    utimesSync(p, mtimeSec, mtimeSec);
+    return p;
+  }
+
+  it("spawns a summary for an idle session with un-summarized content", () => {
+    const p = transcript(idleMtimeSec);
+    const state: IngestState = { processedLines: { [p]: 5 }, summarizedLines: {} };
+    const spawned: string[] = [];
+    summarizeIdleSessions(fakeConfig, state, (sid) => spawned.push(sid), now);
+    expect(spawned).toEqual(["11111111-1111-1111-1111-111111111111"]);
+    expect(state.summarizedLines![p]).toBe(5);
+  });
+
+  it("does not re-spawn when there is no new content since the last summary", () => {
+    const p = transcript(idleMtimeSec);
+    const state: IngestState = { processedLines: { [p]: 5 }, summarizedLines: { [p]: 5 } };
+    const spawned: string[] = [];
+    summarizeIdleSessions(fakeConfig, state, (sid) => spawned.push(sid), now);
+    expect(spawned).toEqual([]);
+  });
+
+  it("does not summarize a session still being written (not idle)", () => {
+    const p = transcript(freshMtimeSec);
+    const state: IngestState = { processedLines: { [p]: 5 }, summarizedLines: {} };
+    const spawned: string[] = [];
+    summarizeIdleSessions(fakeConfig, state, (sid) => spawned.push(sid), now);
+    expect(spawned).toEqual([]);
   });
 });
 

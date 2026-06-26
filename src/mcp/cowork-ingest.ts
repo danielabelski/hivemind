@@ -33,7 +33,7 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials } from "../commands/auth.js";
-import { loadConfig } from "../config.js";
+import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { claudeDesktopConfigDir } from "../cli/util.js";
 import { getVersion } from "../cli/version.js";
@@ -43,6 +43,8 @@ import {
   buildSessionPath,
   drainSessionQueues,
 } from "../hooks/session-queue.js";
+import { spawnWikiWorker, bundleDirFromImportMeta } from "../hooks/spawn-wiki-worker.js";
+import { basename } from "node:path";
 import { log } from "../utils/debug.js";
 
 /** Value written to the `agent` column for Cowork-originated rows. */
@@ -56,6 +58,9 @@ const LOCK_PATH = join(DEEPLAKE_DIR, ".cowork-ingest.lock");
 const COWORK_QUEUE_DIR = join(DEEPLAKE_DIR, "queue-cowork");
 const NOTICE_MARKER = join(DEEPLAKE_DIR, ".cowork-data-notice-shown");
 const LOCK_STALE_MS = 60_000;
+// A Cowork transcript untouched for this long is treated as a finished session
+// and gets a summary (Cowork has no SessionEnd hook to signal completion).
+const SUMMARY_IDLE_MS = 5 * 60_000;
 
 const DATA_NOTICE =
   "ℹ️ Hivemind data notice: this Cowork session is being saved to your team's shared Deeplake memory " +
@@ -82,9 +87,11 @@ export function coworkDataNoticeOnce(): string {
   }
 }
 
-interface IngestState {
+export interface IngestState {
   /** transcript absolute path → number of lines already ingested. */
   processedLines: Record<string, number>;
+  /** transcript absolute path → line count at last summary spawn. */
+  summarizedLines?: Record<string, number>;
 }
 
 export interface TranscriptLine {
@@ -247,6 +254,58 @@ function tryAcquireLock(): (() => void) | null {
 }
 
 /**
+ * Spawn a wiki-worker for each Cowork session whose transcript has gone idle
+ * and has un-summarized content. The worker reads the session rows we already
+ * wrote to the sessions table (keyed by sessionId) and uploads a summary to
+ * the memory table — same path every other agent uses, so Cowork sessions
+ * appear in hivemind_index / recall. Best-effort: a missing `claude` binary or
+ * a spawn failure is logged and skipped (the raw session is still captured).
+ */
+export type SpawnSummaryFn = (sessionId: string) => void;
+
+export function summarizeIdleSessions(
+  config: Config,
+  state: IngestState,
+  spawn?: SpawnSummaryFn,
+  now: number = Date.now(),
+): void {
+  const bundleDir = bundleDirFromImportMeta(import.meta.url);
+  const doSpawn: SpawnSummaryFn =
+    spawn ??
+    ((sessionId) =>
+      spawnWikiWorker({
+        config,
+        sessionId,
+        cwd: `/${COWORK_PROJECT}`,
+        bundleDir,
+        reason: "CoworkIdle",
+        agent: COWORK_AGENT,
+      }));
+  state.summarizedLines ??= {};
+
+  for (const path of Object.keys(state.processedLines)) {
+    const processed = state.processedLines[path] ?? 0;
+    if (processed === 0) continue;
+    if (processed <= (state.summarizedLines[path] ?? 0)) continue; // nothing new since last summary
+
+    try {
+      if (now - statSync(path).mtimeMs < SUMMARY_IDLE_MS) continue; // still active
+    } catch {
+      continue; // transcript vanished
+    }
+
+    const sessionId = basename(path).replace(/\.jsonl$/, "");
+    try {
+      doSpawn(sessionId);
+      state.summarizedLines[path] = processed;
+      log("cowork-ingest", `spawned summary worker for idle Cowork session ${sessionId}`);
+    } catch (e: unknown) {
+      log("cowork-ingest", `summary spawn skipped for ${sessionId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/**
  * Tail Cowork transcripts and write new messages to the sessions table.
  * Safe to call repeatedly; never throws and never writes to stdout (which
  * would corrupt the MCP stdio channel).
@@ -308,8 +367,6 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
       state.processedLines[path] = lines.length;
     }
 
-    saveState(state);
-
     if (appendedAny) {
       const api = new DeeplakeApi(
         config.token,
@@ -323,6 +380,13 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
         queueDir: COWORK_QUEUE_DIR,
       });
     }
+
+    // Summarize sessions that have gone idle — Cowork has no SessionEnd hook,
+    // so "untouched for SUMMARY_IDLE_MS" is our completion signal. Reads the
+    // rows we just wrote to the sessions table (same as every other agent).
+    summarizeIdleSessions(config, state);
+
+    saveState(state);
 
     if (ingested > 0) log("cowork-ingest", `ingested ${ingested} message(s) from Cowork transcripts`);
     return { ingested };
