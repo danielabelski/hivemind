@@ -51,15 +51,42 @@ export function readSymbolSource(node: GraphNode, repoRoot: string): string | nu
   return lines.slice(loc.startLine - 1, loc.endLine).join("\n");
 }
 
-/** sha256 of a source slice. Line endings are already normalized by the splitter. */
-export function hashSource(src: string): string {
-  return createHash("sha256").update(src).digest("hex");
+/**
+ * Normalize a source slice before hashing so cosmetic edits don't churn docs.
+ *
+ * Strips comments, trailing whitespace, and blank lines — these change the
+ * bytes but not what the doc describes, so a reformat / comment edit / blank-line
+ * shuffle should NOT mark a doc stale. Indentation is PRESERVED (significant in
+ * Python). This is the main lever against false-positive rewrites.
+ *
+ * It does not normalize identifiers — renaming a symbol still changes the hash
+ * (a genuine code edit); whether that should flag the doc is left to the gate /
+ * human, not hidden here.
+ */
+export function normalizeForHash(src: string, language?: string): string {
+  let s = src;
+  if (language === "python" || language === "ruby") {
+    s = s.replace(/#.*$/gm, ""); // line comments
+  } else {
+    s = s.replace(/\/\*[\s\S]*?\*\//g, ""); // block comments
+    s = s.replace(/\/\/.*$/gm, ""); // line comments
+  }
+  return s
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+$/, "")) // trailing whitespace
+    .filter((l) => l.trim() !== "") // blank lines
+    .join("\n");
+}
+
+/** sha256 of a source slice, after comment/whitespace normalization. */
+export function hashSource(src: string, language?: string): string {
+  return createHash("sha256").update(normalizeForHash(src, language)).digest("hex");
 }
 
 /** Compute the content hash for a symbol, or null if its source can't be read. */
 export function computeSymbolHash(node: GraphNode, repoRoot: string): string | null {
   const src = readSymbolSource(node, repoRoot);
-  return src === null ? null : hashSource(src);
+  return src === null ? null : hashSource(src, node.language);
 }
 
 /** Build an anchor for a symbol node, or null if its source can't be read. */
