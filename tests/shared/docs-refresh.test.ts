@@ -1,4 +1,9 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+
+// Stub the read-stability gate to a single pass-through query (see docs.test.ts).
+vi.mock("../../src/docs/stable-read.js", () => ({
+  stableUnionRows: (q: (sql: string) => unknown, sql: string) => q(sql),
+}));
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

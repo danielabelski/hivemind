@@ -11,6 +11,11 @@ import { tmpdir } from "node:os";
  * LLM). The store functions run for real against the query spy.
  */
 
+// Stub the read-stability gate to a single pass-through query (see docs.test.ts).
+vi.mock("../../src/docs/stable-read.js", () => ({
+  stableUnionRows: (q: (sql: string) => unknown, sql: string) => q(sql),
+}));
+
 const ensureDocsTableMock = vi.fn();
 const queryMock = vi.fn();
 const loadCurrentSnapshotMock = vi.fn();

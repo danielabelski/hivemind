@@ -1,4 +1,12 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
+
+// The read-stability gate (stableUnionRows) re-reads with delays in production
+// to defeat the Deeplake partial-read bug. In these unit tests we stub it to a
+// single pass-through query so call-count / SQL-shape assertions stay exact and
+// fast. The gate's own behavior is covered in docs-stable-read.test.ts.
+vi.mock("../../src/docs/stable-read.js", () => ({
+  stableUnionRows: (q: (sql: string) => unknown, sql: string) => q(sql),
+}));
 import {
   insertDoc,
   editDoc,
@@ -170,7 +178,7 @@ describe("editDoc", () => {
     const result = await editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", content: "new" });
     expect(result).toEqual({ doc_id: "src/shell/deeplake-fs.ts", version: 2 });
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toMatch(/^SELECT .* FROM "hivemind_docs" WHERE doc_id = 'src\/shell\/deeplake-fs.ts' ORDER BY version DESC, updated_at DESC, id DESC LIMIT 1$/);
+    expect(calls[0]).toMatch(/^SELECT .* FROM "hivemind_docs" WHERE doc_id = 'src\/shell\/deeplake-fs.ts'$/);
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
     expect(calls[1]).toContain(`E'new'`);
     expect(calls[1]).toContain(", 2, ");
@@ -390,16 +398,20 @@ describe("listDocs", () => {
 // ── getDocLatest ──────────────────────────────────────────────────────────────
 
 describe("getDocLatest", () => {
-  it("returns the single latest row, LIMIT 1, escaped doc_id", async () => {
+  it("returns the latest row, picking max version in JS, escaped doc_id", async () => {
+    // Reads ALL version rows for the doc (no LIMIT 1 — unsafe on this backend)
+    // and picks the max version in JS.
     const { calls, query } = mockQuery([
-      () => [fakeRow({ doc_id: "X", version: 5, content: "current" })],
+      () => [
+        fakeRow({ id: "r1", doc_id: "X", version: 3, content: "old" }),
+        fakeRow({ id: "r2", doc_id: "X", version: 5, content: "current" }),
+      ],
     ]);
     const row = await getDocLatest(query, TBL, "X");
     expect(row?.version).toBe(5);
     expect(row?.content).toBe("current");
-    expect(calls[0]).toMatch(/LIMIT 1$/);
     expect(calls[0]).toContain(`doc_id = 'X'`);
-    expect(calls[0]).toContain("ORDER BY version DESC, updated_at DESC, id DESC");
+    expect(calls[0]).not.toMatch(/LIMIT 1/);
   });
 
   it("returns null when nothing matches", async () => {
