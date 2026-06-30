@@ -14,6 +14,7 @@
  */
 
 import { sqlIdent, sqlStr } from "../utils/sql.js";
+import { stableUnionRows } from "./stable-read.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -72,11 +73,12 @@ export async function listDocs(
   opts: ListDocsOpts = {},
 ): Promise<DocRow[]> {
   const safe = sqlIdent(tableName);
-  // ORDER BY version DESC primes the JS dedup: the first row seen per
-  // doc_id is the winning latest-version row. updated_at DESC then id DESC
-  // are deterministic tie-breakers so listDocs and getDocLatest agree on
-  // the winner row-for-row under same-millisecond / race duplicates.
-  const rows = await query(
+  // Read through the stability gate: the Deeplake backend can return a partial
+  // row set right after writes, which would make a refresh silently skip stale
+  // docs. stableUnionRows re-reads until the union converges so we see EVERY
+  // row. (ORDER BY is moot through the union — we re-sort after dedup below.)
+  const rows = await stableUnionRows(
+    query,
     `SELECT ${SELECT_COLS} FROM "${safe}" ORDER BY version DESC, updated_at DESC, id DESC`,
   );
 
@@ -111,16 +113,30 @@ export async function getDocLatest(
   docId: string,
 ): Promise<DocRow | null> {
   const safe = sqlIdent(tableName);
-  // version DESC picks the highest version; updated_at DESC then id DESC
-  // break ties deterministically when concurrent edits produced duplicate
-  // v=N+1 rows for the same doc_id — keeps this in agreement with listDocs.
-  const rows = await query(
-    `SELECT ${SELECT_COLS} FROM "${safe}" ` +
-      `WHERE doc_id = '${sqlStr(docId)}' ` +
-      `ORDER BY version DESC, updated_at DESC, id DESC LIMIT 1`,
+  // Read ALL version rows for this doc through the stability gate, then pick
+  // the latest in JS. A bare `... ORDER BY version DESC LIMIT 1` is unsafe on
+  // this backend: a partial read can return an OLD version as "latest" (or
+  // zero rows) right after a write. Unioning every version row and choosing
+  // the max guarantees we never resolve to a stale version or miss the doc.
+  const raw = await stableUnionRows(
+    query,
+    `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'`,
   );
-  if (rows.length === 0) return null;
-  return normalize(rows[0]);
+  let best: DocRow | null = null;
+  for (const r of raw) {
+    const row = normalize(r);
+    if (!row) continue;
+    if (
+      best === null ||
+      row.version > best.version ||
+      (row.version === best.version &&
+        (row.updated_at.localeCompare(best.updated_at) > 0 ||
+          (row.updated_at === best.updated_at && row.id.localeCompare(best.id) > 0)))
+    ) {
+      best = row;
+    }
+  }
+  return best;
 }
 
 /** Parse the `anchors` JSON cell into a typed array; degrade to [] on garbage. */
