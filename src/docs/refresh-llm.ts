@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { buildClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { buildRefreshPrompt, type GenerateFn } from "./refresh.js";
+import { buildGeneratePrompt, type GenerateDocFn } from "./generate.js";
 
 /**
  * Defensively unwrap the model's output. The prompt asks for raw markdown,
@@ -30,18 +31,31 @@ export function unwrapModelOutput(raw: string): string {
   return fence ? fence[1].trim() : text;
 }
 
-/** Build a GenerateFn backed by the host `claude` CLI. */
+/** Run a single prompt through the host `claude` CLI and return the unwrapped output. */
+export function runClaudePrompt(bin: string, prompt: string, timeoutMs = 120_000): string {
+  const inv = buildClaudeInvocation(bin, prompt);
+  const out = execFileSync(inv.file, inv.args, {
+    ...inv.options,
+    encoding: "utf-8",
+    timeout: timeoutMs,
+    env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
+  });
+  return unwrapModelOutput((out ?? "").toString());
+}
+
+/** Resolve the claude binary once (PATH lookup), with the usual fallback. */
+export function resolveClaudeBin(claudeBin?: string): string {
+  return claudeBin ?? resolveCliBin("claude");
+}
+
+/** Build a GenerateFn (doc REFRESH) backed by the host `claude` CLI. */
 export function makeClaudeGenerate(claudeBin?: string, timeoutMs = 120_000): GenerateFn {
-  const bin = claudeBin ?? resolveCliBin("claude");
-  return async (ctx) => {
-    const prompt = buildRefreshPrompt(ctx);
-    const inv = buildClaudeInvocation(bin, prompt);
-    const out = execFileSync(inv.file, inv.args, {
-      ...inv.options,
-      encoding: "utf-8",
-      timeout: timeoutMs,
-      env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
-    });
-    return unwrapModelOutput((out ?? "").toString());
-  };
+  const bin = resolveClaudeBin(claudeBin);
+  return async (ctx) => runClaudePrompt(bin, buildRefreshPrompt(ctx), timeoutMs);
+}
+
+/** Build a GenerateDocFn (fresh doc GENERATION) backed by the host `claude` CLI. */
+export function makeClaudeGenerateDoc(claudeBin?: string, timeoutMs = 120_000): GenerateDocFn {
+  const bin = resolveClaudeBin(claudeBin);
+  return async (input) => runClaudePrompt(bin, buildGeneratePrompt(input), timeoutMs);
 }

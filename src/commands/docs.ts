@@ -39,7 +39,8 @@ import {
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
-import { makeClaudeGenerate } from "../docs/refresh-llm.js";
+import { makeClaudeGenerate, makeClaudeGenerateDoc } from "../docs/refresh-llm.js";
+import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 
@@ -55,6 +56,13 @@ Usage:
       Detect docs whose anchored code drifted (vs the current graph) and
       regenerate them via the host LLM, gated. --dry-run only reports the
       impacted docs without calling the LLM or writing anything.
+  hivemind docs generate [--cwd <dir>] [--scope file|symbol] [--include <glob>]
+                         [--exclude <glob>] [--limit N] [--concurrency N]
+                         [--force] [--dry-run]
+      Auto-author docs for the codebase from the AST graph (which already skips
+      .gitignored / non-code files). Default scope=file (one doc per file,
+      anchored to its symbols). Skips files that already have a doc unless
+      --force. --dry-run lists the targets without calling the LLM.
 `.trim();
 
 function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
@@ -122,9 +130,9 @@ function parseLimit(args: string[]): number {
   return n;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force"]);
 /** Flags that take NO value — they must not consume the following token. */
-const BOOLEAN_FLAGS = new Set(["--dry-run"]);
+const BOOLEAN_FLAGS = new Set(["--dry-run", "--force"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -356,6 +364,61 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     for (const o of report.outcomes) {
       if (o.status === "refreshed") console.log(`  refreshed ${o.doc_id} → v${o.version}`);
       else console.log(`  ${o.status} ${o.doc_id}: ${(o.reasons ?? []).join("; ")}`);
+    }
+    return;
+  }
+
+  if (sub === "generate") {
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const dryRun = args.includes("--dry-run");
+    const force = args.includes("--force");
+    const scopeRaw = flagValue(args, "--scope") ?? "file";
+    if (scopeRaw !== "file" && scopeRaw !== "symbol") {
+      console.error("Invalid --scope. Allowed: file | symbol.");
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+    const scope = scopeRaw as GenScope;
+    const include = flagValues(args, "--include");
+    const exclude = flagValues(args, "--exclude");
+    const limitRaw = flagValue(args, "--limit");
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    const concurrency = Number(flagValue(args, "--concurrency") ?? "6");
+    const project = flagValue(args, "--project") ?? "";
+
+    const snap = loadCurrentSnapshot(cwd);
+    if (!snap) {
+      console.error("No local graph for this directory. Run `hivemind graph build` first.");
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+    let existingDocs: DocRow[] = [];
+    try {
+      existingDocs = await listDocs(query, tableName, { status: "all", limit: 1000000 });
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+    }
+    const existing = new Set(existingDocs.map((d) => d.doc_id));
+    const allTargets = selectTargets(snap, { scope, include, exclude });
+    const todo = force ? allTargets : allTargets.filter((t) => !existing.has(t.doc_id));
+
+    if (dryRun) {
+      console.log(`${todo.length} target(s) would be documented (scope=${scope}); ${allTargets.length - todo.length} already documented or skipped.`);
+      for (const t of todo.slice(0, limit ?? 60)) {
+        console.log(`  ${t.doc_id}  (${t.symbols.length} symbols)`);
+      }
+      return;
+    }
+
+    await api.ensureDocsTable(tableName);
+    const report = await generateDocs({
+      query, tableName, snap, repoRoot: cwd, project, scope, include, exclude,
+      existing, force, limit, concurrency,
+      generate: makeClaudeGenerateDoc(), agent: cfg.userName, pluginVersion,
+    });
+    console.log(`Generated ${report.created}, skipped ${report.skipped}, failed ${report.failed} (of ${report.targets} targets).`);
+    for (const o of report.outcomes) {
+      if (o.status !== "created") console.log(`  ${o.status} ${o.doc_id}: ${o.reason ?? ""}`);
     }
     return;
   }
