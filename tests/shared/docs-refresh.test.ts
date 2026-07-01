@@ -163,10 +163,10 @@ describe("refreshDocs", () => {
     expect(report.refreshed).toBe(1);
     expect(report.outcomes[0]).toMatchObject({ doc_id: "a.ts", status: "refreshed", version: 4 });
     expect(generate).toHaveBeenCalledOnce();
-    // 2 queries: getDocLatest + INSERT. The INSERT carries the FRESH anchor
-    // (recomputed from current code), not the stale stored hash.
+    // 2 queries: getDocLatest + UPDATE-in-place. The UPDATE carries the FRESH
+    // anchor (recomputed from current code), not the stale stored hash.
     expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
+    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
     expect(calls[1]).toContain("new doc body");
     expect(calls[1]).toContain(buildAnchor(foo, dir)!.content_hash);
     expect(calls[1]).not.toContain("stale");
@@ -245,10 +245,10 @@ describe("refreshDocs", () => {
     expect(report.outcomes[0]).toMatchObject({ doc_id: "a.ts", status: "archived", version: 4 });
     // No token spent on a deleted file.
     expect(generate).not.toHaveBeenCalled();
-    // archiveDoc = getDocLatest + INSERT(status='archived'); nothing else.
+    // archiveDoc = getDocLatest + UPDATE(status='archived'); nothing else.
     expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
-    expect(calls[1]).toContain("'archived'");
+    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
+    expect(calls[1]).toContain("status = 'archived'");
   });
 
   it("drops a dangling anchor when its symbol vanished from the graph", async () => {

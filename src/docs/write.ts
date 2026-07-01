@@ -1,21 +1,22 @@
 /**
- * Write helpers for `hivemind_docs` — INSERT-only against the immutable
- * skills/rules-table pattern. Every edit appends a fresh row with version+1;
- * we never UPDATE. Reads (see ./read.ts) pick the latest version per doc_id.
+ * Write helpers for `hivemind_docs` — ONE row per doc, mutated in place.
  *
- * Why no UPDATEs: the Deeplake backend silently coalesces two rapid UPDATEs
- * on the same row (see CLAUDE.md "UPDATE coalescing quirk"). INSERT-only
- * sidesteps the bug entirely. See `src/rules/write.ts` for the precedent and
- * `deeplake-schema.ts` DOCS_COLUMNS for the column list.
+ * A brand-new doc is INSERTed at version=1 (`insertDoc`); every later edit is a
+ * single UPDATE of that same row (`updateInPlace`), bumping `version` as an
+ * in-row counter. Reads (see ./read.ts) resolve one row per `doc_id`.
  *
- * Differences from rules:
- *   - `doc_id` is the documented source file path, supplied by the caller
- *     (the file path IS the stable identity), not a generated UUID.
- *   - `content` is markdown and MAY contain newlines — they are preserved,
- *     not rejected (unlike rule bodies, which are single-line).
- *   - `created_at` is an immutable creation timestamp carried across every
- *     version bump; only `updated_at` advances. This mirrors the
- *     timestamp-preservation pattern used by goals/skills.
+ * History: this used to be INSERT-only version-append, to dodge a Deeplake
+ * backend bug that coalesced two rapid UPDATEs on the same row. F0 verified
+ * (repro: sequential rapid single-row UPDATEs, 0 losses) that a SINGLE UPDATE
+ * setting all columns at once is safe — the bug only bit *separate* rapid
+ * UPDATEs. So we moved to UPDATE-in-place: no unbounded version growth, and a
+ * trivial one-row read path. The invariant `updateInPlace` upholds: exactly one
+ * UPDATE per write, all columns together.
+ *
+ *   - `doc_id` is the documented source file path (the stable identity), and is
+ *     never mutated.
+ *   - `content` is markdown and MAY contain newlines — preserved, not rejected.
+ *   - `created_at` is immutable; only `updated_at` advances.
  */
 
 import { randomUUID } from "node:crypto";
@@ -219,7 +220,7 @@ export async function editDoc(
   if (!previous) {
     throw new Error(`Doc not found: ${input.doc_id}`);
   }
-  return appendVersion(query, tableName, previous, input);
+  return updateInPlace(query, tableName, previous, input);
 }
 
 /**
@@ -250,7 +251,7 @@ export async function setDoc(
       plugin_version: input.plugin_version,
     });
   }
-  return appendVersion(query, tableName, previous, {
+  return updateInPlace(query, tableName, previous, {
     doc_id: input.doc_id,
     content: input.content,
     anchors: input.anchors,
@@ -282,7 +283,20 @@ export async function archiveDoc(
   });
 }
 
-async function appendVersion(
+/**
+ * Update a doc IN PLACE — one row per `doc_id`, mutated with a single UPDATE.
+ *
+ * This replaced the old INSERT-only version-append once the Deeplake backend's
+ * UPDATE-coalescing bug was verified fixed for our access pattern (F0): a
+ * single UPDATE that sets ALL columns at once, applied sequentially per doc, is
+ * safe (0 losses over the repro). The historic bug only bit *two separate*
+ * rapid UPDATEs to the same row — which we never do here.
+ *
+ * `version` is bumped as an in-row update counter; `created_at` is immutable;
+ * `updated_at` advances. The row is targeted by its unique `id` so a table that
+ * still carries pre-migration history rows updates exactly the current one.
+ */
+async function updateInPlace(
   query: QueryFn,
   tableName: string,
   previous: DocRow,
@@ -291,7 +305,6 @@ async function appendVersion(
   const content = next.content ?? previous.content;
   assertValidContent(content);
   const safe = sqlIdent(tableName);
-  const rowId = randomUUID();
   const now = new Date().toISOString();
   const nextVersion = previous.version + 1;
   const anchors = serializeAnchors(next.anchors ?? previous.anchors);
@@ -300,26 +313,21 @@ async function appendVersion(
   const path = next.path ?? previous.path;
   const project = next.project ?? previous.project;
 
+  // One UPDATE, all columns — the F0 safety rule. created_at + doc_id are not
+  // touched (immutable identity/creation stamp).
   const sql =
-    `INSERT INTO "${safe}" ` +
-    `(id, doc_id, path, content, anchors, tier, status, project, version, ` +
-    `created_at, updated_at, agent, plugin_version) ` +
-    `VALUES (` +
-    `'${sqlStr(rowId)}', ` +
-    `'${sqlStr(previous.doc_id)}', ` +
-    `'${sqlStr(path)}', ` +
-    `E'${sqlStr(content)}', ` +
-    `E'${sqlStr(anchors)}', ` +
-    `'${sqlStr(tier)}', ` +
-    `'${sqlStr(status)}', ` +
-    `'${sqlStr(project)}', ` +
-    `${nextVersion}, ` +
-    // created_at carried from the original row — immutable creation stamp.
-    `'${sqlStr(previous.created_at)}', ` +
-    `'${sqlStr(now)}', ` +
-    `'${sqlStr(next.agent ?? "manual")}', ` +
-    `'${sqlStr(next.plugin_version ?? "")}'` +
-    `)`;
+    `UPDATE "${safe}" SET ` +
+    `path = '${sqlStr(path)}', ` +
+    `content = E'${sqlStr(content)}', ` +
+    `anchors = E'${sqlStr(anchors)}', ` +
+    `tier = '${sqlStr(tier)}', ` +
+    `status = '${sqlStr(status)}', ` +
+    `project = '${sqlStr(project)}', ` +
+    `version = ${nextVersion}, ` +
+    `updated_at = '${sqlStr(now)}', ` +
+    `agent = '${sqlStr(next.agent ?? "manual")}', ` +
+    `plugin_version = '${sqlStr(next.plugin_version ?? "")}' ` +
+    `WHERE id = '${sqlStr(previous.id)}'`;
   await query(sql);
   return { doc_id: previous.doc_id, version: nextVersion };
 }

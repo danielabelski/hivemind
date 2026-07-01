@@ -240,24 +240,24 @@ describe("insertDocResilient", () => {
 // ── editDoc ───────────────────────────────────────────────────────────────────
 
 describe("editDoc", () => {
-  it("reads latest, then INSERTs version+1 carrying the IMMUTABLE created_at while updated_at advances", async () => {
+  it("reads latest, then UPDATEs in place bumping version; created_at untouched, updated_at advances", async () => {
     const { calls, query } = mockQuery([
-      () => [fakeRow({ version: 1, content: "old", created_at: "2026-05-20T10:00:00.000Z" })],
+      () => [fakeRow({ id: "row-1", version: 1, content: "old", created_at: "2026-05-20T10:00:00.000Z" })],
       () => [],
     ]);
     const result = await editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", content: "new" });
     expect(result).toEqual({ doc_id: "src/shell/deeplake-fs.ts", version: 2 });
     expect(calls).toHaveLength(2);
     expect(calls[0]).toMatch(/^SELECT .* FROM "hivemind_docs" WHERE doc_id = 'src\/shell\/deeplake-fs.ts'$/);
-    expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
+    // UPDATE-in-place, targeting the exact row by id.
+    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
     expect(calls[1]).toContain(`E'new'`);
-    expect(calls[1]).toContain(", 2, ");
-    // The original creation stamp is carried forward verbatim...
-    expect(calls[1]).toContain("'2026-05-20T10:00:00.000Z'");
-    // ...and updated_at is a DIFFERENT, newer timestamp (now).
-    const stamps = calls[1].match(/'(\d{4}-\d{2}-\d{2}T[\d:.]+Z)'/g)!;
-    expect(stamps[0]).toBe("'2026-05-20T10:00:00.000Z'"); // created_at
-    expect(stamps[1]).not.toBe("'2026-05-20T10:00:00.000Z'"); // updated_at = now
+    expect(calls[1]).toContain("version = 2");
+    expect(calls[1]).toContain(`WHERE id = 'row-1'`);
+    // created_at is immutable → the UPDATE must NOT touch it.
+    expect(calls[1]).not.toContain("created_at");
+    // updated_at advances to a fresh "now" timestamp.
+    expect(calls[1]).toMatch(/updated_at = '\d{4}-\d{2}-\d{2}T[\d:.]+Z'/);
   });
 
   it("carries over previous content + anchors when only status changes", async () => {
@@ -343,9 +343,9 @@ describe("setDoc", () => {
     expect(calls[1]).not.toContain("'old-proj'");
   });
 
-  it("APPENDS version+1 when the doc_id already exists — never forks a second v1", async () => {
+  it("UPDATEs the existing row in place (bumping version), never a second row", async () => {
     const { calls, query } = mockQuery([
-      () => [fakeRow({ doc_id: "src/a.ts", version: 4, created_at: "2026-01-01T00:00:00.000Z" })],
+      () => [fakeRow({ id: "row-9", doc_id: "src/a.ts", version: 4, created_at: "2026-01-01T00:00:00.000Z" })],
       () => [],
     ]);
     const result = await setDoc(query, TBL, {
@@ -356,12 +356,13 @@ describe("setDoc", () => {
     });
     expect(result).toEqual({ doc_id: "src/a.ts", version: 5 });
     expect(calls).toHaveLength(2);
-    // The INSERT is version 5, NOT a second version 1 — the fork-history bug
-    // Codex flagged is impossible through setDoc.
-    expect(calls[1]).toContain(", 5, ");
-    expect(calls[1]).not.toMatch(/, 1, /);
-    // immutable created_at carried from the existing chain
-    expect(calls[1]).toContain("'2026-01-01T00:00:00.000Z'");
+    // A single UPDATE of the existing row — one row per doc, no new INSERT.
+    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
+    expect(calls[1]).not.toMatch(/^INSERT/);
+    expect(calls[1]).toContain("version = 5");
+    expect(calls[1]).toContain(`WHERE id = 'row-9'`);
+    // created_at is immutable → not part of the UPDATE.
+    expect(calls[1]).not.toContain("created_at");
     expect(calls[1]).toContain(`E'updated'`);
   });
 });
