@@ -40,6 +40,8 @@ import {
   buildDocsIndex,
   dirOf,
   firstDocLine,
+  changedFilesFromGit,
+  expandToCandidateFiles,
   type DocRow,
   type DocMeta,
   type DocTier,
@@ -372,9 +374,22 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       process.exit(1);
       throw new Error("unreachable");
     }
+    // Scope the read to the diff when git can tell us what changed: load only
+    // the candidate docs (changed files + their transitive callers) instead of
+    // the whole corpus. Per-commit work becomes O(diff), not O(all docs). No
+    // git signal → full scan, logged (never a silent narrowing).
+    const changed = changedFilesFromGit(cwd);
     let docs: DocRow[] = [];
     try {
-      docs = await listDocs(query, tableName, { status: "active", limit: 100000 });
+      if (changed !== null) {
+        const candidates = expandToCandidateFiles(snap, changed);
+        docs = await listDocsByIds(query, tableName, candidates);
+        docs = docs.filter((d) => d.status === "active");
+        console.error(`[docs refresh] scoped to ${candidates.length} candidate file(s) from git diff (${changed.length} changed)`);
+      } else {
+        docs = await listDocs(query, tableName, { status: "active", limit: 100000 });
+        console.error(`[docs refresh] no git signal — full scan of ${docs.length} doc(s)`);
+      }
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }

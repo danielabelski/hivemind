@@ -22,6 +22,9 @@ export type {
 export { buildDocsIndex, dirOf, firstDocLine } from "./index-render.js";
 export type { DocMeta } from "./index-render.js";
 
+export { changedFilesFromGit, expandToCandidateFiles } from "./candidates.js";
+export type { GitRunner } from "./candidates.js";
+
 export {
   parseSourceLocation,
   readSymbolSource,
