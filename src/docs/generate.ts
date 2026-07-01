@@ -17,7 +17,7 @@
  */
 
 import { buildAnchor, readSymbolSource } from "./anchors.js";
-import { setDoc } from "./write.js";
+import { insertDocResilient, setDoc } from "./write.js";
 import type { DocAnchor, QueryFn } from "./read.js";
 import type { GraphNode, GraphSnapshot } from "../graph/types.js";
 
@@ -218,16 +218,28 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
       return;
     }
     try {
-      await setDoc(args.query, args.tableName, {
+      const write = {
         doc_id: t.doc_id,
         path: defaultVfsPath(project, t.doc_id),
         content,
         anchors,
-        tier: "fast",
+        tier: "fast" as const,
         project,
         agent: args.agent ?? "docs-generate",
         plugin_version: args.pluginVersion,
-      });
+      };
+      // Fresh docs (the common bulk-generate case) go through insertDocResilient
+      // — a single INSERT, NOT setDoc's read-stability gate (~N reads). Under
+      // high concurrency the gate's read storm overloaded the backend and timed
+      // writes out. The resilient variant retries the INSERT on the backend's
+      // intermittent under-load timeouts (checking whether the row already
+      // landed before each retry, so it never forks a second v1). Only
+      // re-authored (--force) docs need setDoc's version-bump.
+      if (args.force && args.existing.has(t.doc_id)) {
+        await setDoc(args.query, args.tableName, write);
+      } else {
+        await insertDocResilient(args.query, args.tableName, write);
+      }
       outcomes.push({ doc_id: t.doc_id, status: "created" });
     } catch (err) {
       outcomes.push({ doc_id: t.doc_id, status: "failed", reason: `write failed: ${(err as Error).message}` });

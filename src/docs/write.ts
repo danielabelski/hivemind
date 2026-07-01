@@ -147,6 +147,63 @@ export async function insertDoc(
   return { doc_id: input.doc_id, version: 1 };
 }
 
+/** Default retry budget + backoff (ms) for a timed-out INSERT. */
+const WRITE_RETRIES = 3;
+const WRITE_BACKOFF_MS = [500, 1500, 4000];
+
+function isTimeoutError(err: unknown): boolean {
+  return err instanceof Error && /timeout/i.test(err.message);
+}
+
+export interface ResilientWriteOpts {
+  /** Max retries after the first attempt. Default 3. */
+  retries?: number;
+  /** Backoff schedule in ms, indexed by retry number. */
+  backoffMs?: number[];
+  /** Injectable sleep (tests). Default real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * `insertDoc` hardened against the Deeplake backend's under-load write
+ * timeouts. A write can abort client-side at the 10s query timeout while the
+ * backend actually committed the row — so on each retry, before re-inserting,
+ * we read back the latest version (`getDocLatest`): if the row already landed
+ * we return it instead of INSERTing again, which would otherwise fork history
+ * into two parallel `version=1` rows. Only timeouts are retried; any other
+ * error surfaces immediately.
+ *
+ * This is what makes bulk `docs generate` reliable on a real codebase: the
+ * backend intermittently times out individual writes under concurrency, and a
+ * naive single INSERT drops those docs on the floor (18/33 in one real run).
+ */
+export async function insertDocResilient(
+  query: QueryFn,
+  tableName: string,
+  input: InsertDocInput,
+  opts: ResilientWriteOpts = {},
+): Promise<WriteResult> {
+  const retries = opts.retries ?? WRITE_RETRIES;
+  const backoff = opts.backoffMs ?? WRITE_BACKOFF_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await insertDoc(query, tableName, input);
+    } catch (err) {
+      if (!isTimeoutError(err)) throw err;
+      lastErr = err;
+      if (attempt === retries) break;
+      await sleep(backoff[Math.min(attempt, backoff.length - 1)]);
+      // Did the timed-out attempt actually commit server-side? If so, stop —
+      // re-inserting would fork a second version=1 row.
+      const landed = await getDocLatest(query, tableName, input.doc_id).catch(() => null);
+      if (landed) return { doc_id: landed.doc_id, version: landed.version };
+    }
+  }
+  throw lastErr ?? new Error("insertDocResilient: exhausted retries");
+}
+
 /**
  * Edit an existing doc. Reads the latest version, then INSERTs a new row
  * with version+1 carrying the merged fields (omitted fields inherit from

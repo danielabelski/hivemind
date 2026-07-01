@@ -9,6 +9,7 @@ vi.mock("../../src/docs/stable-read.js", () => ({
 }));
 import {
   insertDoc,
+  insertDocResilient,
   editDoc,
   setDoc,
   archiveDoc,
@@ -164,6 +165,73 @@ describe("insertDoc", () => {
     await expect(
       insertDoc(query, `x"; DROP TABLE y; --`, { doc_id: "a.ts", path: "/p", content: "x" }),
     ).rejects.toThrow();
+  });
+});
+
+// ── insertDocResilient (timeout-safe write — the bulk-generate reliability fix) ─
+
+describe("insertDocResilient", () => {
+  const noSleep = async () => {};
+  const timeout = () => {
+    throw new Error("Query timeout after 10000ms");
+  };
+
+  it("retries a timed-out INSERT and succeeds on the next attempt", async () => {
+    // INSERT times out → read-back finds nothing → INSERT again → ok.
+    const { calls, query } = mockQuery([timeout, () => [], () => []]);
+    const result = await insertDocResilient(
+      query,
+      TBL,
+      { doc_id: "a.ts", path: "/docs/p/a.ts.md", content: "x" },
+      { sleep: noSleep },
+    );
+    expect(result).toEqual({ doc_id: "a.ts", version: 1 });
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toMatch(/^INSERT INTO/);
+    expect(calls[1]).toMatch(/^SELECT/); // the landed-check read-back
+    expect(calls[2]).toMatch(/^INSERT INTO/);
+  });
+
+  it("does NOT re-insert when the timed-out write actually landed (no forked v1)", async () => {
+    // INSERT times out client-side but committed server-side → read-back finds
+    // the row → return it, issue no second INSERT.
+    const { calls, query } = mockQuery([timeout, () => [fakeRow({ doc_id: "a.ts", version: 1 })]]);
+    const result = await insertDocResilient(
+      query,
+      TBL,
+      { doc_id: "a.ts", path: "/docs/p/a.ts.md", content: "x" },
+      { sleep: noSleep },
+    );
+    expect(result).toEqual({ doc_id: "a.ts", version: 1 });
+    expect(calls).toHaveLength(2);
+    expect(calls.filter(c => c.startsWith("INSERT INTO"))).toHaveLength(1);
+  });
+
+  it("surfaces a non-timeout error immediately without retrying", async () => {
+    const { calls, query } = mockQuery([
+      () => {
+        throw new Error("Query failed: 403: forbidden");
+      },
+    ]);
+    await expect(
+      insertDocResilient(query, TBL, { doc_id: "a.ts", path: "/p", content: "x" }, { sleep: noSleep }),
+    ).rejects.toThrow(/403/);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("gives up after the retry budget and throws the timeout", async () => {
+    // Every INSERT times out, read-back never finds the row.
+    const { calls, query } = mockQuery([timeout, () => [], timeout, () => [], timeout]);
+    await expect(
+      insertDocResilient(
+        query,
+        TBL,
+        { doc_id: "a.ts", path: "/p", content: "x" },
+        { retries: 2, sleep: noSleep },
+      ),
+    ).rejects.toThrow(/timeout/);
+    // 3 INSERT attempts (retries=2) + 2 read-backs between them.
+    expect(calls.filter(c => c.startsWith("INSERT INTO"))).toHaveLength(3);
   });
 });
 
