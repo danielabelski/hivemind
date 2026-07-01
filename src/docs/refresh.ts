@@ -18,6 +18,7 @@
 
 import { buildAnchor, readSymbolSource } from "./anchors.js";
 import { gateDocEdit, type GateResult } from "./gate.js";
+import { runPool, withRateLimitRetry } from "./pool.js";
 import { archiveDoc, setDoc } from "./write.js";
 import type { DocAnchor, DocRow, QueryFn } from "./read.js";
 import type { ImpactedDoc, StaleReason } from "./impact.js";
@@ -70,6 +71,8 @@ export interface RefreshArgs {
   agent?: string;
   pluginVersion?: string;
   maxChangedLines?: number;
+  /** Max docs rewritten in parallel. Default 4. */
+  concurrency?: number;
 }
 
 /** Build the prompt for one doc refresh — bounded-edit, freshness-focused. */
@@ -130,16 +133,21 @@ function gatherChangedSymbols(
   return out;
 }
 
-/** Refresh every impacted doc, gating each edit. Pure except for `generate` + `query`. */
+/**
+ * Refresh every impacted doc, gating each edit. Runs a bounded worker pool so a
+ * commit touching many files rewrites them concurrently (each doc is an
+ * independent UPDATE of its own row), with rate-limit backoff around the host
+ * LLM. Pure except for `generate` + `query`.
+ */
 export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
   const nodeById = new Map<string, GraphNode>(args.snap.nodes.map((n) => [n.id, n]));
   const outcomes: RefreshOutcome[] = [];
 
-  for (const imp of args.impacted) {
+  await runPool(args.impacted, args.concurrency ?? 4, async (imp) => {
     const doc = args.docsById.get(imp.doc_id);
     if (!doc) {
       outcomes.push({ doc_id: imp.doc_id, status: "skipped", reasons: ["no current doc row"] });
-      continue;
+      return;
     }
 
     // Slow-tier docs are human-curated; the gate would reject any automatic
@@ -151,7 +159,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
         status: "rejected",
         reasons: ["slow-tier docs are human-curated; automatic refresh is not allowed"],
       });
-      continue;
+      return;
     }
 
     const newAnchors = reanchor(doc, nodeById, args.repoRoot);
@@ -175,17 +183,21 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
         version: res.version,
         reasons: ["all anchored symbols gone (file deleted/renamed)"],
       });
-      continue;
+      return;
     }
 
     const changedSymbols = gatherChangedSymbols(imp.reasons, nodeById, args.repoRoot);
 
     let newContent: string;
     try {
-      newContent = await args.generate({ doc, reasons: imp.reasons, changedSymbols });
+      // Retry the LLM call on rate-limit/overload — bulk refresh bursts hit
+      // the host model's limits; other errors surface immediately.
+      newContent = await withRateLimitRetry(() =>
+        args.generate({ doc, reasons: imp.reasons, changedSymbols }),
+      );
     } catch (err) {
       outcomes.push({ doc_id: imp.doc_id, status: "skipped", reasons: [`generate failed: ${(err as Error).message}`] });
-      continue;
+      return;
     }
 
     const gate: GateResult = gateDocEdit({
@@ -198,7 +210,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
     });
     if (!gate.ok) {
       outcomes.push({ doc_id: imp.doc_id, status: "rejected", reasons: gate.reasons });
-      continue;
+      return;
     }
 
     const res = await setDoc(args.query, args.tableName, {
@@ -212,7 +224,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       plugin_version: args.pluginVersion,
     });
     outcomes.push({ doc_id: imp.doc_id, status: "refreshed", version: res.version });
-  }
+  });
 
   return {
     outcomes,

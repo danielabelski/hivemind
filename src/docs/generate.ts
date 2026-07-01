@@ -17,6 +17,7 @@
  */
 
 import { buildAnchor, readSymbolSource } from "./anchors.js";
+import { runPool } from "./pool.js";
 import { insertDocResilient, setDoc } from "./write.js";
 import type { DocAnchor, QueryFn } from "./read.js";
 import type { GraphNode, GraphSnapshot } from "../graph/types.js";
@@ -166,18 +167,6 @@ export interface GenReport {
   created: number;
   skipped: number;
   failed: number;
-}
-
-/** Run `fn` over `items` with at most `n` in flight. */
-async function runPool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let i = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => {
-    while (i < items.length) {
-      const idx = i++;
-      await fn(items[idx]);
-    }
-  });
-  await Promise.all(workers);
 }
 
 function defaultVfsPath(project: string, docId: string): string {
