@@ -224,6 +224,33 @@ describe("refreshDocs", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("archives a fully-orphaned doc (file deleted/renamed) WITHOUT calling the LLM", async () => {
+    // doc anchored ONLY to a symbol that's gone; the snapshot has none of it →
+    // the documented file was deleted or renamed. Archive, don't re-author.
+    const gone = "a.ts:gone:function";
+    const d = doc({ anchors: [{ symbol_id: gone, content_hash: "x" }] });
+    const emptySnap = snap([]);
+    const { calls, query } = mockQuery([
+      () => [{ id: "r", doc_id: "a.ts", version: 3, content: "old", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }], // getDocLatest in archiveDoc
+      () => [], // INSERT of the archived version
+    ]);
+    const generate = vi.fn(async () => "should never be called");
+    const report = await refreshDocs({
+      query, tableName: "hivemind_docs", snap: emptySnap, repoRoot: dir,
+      impacted: [{ doc_id: "a.ts", reasons: [{ kind: "symbol_missing", symbol_id: gone }] }],
+      docsById: new Map([["a.ts", d]]), generate,
+    });
+    expect(report.archived).toBe(1);
+    expect(report.refreshed).toBe(0);
+    expect(report.outcomes[0]).toMatchObject({ doc_id: "a.ts", status: "archived", version: 4 });
+    // No token spent on a deleted file.
+    expect(generate).not.toHaveBeenCalled();
+    // archiveDoc = getDocLatest + INSERT(status='archived'); nothing else.
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
+    expect(calls[1]).toContain("'archived'");
+  });
+
   it("drops a dangling anchor when its symbol vanished from the graph", async () => {
     // doc anchored to foo + a gone symbol; snapshot only has foo.
     const d = doc({ anchors: [{ symbol_id: foo.id, content_hash: "x" }, { symbol_id: "a.ts:gone:function", content_hash: "y" }] });

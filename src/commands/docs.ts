@@ -360,9 +360,12 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       agent: cfg.userName,
       pluginVersion,
     });
-    console.log(`Refreshed ${report.refreshed}, rejected ${report.rejected}, skipped ${report.skipped}.`);
+    console.log(
+      `Refreshed ${report.refreshed}, archived ${report.archived}, rejected ${report.rejected}, skipped ${report.skipped}.`,
+    );
     for (const o of report.outcomes) {
       if (o.status === "refreshed") console.log(`  refreshed ${o.doc_id} → v${o.version}`);
+      else if (o.status === "archived") console.log(`  archived ${o.doc_id} → v${o.version} (${(o.reasons ?? []).join("; ")})`);
       else console.log(`  ${o.status} ${o.doc_id}: ${(o.reasons ?? []).join("; ")}`);
     }
     return;

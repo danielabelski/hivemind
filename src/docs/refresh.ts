@@ -18,7 +18,7 @@
 
 import { buildAnchor, readSymbolSource } from "./anchors.js";
 import { gateDocEdit, type GateResult } from "./gate.js";
-import { setDoc } from "./write.js";
+import { archiveDoc, setDoc } from "./write.js";
 import type { DocAnchor, DocRow, QueryFn } from "./read.js";
 import type { ImpactedDoc, StaleReason } from "./impact.js";
 import type { GraphNode, GraphSnapshot } from "../graph/types.js";
@@ -42,10 +42,10 @@ export type GenerateFn = (ctx: RefreshContext) => Promise<string>;
 
 export interface RefreshOutcome {
   doc_id: string;
-  status: "refreshed" | "rejected" | "skipped";
-  /** New version number when refreshed. */
+  status: "refreshed" | "rejected" | "skipped" | "archived";
+  /** New version number when refreshed or archived. */
   version?: number;
-  /** Gate rejection reasons, or skip explanation. */
+  /** Gate rejection reasons, or skip/archive explanation. */
   reasons?: string[];
 }
 
@@ -54,6 +54,7 @@ export interface RefreshReport {
   refreshed: number;
   rejected: number;
   skipped: number;
+  archived: number;
 }
 
 export interface RefreshArgs {
@@ -154,6 +155,29 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
     }
 
     const newAnchors = reanchor(doc, nodeById, args.repoRoot);
+
+    // Fully-orphaned doc: it HAD anchors, and every one of them vanished from
+    // the graph (the documented file was deleted or renamed). Re-authoring it
+    // would burn an LLM call and produce an anchor-less zombie that drift
+    // detection can never flag again. Archive it instead — soft delete,
+    // audit trail preserved — and spend no token. A PARTIAL orphan (the file
+    // still exists, only some symbols removed) keeps ≥1 anchor and falls
+    // through to a normal refresh below.
+    if (doc.anchors.length > 0 && newAnchors.length === 0) {
+      const res = await archiveDoc(args.query, args.tableName, {
+        doc_id: doc.doc_id,
+        agent: args.agent ?? "docs-refresh",
+        plugin_version: args.pluginVersion,
+      });
+      outcomes.push({
+        doc_id: imp.doc_id,
+        status: "archived",
+        version: res.version,
+        reasons: ["all anchored symbols gone (file deleted/renamed)"],
+      });
+      continue;
+    }
+
     const changedSymbols = gatherChangedSymbols(imp.reasons, nodeById, args.repoRoot);
 
     let newContent: string;
@@ -195,5 +219,6 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
     refreshed: outcomes.filter((o) => o.status === "refreshed").length,
     rejected: outcomes.filter((o) => o.status === "rejected").length,
     skipped: outcomes.filter((o) => o.status === "skipped").length,
+    archived: outcomes.filter((o) => o.status === "archived").length,
   };
 }
