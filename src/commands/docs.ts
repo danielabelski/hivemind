@@ -394,38 +394,68 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
     const impacted = computeImpactedDocs({ snap, docs, repoRoot: cwd });
-    if (impacted.length === 0) {
-      console.log("(no docs need refreshing — all anchors fresh)");
-      return;
-    }
     if (dryRun) {
-      console.log(`${impacted.length} doc(s) would be refreshed:`);
-      for (const i of impacted) {
-        console.log(`  ${i.doc_id}  [${i.reasons.map((r) => r.kind).join(", ")}]`);
+      if (impacted.length === 0) {
+        console.log("(no docs need refreshing — all anchors fresh)");
+      } else {
+        console.log(`${impacted.length} doc(s) would be refreshed:`);
+        for (const i of impacted) {
+          console.log(`  ${i.doc_id}  [${i.reasons.map((r) => r.kind).join(", ")}]`);
+        }
       }
       return;
     }
-    // Real refresh writes — ensure the table now (dry-run above already returned).
+    // Real run — ensure the table now (dry-run above already returned).
     await api.ensureDocsTable(tableName);
-    const docsById = new Map(docs.map((d) => [d.doc_id, d]));
-    const report = await refreshDocs({
-      query,
-      tableName,
-      snap,
-      repoRoot: cwd,
-      impacted,
-      docsById,
-      generate: makeHostGenerate(),
-      agent: cfg.userName,
-      pluginVersion,
-    });
-    console.log(
-      `Refreshed ${report.refreshed}, archived ${report.archived}, rejected ${report.rejected}, skipped ${report.skipped}.`,
-    );
-    for (const o of report.outcomes) {
-      if (o.status === "refreshed") console.log(`  refreshed ${o.doc_id} → v${o.version}`);
-      else if (o.status === "archived") console.log(`  archived ${o.doc_id} → v${o.version} (${(o.reasons ?? []).join("; ")})`);
-      else console.log(`  ${o.status} ${o.doc_id}: ${(o.reasons ?? []).join("; ")}`);
+    if (impacted.length === 0) {
+      console.log("(no docs need refreshing — all anchors fresh)");
+    } else {
+      const docsById = new Map(docs.map((d) => [d.doc_id, d]));
+      const report = await refreshDocs({
+        query,
+        tableName,
+        snap,
+        repoRoot: cwd,
+        impacted,
+        docsById,
+        generate: makeHostGenerate(),
+        agent: cfg.userName,
+        pluginVersion,
+      });
+      console.log(
+        `Refreshed ${report.refreshed}, archived ${report.archived}, rejected ${report.rejected}, skipped ${report.skipped}.`,
+      );
+      for (const o of report.outcomes) {
+        if (o.status === "refreshed") console.log(`  refreshed ${o.doc_id} → v${o.version}`);
+        else if (o.status === "archived") console.log(`  archived ${o.doc_id} → v${o.version} (${(o.reasons ?? []).join("; ")})`);
+        else console.log(`  ${o.status} ${o.doc_id}: ${(o.reasons ?? []).join("; ")}`);
+      }
+    }
+
+    // Self-complete the corpus: a commit that ADDS a documentable file leaves it
+    // without a doc (refresh only updates existing ones). Generate docs for the
+    // changed files that have none — scoped to the git diff, so still O(diff).
+    // Modified files already have docs (refreshed above) and are skipped via
+    // `existing`. Only runs when git gave us a diff.
+    if (changed !== null && changed.length > 0) {
+      const existing = new Set(docs.map((d) => d.doc_id));
+      const genReport = await generateDocs({
+        query,
+        tableName,
+        snap,
+        repoRoot: cwd,
+        include: changed,
+        existing,
+        generate: makeHostGenerateDoc(),
+        agent: cfg.userName,
+        pluginVersion,
+      });
+      if (genReport.created > 0) {
+        console.log(`Generated ${genReport.created} new doc(s) for added files:`);
+        for (const o of genReport.outcomes) {
+          if (o.status === "created") console.log(`  created ${o.doc_id}`);
+        }
+      }
     }
     return;
   }

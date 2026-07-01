@@ -29,6 +29,13 @@ describe("changedFilesFromGit", () => {
     const git = vi.fn(() => "");
     expect(changedFilesFromGit("/x", git)).toEqual([]);
   });
+
+  it("includes untracked (new, non-ignored) files — the new-file case", () => {
+    const git = vi.fn((args: string[]) =>
+      args.join(" ") === "ls-files --others --exclude-standard" ? "src/tax.ts\n" : "",
+    );
+    expect(changedFilesFromGit("/x", git)).toEqual(["src/tax.ts"]);
+  });
 });
 
 describe("expandToCandidateFiles", () => {

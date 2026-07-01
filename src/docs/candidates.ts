@@ -51,7 +51,10 @@ export function changedFilesFromGit(cwd: string, git: GitRunner = defaultGit(cwd
   if (workingTree === null) return null; // not a repo / git missing
   const files = new Set<string>();
   collect(workingTree, files);
-  // Also the last commit, for the post-commit path where the tree is clean.
+  // Untracked, non-ignored files — a brand-new file doesn't show in `git diff`
+  // but is exactly the case that needs a fresh doc generated.
+  collect(git(["ls-files", "--others", "--exclude-standard"]), files);
+  // The last commit too, for the post-commit path where the tree is clean.
   collect(git(["diff", "--name-only", "HEAD~1", "HEAD"]), files);
   return [...files];
 }
