@@ -21,7 +21,8 @@ import { execFileSync } from "node:child_process";
 import { buildTrailingPromptInvocation } from "../wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { finalizeSummary, releaseLock } from "../summary-state.js";
+import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
+import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
 import { EmbedClient } from "../../embeddings/client.js";
@@ -130,9 +131,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    const jsonlContent = rows
-      .map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message))
-      .join("\n");
     const jsonlLines = rows.length;
 
     const pathRows = await query(
@@ -143,10 +141,12 @@ async function main(): Promise<void> {
       ? pathRows[0].path as string
       : `/sessions/unknown/${cfg.sessionId}.jsonl`;
 
-    writeFileSync(tmpJsonl, jsonlContent);
-    wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
-
-    // 2. Check for existing summary (resumed session)
+    // 2. Determine how many rows were already summarized (resumed session).
+    // The sidecar count is authoritative: finalizeSummary writes it after every
+    // successful run and it never depends on the LLM echoing a bookkeeping line
+    // back into the summary. The regex over the stored summary is only a
+    // fallback for a session first summarized on another machine (the sidecar
+    // lives under ~/.claude/hooks and does not travel).
     let prevOffset = 0;
     try {
       const sumRows = await query(
@@ -158,9 +158,28 @@ async function main(): Promise<void> {
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match) prevOffset = parseInt(match[1], 10);
         writeFileSync(tmpSummary, existing);
-        wlog(`existing summary found, offset=${prevOffset}`);
       }
     } catch { /* no existing summary */ }
+    const sidecarCount = readState(cfg.sessionId)?.lastSummaryCount ?? 0;
+    if (sidecarCount > prevOffset) prevOffset = sidecarCount;
+
+    // Feed the agent only the rows added since the last summary. Reprocessing
+    // the full session on every run is what drives ENOBUFS / 120s-timeout
+    // failures on long (4000+ event) sessions — a stuck offset re-summarizes
+    // everything from scratch.
+    const newRows = prevOffset > 0 ? rows.slice(prevOffset) : rows;
+    if (prevOffset > 0 && newRows.length === 0) {
+      wlog(`no new events since last summary (offset=${prevOffset}, total=${jsonlLines}) — skipping`);
+      return;
+    }
+    const newLines = newRows.map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message));
+    const { kept, dropped } = capLinesByBytes(newLines, WIKI_JSONL_MAX_BYTES);
+    if (dropped > 0) {
+      wlog(`new rows exceed ${WIKI_JSONL_MAX_BYTES}B — kept newest ${kept.length}, dropped ${dropped} oldest`);
+    }
+
+    writeFileSync(tmpJsonl, kept.join("\n"));
+    wlog(`found ${jsonlLines} events (${kept.length} new since offset ${prevOffset}) at ${jsonlServerPath}`);
 
     // 3. Build prompt and run codex exec
     const prompt = cfg.promptTemplate
@@ -173,6 +192,8 @@ async function main(): Promise<void> {
       .replace(/__JSONL_SERVER_PATH__/g, jsonlServerPath);
 
     wlog(`running pi --print (provider=${cfg.piProvider}, model=${cfg.piModel})`);
+    let execSucceeded = false;
+    const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
     try {
       // pi --print is the non-interactive mode; it bypasses extension
       // discovery (modes/print-mode.js doesn't import ExtensionRunner),
@@ -186,17 +207,34 @@ async function main(): Promise<void> {
       execFileSync(inv.file, inv.args, {
         ...inv.options,
         timeout: 120_000,
+        // pi streams to stdout, which execFileSync buffers. The Node default
+        // (1 MB) overflows to ENOBUFS on a verbose run, killing the summary.
+        // The summary is written to a file, not read from stdout, so we only
+        // need headroom to drain it.
+        maxBuffer: 64 * 1024 * 1024,
         env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
       });
+      execSucceeded = true;
       wlog("pi --print exited (code 0)");
     } catch (e: any) {
       wlog(`pi --print failed: ${e.status ?? e.message}`);
     }
 
-    // 4. Upload summary to memory table
+    // 4. Upload summary to memory table. Only advance the offset (stamp +
+    // finalize) when the agent actually produced a summary — otherwise a failed
+    // run on a resumed session would re-upload the pre-seeded old summary and
+    // slice away the new rows forever.
     if (existsSync(tmpSummary)) {
-      const text = readFileSync(tmpSummary, "utf-8");
-      if (text.trim()) {
+      const raw = readFileSync(tmpSummary, "utf-8");
+      const summaryChanged = summaryBeforeExec === null ? raw.trim().length > 0 : raw !== summaryBeforeExec;
+      if (!execSucceeded && !summaryChanged) {
+        wlog("pi --print failed without producing a new summary; skipping upload");
+        return;
+      }
+      if (raw.trim()) {
+        // Stamp the offset ourselves so the persisted summary is authoritative
+        // and never depends on the LLM echoing the bookkeeping line.
+        const text = stampOffset(raw, jsonlLines);
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         // Embed the summary so it ranks in the semantic retrieval branch.
