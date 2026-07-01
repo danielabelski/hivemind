@@ -9,14 +9,18 @@
 export { insertDoc, insertDocResilient, editDoc, setDoc, archiveDoc, _MAX_CONTENT_LENGTH } from "./write.js";
 export type { InsertDocInput, EditDocInput, SetDocInput, WriteResult, ResilientWriteOpts } from "./write.js";
 
-export { listDocs, getDocLatest, parseAnchors } from "./read.js";
+export { listDocs, listDocMeta, listDocsByIds, getDocLatest, parseAnchors } from "./read.js";
 export type {
   DocRow,
+  DocMetaRow,
   DocAnchor,
   DocTier,
   ListDocsOpts,
   QueryFn,
 } from "./read.js";
+
+export { buildDocsIndex, dirOf, firstDocLine } from "./index-render.js";
+export type { DocMeta } from "./index-render.js";
 
 export {
   parseSourceLocation,

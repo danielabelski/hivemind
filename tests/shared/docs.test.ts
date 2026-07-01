@@ -14,6 +14,8 @@ import {
   setDoc,
   archiveDoc,
   listDocs,
+  listDocMeta,
+  listDocsByIds,
   getDocLatest,
   parseAnchors,
   _MAX_CONTENT_LENGTH,
@@ -491,6 +493,75 @@ describe("getDocLatest", () => {
     const { calls, query } = mockQuery([() => []]);
     await getDocLatest(query, TBL, "x' OR '1'='1");
     expect(calls[0]).toContain(`doc_id = 'x'' OR ''1''=''1'`);
+  });
+});
+
+// ── listDocMeta (light index read — no content) ──────────────────────────────
+
+describe("listDocMeta", () => {
+  it("selects id (for the union key) but NOT content/anchors, dedups latest per doc", async () => {
+    const { calls, query } = mockQuery([
+      () => [
+        fakeRow({ id: "r1", doc_id: "a.ts", version: 1 }),
+        fakeRow({ id: "r2", doc_id: "a.ts", version: 2 }),
+        fakeRow({ id: "r3", doc_id: "b.ts", version: 1 }),
+      ],
+    ]);
+    const meta = await listDocMeta(query, TBL);
+    // The query must be metadata-only: id for the stability-gate union key,
+    // never the heavy content/anchors columns.
+    expect(calls[0]).toMatch(/SELECT id, doc_id, version, updated_at, status, tier/);
+    expect(calls[0]).not.toContain("content");
+    expect(calls[0]).not.toContain("anchors");
+    // latest-per-doc: a.ts collapses to v2, b.ts stays v1.
+    const byId = new Map(meta.map((r) => [r.doc_id, r.version]));
+    expect(byId.get("a.ts")).toBe(2);
+    expect(byId.get("b.ts")).toBe(1);
+    expect(meta).toHaveLength(2);
+  });
+
+  it("scopes to a directory prefix with an escaped LIKE", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await listDocMeta(query, TBL, { dirPrefix: "src/graph" });
+    expect(calls[0]).toContain(`WHERE doc_id LIKE 'src/graph/%'`);
+  });
+
+  it("omits the WHERE clause when no dirPrefix is given", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await listDocMeta(query, TBL);
+    expect(calls[0]).not.toContain("WHERE");
+  });
+});
+
+// ── listDocsByIds (filtered read for index summaries + the scale path) ────────
+
+describe("listDocsByIds", () => {
+  it("builds a de-duplicated IN list and returns latest-per-doc", async () => {
+    const { calls, query } = mockQuery([
+      () => [
+        fakeRow({ id: "r1", doc_id: "a.ts", version: 1, content: "old" }),
+        fakeRow({ id: "r2", doc_id: "a.ts", version: 3, content: "new" }),
+        fakeRow({ id: "r3", doc_id: "b.ts", version: 1, content: "b" }),
+      ],
+    ]);
+    const rows = await listDocsByIds(query, TBL, ["a.ts", "b.ts", "a.ts"]);
+    expect(calls[0]).toContain(`doc_id IN ('a.ts', 'b.ts')`); // deduped
+    const a = rows.find((r) => r.doc_id === "a.ts");
+    expect(a?.version).toBe(3);
+    expect(a?.content).toBe("new");
+    expect(rows).toHaveLength(2);
+  });
+
+  it("short-circuits to [] with no query on empty input", async () => {
+    const { calls, query } = mockQuery([]);
+    expect(await listDocsByIds(query, TBL, [])).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("escapes doc_ids in the IN list", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await listDocsByIds(query, TBL, ["x' OR '1'='1"]);
+    expect(calls[0]).toContain(`'x'' OR ''1''=''1'`);
   });
 });
 

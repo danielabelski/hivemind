@@ -31,11 +31,17 @@ import {
   setDoc,
   archiveDoc,
   listDocs,
+  listDocMeta,
+  listDocsByIds,
   getDocLatest,
   computeImpactedDocs,
   refreshDocs,
   buildAnchor,
+  buildDocsIndex,
+  dirOf,
+  firstDocLine,
   type DocRow,
+  type DocMeta,
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
@@ -50,6 +56,9 @@ hivemind docs — per-file documentation kept fresh on code deltas
 Usage:
   hivemind docs set <doc-id> ["<markdown>"] [--file <path>] [--project P] [--tier fast|slow] [--path <vfs-path>]
   hivemind docs show <doc-id>
+  hivemind docs index [<dir>]
+      Browsable per-directory index of the docs (metadata only). With no
+      argument shows the top level; pass a directory to drill in.
   hivemind docs list [--project P] [--status active|archived|all] [--limit N]
   hivemind docs archive <doc-id>
   hivemind docs refresh [--cwd <dir>] [--dry-run]
@@ -250,6 +259,41 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       console.error(`Set failed: ${(err as Error).message}`);
       process.exit(1);
     }
+    return;
+  }
+
+  if (sub === "index") {
+    // Browsable per-directory index. `atDir` ("" = root) is an optional
+    // positional; drilling in scopes the metadata read to that subtree.
+    const atDir = (stripKnownFlags(args.slice(1))[0] ?? "").replace(/\/+$/, "");
+    let meta: DocMeta[] = [];
+    try {
+      const rows = await listDocMeta(query, tableName, { dirPrefix: atDir });
+      meta = rows.map((r) => ({
+        doc_id: r.doc_id,
+        version: r.version,
+        updated_at: r.updated_at,
+        status: r.status,
+        tier: r.tier,
+      }));
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+    }
+    // Fetch content ONLY for files directly in this directory → 1-line summaries.
+    const directFiles = meta
+      .filter((m) => m.status === "active" && dirOf(m.doc_id) === atDir)
+      .map((m) => m.doc_id);
+    const summaries = new Map<string, string>();
+    if (directFiles.length > 0) {
+      try {
+        for (const d of await listDocsByIds(query, tableName, directFiles)) {
+          summaries.set(d.doc_id, firstDocLine(d.content));
+        }
+      } catch (err) {
+        if (!isMissingTableError((err as Error).message)) throw err;
+      }
+    }
+    console.log(buildDocsIndex(meta, atDir, summaries));
     return;
   }
 

@@ -13,7 +13,7 @@
  * rather than throwing, so a single bad row never poisons a list read.
  */
 
-import { sqlIdent, sqlStr } from "../utils/sql.js";
+import { sqlIdent, sqlLike, sqlStr } from "../utils/sql.js";
 import { stableUnionRows } from "./stable-read.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
@@ -100,6 +100,95 @@ export async function listDocs(
     (a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id),
   );
   return filtered.slice(0, opts.limit ?? 200);
+}
+
+/** Light per-doc metadata for the index — no content, no anchors. */
+export interface DocMetaRow {
+  doc_id: string;
+  version: number;
+  updated_at: string;
+  status: string;
+  tier: DocTier;
+}
+
+/**
+ * Latest-version METADATA for every doc (optionally scoped to a directory
+ * prefix), WITHOUT pulling the `content`/`anchors` columns. This is the cheap
+ * read behind the browsable docs index: the top levels need only counts and
+ * timestamps, so we never transfer document bodies to render them.
+ *
+ * `dirPrefix` (e.g. `src/graph`) filters server-side via `doc_id LIKE`, so a
+ * drill-down into one directory reads only that directory's rows.
+ */
+export async function listDocMeta(
+  query: QueryFn,
+  tableName: string,
+  opts: { dirPrefix?: string } = {},
+): Promise<DocMetaRow[]> {
+  const safe = sqlIdent(tableName);
+  const where =
+    opts.dirPrefix !== undefined && opts.dirPrefix !== ""
+      ? ` WHERE doc_id LIKE '${sqlLike(opts.dirPrefix)}/%'`
+      : "";
+  // `id` is selected (not returned) so the read-stability gate can union rows
+  // by their unique key — see stableUnionRows(idKey="id").
+  const rows = await stableUnionRows(
+    query,
+    `SELECT id, doc_id, version, updated_at, status, tier FROM "${safe}"${where}`,
+  );
+  const latest = new Map<string, DocMetaRow>();
+  for (const r of rows) {
+    const doc_id = String(r.doc_id ?? "");
+    if (doc_id === "") continue;
+    const vRaw = r.version;
+    const version = typeof vRaw === "number" ? vRaw : Number(vRaw);
+    if (!Number.isFinite(version)) continue;
+    const updated_at = String(r.updated_at ?? "");
+    const prev = latest.get(doc_id);
+    if (!prev || version > prev.version || (version === prev.version && updated_at > prev.updated_at)) {
+      const tier = String(r.tier ?? "fast");
+      latest.set(doc_id, {
+        doc_id,
+        version,
+        updated_at,
+        status: String(r.status ?? ""),
+        tier: tier === "slow" ? "slow" : "fast",
+      });
+    }
+  }
+  return [...latest.values()];
+}
+
+/**
+ * Latest full row for each of `docIds` (a filtered `doc_id IN (...)` read).
+ * Two uses: fetching the small set of files' content for the index summary
+ * column, and — the scale path — loading only the docs a commit's diff can
+ * affect instead of the whole table. Returns latest-per-doc, active or not;
+ * the caller filters by status. An empty `docIds` returns `[]` with no query.
+ */
+export async function listDocsByIds(
+  query: QueryFn,
+  tableName: string,
+  docIds: string[],
+): Promise<DocRow[]> {
+  const ids = [...new Set(docIds.filter((d) => d !== ""))];
+  if (ids.length === 0) return [];
+  const safe = sqlIdent(tableName);
+  const inList = ids.map((d) => `'${sqlStr(d)}'`).join(", ");
+  const rows = await stableUnionRows(
+    query,
+    `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id IN (${inList})`,
+  );
+  const latest = new Map<string, DocRow>();
+  for (const r of rows) {
+    const row = normalize(r);
+    if (!row) continue;
+    const prev = latest.get(row.doc_id);
+    if (!prev || row.version > prev.version || (row.version === prev.version && row.updated_at > prev.updated_at)) {
+      latest.set(row.doc_id, row);
+    }
+  }
+  return [...latest.values()];
 }
 
 /**
