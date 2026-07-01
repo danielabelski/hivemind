@@ -233,8 +233,11 @@ describe("installOpenclaw()", () => {
       process.stderr.write = origWrite;
     }
     const err = logs.join("");
-    expect(err).toMatch(/embed-deps\/node_modules/);
-    expect(err).toMatch(/hivemind embeddings install/i);
+    const embedDepsNm = join(TEMP_HOME, ".hivemind", "embed-deps", "node_modules");
+    const expected =
+      `  OpenClaw       graph workers need tree-sitter native deps at ${embedDepsNm} — ` +
+      "run `hivemind embeddings install`, then `hivemind claw install` again\n";
+    expect(err).toBe(expected);
   });
 
   it("symlinks embed-deps node_modules into the plugin dir when present", async () => {

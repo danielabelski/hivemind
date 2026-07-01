@@ -145,7 +145,7 @@ describe("/hivemind_setup", () => {
     });
     const setup = await loadSetupCommand();
     const result = await setup.handler({}) as { text: string };
-    expect(result.text).toContain("Added");
+    expect(result.text).toContain('"hivemind" → tools.alsoAllow');
     const updated = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(updated.tools.alsoAllow).toEqual(["hivemind_graph_search", "hivemind"]);
   });
