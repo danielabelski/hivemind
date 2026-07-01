@@ -13,6 +13,7 @@ import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
 import { handleGraphVfs } from "../graph/vfs-handler.js";
+import { handleDocsVfs } from "../docs/vfs-handler.js";
 import { executeCompiledBashCommand } from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -246,6 +247,7 @@ interface ClaudePreToolDeps {
   executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   handleGrepDirectFn?: typeof handleGrepDirect;
   handleGraphVfsFn?: typeof handleGraphVfs;
+  handleDocsVfsFn?: typeof handleDocsVfs;
   readVirtualPathContentsFn?: typeof readVirtualPathContents;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
   listVirtualPathRowsFn?: typeof listVirtualPathRows;
@@ -269,6 +271,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     executeCompiledBashCommandFn = executeCompiledBashCommand,
     handleGrepDirectFn = handleGrepDirect,
     handleGraphVfsFn = handleGraphVfs,
+    handleDocsVfsFn = handleDocsVfs,
     readVirtualPathContentsFn = readVirtualPathContents,
     readVirtualPathContentFn = readVirtualPathContent,
     listVirtualPathRowsFn = listVirtualPathRows,
@@ -444,6 +447,31 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         return buildReadDecision(file_path, "[hivemind graph] ls /graph");
       }
       return buildAllowDecision(safeEchoCommand(body), `[hivemind graph] ls /graph`);
+    }
+
+    // Docs VFS dispatch — the browsable per-directory docs index under
+    // <memory>/docs/. Separate surface from the memory index (no retrieval
+    // pollution). Backed by the docs TABLE, so this is async via api.query.
+    // `/docs` (bare) and `/docs/index.md` both render the root index.
+    if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/")) && !virtualPath.endsWith("/")) {
+      const subpath = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
+      logFn(`docs vfs: ${subpath || "(root)"}`);
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName);
+      const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
+      if (input.tool_name === "Read") {
+        const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);
+        return buildReadDecision(file_path, `[hivemind docs] ${virtualPath}`);
+      }
+      return buildAllowDecision(safeEchoCommand(body), `[hivemind docs] /docs/${subpath}`);
+    }
+    if (lsDir === "/docs" || lsDir === "/docs/") {
+      const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName);
+      const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
+      if (input.tool_name === "Read") {
+        const file_path = writeReadCacheFileFn(input.session_id, "/docs/_listing.txt", body);
+        return buildReadDecision(file_path, "[hivemind docs] ls /docs");
+      }
+      return buildAllowDecision(safeEchoCommand(body), `[hivemind docs] ls /docs`);
     }
 
     if (virtualPath && !virtualPath.endsWith("/")) {

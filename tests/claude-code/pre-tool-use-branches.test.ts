@@ -205,6 +205,41 @@ describe("extractGrepParams", () => {
   });
 });
 
+describe("processPreToolUse: docs VFS routing", () => {
+  const DOCS_CONFIG = { ...BASE_CONFIG, docsTableName: "hivemind_docs" } as any;
+
+  it("routes a Read of /docs/index.md to the docs VFS handler (root subpath)", async () => {
+    const handleDocsVfsFn = vi.fn(async () => ({ kind: "ok" as const, body: "# Docs Index\n" }));
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Read", tool_input: { file_path: `${MEM_ABS}/docs/index.md` }, tool_use_id: "t" },
+      { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn },
+    );
+    expect(handleDocsVfsFn).toHaveBeenCalledWith("index.md", expect.any(Function), "hivemind_docs");
+    // Read must get a file_path-shaped decision (cache file), not a real command.
+    expect(d?.file_path).toContain("docs/index.md");
+    expect(d?.command).toBe("");
+  });
+
+  it("extracts the nested subpath for a drill-down read", async () => {
+    const handleDocsVfsFn = vi.fn(async () => ({ kind: "ok" as const, body: "x" }));
+    await processPreToolUse(
+      { session_id: "s", tool_name: "Read", tool_input: { file_path: `${MEM_ABS}/docs/src/graph/diff.ts.md` }, tool_use_id: "t" },
+      { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn },
+    );
+    expect(handleDocsVfsFn).toHaveBeenCalledWith("src/graph/diff.ts.md", expect.any(Function), "hivemind_docs");
+  });
+
+  it("routes a Bash cat of a docs path to a command-shaped allow decision", async () => {
+    const handleDocsVfsFn = vi.fn(async () => ({ kind: "ok" as const, body: "# Docs Index\n" }));
+    const d = await processPreToolUse(
+      { session_id: "s", tool_name: "Bash", tool_input: { command: "cat ~/.deeplake/memory/docs/index.md" }, tool_use_id: "t" },
+      { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn, logFn: vi.fn() },
+    );
+    expect(handleDocsVfsFn).toHaveBeenCalledWith("index.md", expect.any(Function), "hivemind_docs");
+    expect(d?.command).toContain("Docs Index");
+  });
+});
+
 describe("processPreToolUse: non-memory / no-op paths", () => {
   it("returns null when the command doesn't touch memory and there's no shellCmd", async () => {
     const d = await processPreToolUse(
