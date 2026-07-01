@@ -238,16 +238,52 @@ describe("codex wiki-worker — happy path", () => {
     expect(execOpts.maxBuffer).toBeGreaterThanOrEqual(64 * 1024 * 1024);
   });
 
-  it("skips codex exec when the sidecar offset already covers every row", async () => {
-    // 3 rows total, but the sidecar says 3 were already summarized → nothing new.
-    mkFetch(1, false, 3);
-    readStateMock.mockReturnValue({ lastSummaryAt: 0, lastSummaryCount: 3, totalCount: 3 });
+  it("skips codex exec when the resumed offset already covers every row", async () => {
+    // Existing summary (offset 7) present + only 3 rows → nothing new to add.
+    mkFetch(1, true, 3);
     await runWorker();
     expect(execFileSyncMock).not.toHaveBeenCalled();
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
     expect(log).toContain("no new events since last summary");
     expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
+  });
+
+  it("does NOT advance the offset when codex exec fails after a partial write", async () => {
+    // Resumed session (offset 7, 9 rows → 2 new) where codex writes a PARTIAL
+    // summary and then fails: the changed file must NOT be uploaded/finalized,
+    // or the offset would jump past rows that were never fully summarized.
+    mkFetch(1, true, 9);
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      writeFileSync(args[2].match(/SUMMARY=(\S+)/)![1], "# partial\n\n## What Happened\nhalf...\n");
+      throw new Error("timeout");
+    });
+    await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    expect(finalizeSummaryMock).not.toHaveBeenCalled();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("failed after a partial summary write");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
+  });
+
+  it("ignores a stale sidecar offset when no existing summary was loaded", async () => {
+    // Sidecar says 3 processed, but SELECT summary returns nothing (row gone).
+    // Without a base summary the offset is meaningless — regenerate from scratch
+    // over ALL rows rather than slicing away the first 3.
+    mkFetch(1, false, 3);
+    readStateMock.mockReturnValue({ lastSummaryAt: 0, lastSummaryCount: 3, totalCount: 3 });
+    let capturedJsonl: string | null = null;
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      capturedJsonl = readFileSync(args[2].match(/JSONL=(\S+)/)![1], "utf-8");
+      writeFileSync(args[2].match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nx\n");
+      return Buffer.from("");
+    });
+    await runWorker();
+    expect(execFileSyncMock).toHaveBeenCalledOnce();
+    // All 3 rows fed (offset treated as 0), not sliced down to zero-new → skip.
+    expect(capturedJsonl!.trim().split("\n")).toHaveLength(3);
+    const prompt = execFileSyncMock.mock.calls[0][1][2] as string;
+    expect(prompt).toContain("OFFSET=0");
   });
 
   it("falls back to /sessions/unknown/ when path SELECT empty", async () => {

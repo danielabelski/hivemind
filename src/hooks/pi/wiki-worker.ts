@@ -148,6 +148,7 @@ async function main(): Promise<void> {
     // fallback for a session first summarized on another machine (the sidecar
     // lives under ~/.claude/hooks and does not travel).
     let prevOffset = 0;
+    let hasExistingSummary = false;
     try {
       const sumRows = await query(
         `SELECT summary FROM "${cfg.memoryTable}" ` +
@@ -158,10 +159,20 @@ async function main(): Promise<void> {
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match) prevOffset = parseInt(match[1], 10);
         writeFileSync(tmpSummary, existing);
+        hasExistingSummary = true;
       }
     } catch { /* no existing summary */ }
-    const sidecarCount = readState(cfg.sessionId)?.lastSummaryCount ?? 0;
-    if (sidecarCount > prevOffset) prevOffset = sidecarCount;
+    // The offset only means something if we actually loaded the summary it
+    // refers to. If the summary row is gone (or the read failed), slicing by a
+    // stale sidecar count would drop old rows with no base summary to extend,
+    // then overwrite the canonical summary with tail-only content. No base ⇒
+    // regenerate from scratch.
+    if (!hasExistingSummary) {
+      prevOffset = 0;
+    } else {
+      const sidecarCount = readState(cfg.sessionId)?.lastSummaryCount ?? 0;
+      if (sidecarCount > prevOffset) prevOffset = sidecarCount;
+    }
 
     // Feed the agent only the rows added since the last summary. Reprocessing
     // the full session on every run is what drives ENOBUFS / 120s-timeout
@@ -173,9 +184,12 @@ async function main(): Promise<void> {
       return;
     }
     const newLines = newRows.map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message));
-    const { kept, dropped } = capLinesByBytes(newLines, WIKI_JSONL_MAX_BYTES);
+    const { kept, dropped, truncated } = capLinesByBytes(newLines, WIKI_JSONL_MAX_BYTES);
     if (dropped > 0) {
       wlog(`new rows exceed ${WIKI_JSONL_MAX_BYTES}B — summarizing newest ${kept.length}, permanently skipping ${dropped} older rows`);
+    }
+    if (truncated) {
+      wlog(`a single event exceeded ${WIKI_JSONL_MAX_BYTES}B — truncated it to stay within the buffer`);
     }
 
     writeFileSync(tmpJsonl, kept.join("\n"));
@@ -227,8 +241,10 @@ async function main(): Promise<void> {
     if (existsSync(tmpSummary)) {
       const raw = readFileSync(tmpSummary, "utf-8");
       const summaryChanged = summaryBeforeExec === null ? raw.trim().length > 0 : raw !== summaryBeforeExec;
-      if (!execSucceeded && !summaryChanged) {
-        wlog("pi --print failed without producing a new summary; skipping upload");
+      if (!execSucceeded) {
+        wlog(summaryChanged
+          ? "pi --print failed after a partial summary write; skipping upload to avoid advancing the offset"
+          : "pi --print failed without producing a new summary; skipping upload");
         return;
       }
       if (raw.trim()) {

@@ -343,9 +343,9 @@ describe("wiki-worker — happy path", () => {
     expect(execOpts.maxBuffer).toBeGreaterThanOrEqual(64 * 1024 * 1024);
   });
 
-  it("skips claude -p when the sidecar offset already covers every row", async () => {
-    mkFetch(undefined, 1, false, 5);
-    readStateMock.mockReturnValue({ lastSummaryAt: 0, lastSummaryCount: 5, totalCount: 5 });
+  it("skips claude -p when the resumed offset already covers every row", async () => {
+    // Existing summary (offset 12) present + only 5 rows → nothing new to add.
+    mkFetch(undefined, 1, true, 5);
     await runWorker();
     expect(execFileSyncMock).not.toHaveBeenCalled();
     expect(uploadSummaryMock).not.toHaveBeenCalled();
