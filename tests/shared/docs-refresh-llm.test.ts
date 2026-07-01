@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({
   execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
 }));
 
-import { makeClaudeGenerate, unwrapModelOutput } from "../../src/docs/refresh-llm.js";
+import { makeClaudeGenerate, resolveDocLlmSpec, unwrapModelOutput } from "../../src/docs/refresh-llm.js";
 import type { RefreshContext } from "../../src/docs/index.js";
 
 const ctx: RefreshContext = {
@@ -20,6 +20,40 @@ const ctx: RefreshContext = {
 };
 
 beforeEach(() => execFileSyncMock.mockReset());
+
+describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
+  it("defaults to claude — a `-p <prompt>` invocation (unchanged behavior)", () => {
+    const spec = resolveDocLlmSpec({});
+    expect(spec.label).toBe("claude");
+    expect(spec.bin).toBe("claude");
+    const inv = spec.build("/usr/bin/claude", "PROMPT");
+    expect(inv.file).toBe("/usr/bin/claude");
+    expect(inv.args.slice(0, 2)).toEqual(["-p", "PROMPT"]);
+  });
+
+  it("HIVEMIND_DOCS_LLM_AGENT=codex → `codex exec … <prompt>` (prompt trailing)", () => {
+    const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "codex" });
+    expect(spec.bin).toBe("codex");
+    const inv = spec.build("/usr/bin/codex", "PROMPT");
+    expect(inv.args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "PROMPT"]);
+  });
+
+  it("HIVEMIND_DOCS_LLM_BIN (+FLAGS) → a fully custom CLI, prompt as the last arg", () => {
+    const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_BIN: "my-llm", HIVEMIND_DOCS_LLM_FLAGS: "run,--json" });
+    expect(spec.bin).toBe("my-llm");
+    const inv = spec.build("my-llm", "PROMPT");
+    expect(inv.args).toEqual(["run", "--json", "PROMPT"]);
+  });
+
+  it("the custom escape hatch beats a named agent when both are set", () => {
+    const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_BIN: "x", HIVEMIND_DOCS_LLM_AGENT: "codex" });
+    expect(spec.label).toBe("custom:x");
+  });
+
+  it("throws a helpful error on an unknown agent", () => {
+    expect(() => resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "gpt5" })).toThrow(/Unknown HIVEMIND_DOCS_LLM_AGENT="gpt5"/);
+  });
+});
 
 describe("makeClaudeGenerate", () => {
   it("returns the model's stdout, trimmed", async () => {

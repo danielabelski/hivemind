@@ -47,7 +47,7 @@ import {
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
-import { makeClaudeGenerate, makeClaudeGenerateDoc } from "../docs/refresh-llm.js";
+import { makeHostGenerate, makeHostGenerateDoc } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
@@ -415,7 +415,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       repoRoot: cwd,
       impacted,
       docsById,
-      generate: makeClaudeGenerate(),
+      generate: makeHostGenerate(),
       agent: cfg.userName,
       pluginVersion,
     });
@@ -476,7 +476,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const report = await generateDocs({
       query, tableName, snap, repoRoot: cwd, project, scope, include, exclude,
       existing, force, limit, concurrency,
-      generate: makeClaudeGenerateDoc(), agent: cfg.userName, pluginVersion,
+      generate: makeHostGenerateDoc(), agent: cfg.userName, pluginVersion,
     });
     console.log(`Generated ${report.created}, skipped ${report.skipped}, failed ${report.failed} (of ${report.targets} targets).`);
     for (const o of report.outcomes) {

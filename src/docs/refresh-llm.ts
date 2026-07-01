@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { buildClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
+import { buildClaudeInvocation, buildTrailingPromptInvocation, type ClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { buildRefreshPrompt, type GenerateFn } from "./refresh.js";
 import { buildGeneratePrompt, type GenerateDocFn } from "./generate.js";
@@ -31,9 +31,54 @@ export function unwrapModelOutput(raw: string): string {
   return fence ? fence[1].trim() : text;
 }
 
-/** Run a single prompt through the host `claude` CLI and return the unwrapped output. */
-export function runClaudePrompt(bin: string, prompt: string, timeoutMs = 120_000): string {
-  const inv = buildClaudeInvocation(bin, prompt);
+/**
+ * Which host CLI rewrites/authors docs. The auto-refresh runs from a host
+ * agent's post-commit hook, so `claude -p` is wrong on a codex/cursor/… box.
+ * A spec names the CLI to resolve on PATH and how to shape its invocation.
+ */
+export interface DocLlmSpec {
+  label: string;
+  bin: string;
+  build: (bin: string, prompt: string) => ClaudeInvocation;
+}
+
+const REGISTRY: Record<string, DocLlmSpec> = {
+  claude: { label: "claude", bin: "claude", build: (b, p) => buildClaudeInvocation(b, p) },
+  codex: {
+    label: "codex",
+    bin: "codex",
+    build: (b, p) => buildTrailingPromptInvocation(b, ["exec", "--dangerously-bypass-approvals-and-sandbox"], p),
+  },
+};
+
+/**
+ * Resolve the doc-LLM spec from the environment:
+ *   - `HIVEMIND_DOCS_LLM_BIN` (+ optional `HIVEMIND_DOCS_LLM_FLAGS`, comma-sep)
+ *     → a fully custom CLI (prompt appended as the trailing arg). Escape hatch
+ *     for any agent not in the registry.
+ *   - `HIVEMIND_DOCS_LLM_AGENT` = claude | codex → a named registry entry.
+ *   - default → claude (byte-identical to the previous behavior).
+ */
+export function resolveDocLlmSpec(env: NodeJS.ProcessEnv = process.env): DocLlmSpec {
+  const customBin = env.HIVEMIND_DOCS_LLM_BIN;
+  if (customBin && customBin.trim() !== "") {
+    const flags = (env.HIVEMIND_DOCS_LLM_FLAGS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    return { label: `custom:${customBin}`, bin: customBin, build: (b, p) => buildTrailingPromptInvocation(b, flags, p) };
+  }
+  const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? "claude").toLowerCase();
+  const spec = REGISTRY[agent];
+  if (!spec) {
+    throw new Error(
+      `Unknown HIVEMIND_DOCS_LLM_AGENT="${agent}". Known: ${Object.keys(REGISTRY).join(", ")}. ` +
+        `For any other CLI set HIVEMIND_DOCS_LLM_BIN (and HIVEMIND_DOCS_LLM_FLAGS).`,
+    );
+  }
+  return spec;
+}
+
+/** Run a prompt through a resolved host-LLM spec, returning unwrapped output. */
+export function runHostPrompt(spec: DocLlmSpec, bin: string, prompt: string, timeoutMs = 120_000): string {
+  const inv = spec.build(bin, prompt);
   const out = execFileSync(inv.file, inv.args, {
     ...inv.options,
     encoding: "utf-8",
@@ -41,6 +86,25 @@ export function runClaudePrompt(bin: string, prompt: string, timeoutMs = 120_000
     env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
   });
   return unwrapModelOutput((out ?? "").toString());
+}
+
+/** Doc REFRESH generator backed by the resolved host agent (claude/codex/custom). */
+export function makeHostGenerate(timeoutMs = 120_000, env: NodeJS.ProcessEnv = process.env): GenerateFn {
+  const spec = resolveDocLlmSpec(env);
+  const bin = resolveCliBin(spec.bin);
+  return async (ctx) => runHostPrompt(spec, bin, buildRefreshPrompt(ctx), timeoutMs);
+}
+
+/** Fresh doc GENERATION generator backed by the resolved host agent. */
+export function makeHostGenerateDoc(timeoutMs = 120_000, env: NodeJS.ProcessEnv = process.env): GenerateDocFn {
+  const spec = resolveDocLlmSpec(env);
+  const bin = resolveCliBin(spec.bin);
+  return async (input) => runHostPrompt(spec, bin, buildGeneratePrompt(input), timeoutMs);
+}
+
+/** Run a single prompt through the host `claude` CLI and return the unwrapped output. */
+export function runClaudePrompt(bin: string, prompt: string, timeoutMs = 120_000): string {
+  return runHostPrompt(REGISTRY.claude, bin, prompt, timeoutMs);
 }
 
 /** Resolve the claude binary once (PATH lookup), with the usual fallback. */
