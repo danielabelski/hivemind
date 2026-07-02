@@ -2,9 +2,10 @@
  * Hivemind MCP server — exposes shared org memory as MCP tools.
  *
  * Tools:
- *   hivemind_search  — keyword/regex search across summaries + sessions
- *   hivemind_read    — read full content of a specific memory path
- *   hivemind_index   — list summaries with their dates and descriptions
+ *   hivemind_search       — keyword/regex search across summaries + sessions
+ *   hivemind_docs_search  — hybrid semantic/lexical search over per-file code docs
+ *   hivemind_read         — read full content of a specific memory path
+ *   hivemind_index        — list summaries with their dates and descriptions
  *
  * Transport: stdio. Spawned as a subprocess by the consuming MCP client
  * (Hermes today; reused by any future MCP-aware agent).
@@ -21,13 +22,15 @@ import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
-import { searchDeeplakeTables, buildGrepSearchOptions, normalizeContent, TRUNCATION_NOTICE, type GrepMatchParams } from "../shell/grep-core.js";
+import { searchDeeplakeTables, searchDocs, buildGrepSearchOptions, normalizeContent, TRUNCATION_NOTICE, type GrepMatchParams } from "../shell/grep-core.js";
+import { makeQueryEmbedder } from "../docs/embed.js";
 import { getVersion } from "../cli/version.js";
 
 interface ServerContext {
   api: DeeplakeApi;
   memoryTable: string;
   sessionsTable: string;
+  docsTable: string;
 }
 
 function getContext(): ServerContext | { error: string } {
@@ -40,7 +43,7 @@ function getContext(): ServerContext | { error: string } {
     return { error: "Hivemind config could not be loaded — credentials present but invalid." };
   }
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-  return { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName };
+  return { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName, docsTable: config.docsTableName };
 }
 
 function errorResult(text: string): { content: Array<{ type: "text"; text: string }> } {
@@ -104,6 +107,41 @@ server.registerTool(
       const msg = err instanceof Error ? err.message : String(err);
       if (isMissingTableError(msg)) return errorResult(`No matches for "${query}". ${FRESH_ORG_HINT}`);
       return errorResult(`Search failed: ${msg}`);
+    }
+  },
+);
+
+server.registerTool(
+  "hivemind_docs_search",
+  {
+    description: "Search the per-file CODE documentation (kept fresh on commits) by meaning or keyword. Hybrid semantic + lexical. Use for 'where is X handled / how does Y work / which file does Z' about the current codebase — returns the most relevant source files with a one-line summary. Different from hivemind_search (that's past sessions/conversations; this is code docs).",
+    inputSchema: {
+      query: z.string().describe("Natural-language question or keywords about the codebase."),
+      limit: z.number().int().min(1).max(50).optional().describe("Maximum docs to return (default 10)."),
+    },
+  },
+  async ({ query, limit }: { query: string; limit?: number }) => {
+    const ctx = getContext();
+    if ("error" in ctx) return errorResult(ctx.error);
+
+    const params: GrepMatchParams = {
+      pattern: query, ignoreCase: true, wordMatch: false, filesOnly: false,
+      countOnly: false, lineNumber: false, invertMatch: false, fixedString: true,
+    };
+    const opts = buildGrepSearchOptions(params, "/");
+    opts.limit = limit ?? 10;
+    // Same rail as memory search: semantic when embeddings are on, else lexical.
+    opts.queryEmbedding = await makeQueryEmbedder()(query);
+
+    try {
+      const rows = await searchDocs((sql) => ctx.api.query(sql), ctx.docsTable, opts);
+      if (rows.length === 0) return errorResult(`No docs match "${query}".`);
+      const lines = rows.map(r => `[${r.path}]\n${r.content.slice(0, 600)}`);
+      return { content: [{ type: "text", text: lines.join("\n\n---\n\n") }] };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isMissingTableError(msg)) return errorResult(`No docs match "${query}". ${FRESH_ORG_HINT}`);
+      return errorResult(`Docs search failed: ${msg}`);
     }
   },
 );

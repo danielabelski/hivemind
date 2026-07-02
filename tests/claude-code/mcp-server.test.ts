@@ -87,10 +87,10 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("MCP server — registration shape", () => {
-  it("registers exactly the three hivemind tools, named and described", async () => {
+  it("registers exactly the hivemind tools, named and described", async () => {
     await importServer();
     expect(Array.from(registeredTools.keys()).sort()).toEqual([
-      "hivemind_index", "hivemind_read", "hivemind_search",
+      "hivemind_docs_search", "hivemind_index", "hivemind_read", "hivemind_search",
     ]);
     for (const tool of registeredTools.values()) {
       expect(typeof tool.config.description).toBe("string");
