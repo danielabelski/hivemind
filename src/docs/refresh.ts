@@ -20,6 +20,7 @@ import { buildAnchor, readSymbolSource } from "./anchors.js";
 import { gateDocEdit, type GateResult } from "./gate.js";
 import { runPool, withRateLimitRetry } from "./pool.js";
 import { archiveDoc, setDoc } from "./write.js";
+import type { DocEmbedder } from "./embed.js";
 import type { DocAnchor, DocRow, QueryFn } from "./read.js";
 import type { ImpactedDoc, StaleReason } from "./impact.js";
 import type { GraphNode, GraphSnapshot } from "../graph/types.js";
@@ -73,6 +74,8 @@ export interface RefreshArgs {
   maxChangedLines?: number;
   /** Max docs rewritten in parallel. Default 4. */
   concurrency?: number;
+  /** Optional embedder to refresh the doc search vector (best-effort). */
+  embed?: DocEmbedder;
 }
 
 /** Build the prompt for one doc refresh — bounded-edit, freshness-focused. */
@@ -213,6 +216,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       return;
     }
 
+    const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
     const res = await setDoc(args.query, args.tableName, {
       doc_id: doc.doc_id,
       path: doc.path,
@@ -222,6 +226,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       project: doc.project,
       agent: args.agent ?? "docs-refresh",
       plugin_version: args.pluginVersion,
+      content_embedding,
     });
     outcomes.push({ doc_id: imp.doc_id, status: "refreshed", version: res.version });
   });

@@ -19,6 +19,7 @@
 import { buildAnchor, readSymbolSource } from "./anchors.js";
 import { runPool } from "./pool.js";
 import { upsertDoc } from "./write.js";
+import type { DocEmbedder } from "./embed.js";
 import type { DocAnchor, QueryFn } from "./read.js";
 import type { GraphNode, GraphSnapshot } from "../graph/types.js";
 
@@ -222,6 +223,8 @@ export interface GenerateArgs {
   batchSize?: number;
   /** Batched generator (documents K files at once). Falls back to `generate`. */
   batchGenerate?: BatchGenerateFn;
+  /** Optional embedder for the doc search vector (best-effort, null-safe). */
+  embed?: DocEmbedder;
   agent?: string;
   pluginVersion?: string;
 }
@@ -278,6 +281,8 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
       return;
     }
     try {
+      // Best-effort search vector; null → NULL column, never blocks the write.
+      const content_embedding = args.embed ? (await args.embed(content)) ?? undefined : undefined;
       await upsertDoc(args.query, args.tableName, {
         doc_id: docId,
         path: defaultVfsPath(project, docId),
@@ -287,6 +292,7 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
         project,
         agent: args.agent ?? "docs-generate",
         plugin_version: args.pluginVersion,
+        content_embedding,
       });
       outcomes.push({ doc_id: docId, status: "created" });
     } catch (err) {

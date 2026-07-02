@@ -21,6 +21,7 @@
 
 import { randomUUID } from "node:crypto";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
+import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import type { DocAnchor, DocRow, DocTier, QueryFn } from "./read.js";
 import { getDocLatest } from "./read.js";
 
@@ -41,6 +42,8 @@ export interface InsertDocInput {
   agent?: string;
   /** Plugin version that produced the write. Empty string lands the default. */
   plugin_version?: string;
+  /** Optional precomputed nomic embedding of `content` (search vector). */
+  content_embedding?: number[];
 }
 
 export interface SetDocInput {
@@ -60,6 +63,8 @@ export interface SetDocInput {
   status?: "active" | "archived";
   agent?: string;
   plugin_version?: string;
+  /** Optional precomputed nomic embedding of `content` (search vector). */
+  content_embedding?: number[];
 }
 
 export interface EditDocInput {
@@ -79,6 +84,8 @@ export interface EditDocInput {
   project?: string;
   agent?: string;
   plugin_version?: string;
+  /** Optional precomputed nomic embedding of `content` (search vector). */
+  content_embedding?: number[];
 }
 
 export interface WriteResult {
@@ -128,7 +135,7 @@ export async function insertDoc(
   const sql =
     `INSERT INTO "${safe}" ` +
     `(id, doc_id, path, content, anchors, tier, status, project, version, ` +
-    `created_at, updated_at, agent, plugin_version) ` +
+    `created_at, updated_at, agent, plugin_version, content_embedding) ` +
     `VALUES (` +
     `'${sqlStr(rowId)}', ` +
     `'${sqlStr(input.doc_id)}', ` +
@@ -142,7 +149,8 @@ export async function insertDoc(
     `'${sqlStr(now)}', ` +
     `'${sqlStr(now)}', ` +
     `'${sqlStr(input.agent ?? "manual")}', ` +
-    `'${sqlStr(input.plugin_version ?? "")}'` +
+    `'${sqlStr(input.plugin_version ?? "")}', ` +
+    `${embeddingSqlLiteral(input.content_embedding)}` +
     `)`;
   await query(sql);
   return { doc_id: input.doc_id, version: 1 };
@@ -244,13 +252,14 @@ export async function upsertDoc(
       const sql =
         `INSERT INTO "${safe}" ` +
         `(id, doc_id, path, content, anchors, tier, status, project, version, ` +
-        `created_at, updated_at, agent, plugin_version) ` +
+        `created_at, updated_at, agent, plugin_version, content_embedding) ` +
         `VALUES (` +
         `'${sqlStr(id)}', '${sqlStr(input.doc_id)}', '${sqlStr(input.path)}', ` +
         `E'${sqlStr(input.content)}', E'${sqlStr(anchors)}', '${sqlStr(tier)}', ` +
         `'active', '${sqlStr(input.project ?? "")}', 1, ` +
         `'${sqlStr(now)}', '${sqlStr(now)}', ` +
-        `'${sqlStr(input.agent ?? "manual")}', '${sqlStr(input.plugin_version ?? "")}'` +
+        `'${sqlStr(input.agent ?? "manual")}', '${sqlStr(input.plugin_version ?? "")}', ` +
+        `${embeddingSqlLiteral(input.content_embedding)}` +
         `)`;
       await query(sql);
       return { doc_id: input.doc_id, version: 1 };
@@ -308,6 +317,7 @@ export async function setDoc(
       project: input.project,
       agent: input.agent,
       plugin_version: input.plugin_version,
+      content_embedding: input.content_embedding,
     });
   }
   return updateInPlace(query, tableName, previous, {
@@ -320,6 +330,7 @@ export async function setDoc(
     project: input.project,
     agent: input.agent,
     plugin_version: input.plugin_version,
+    content_embedding: input.content_embedding,
   });
 }
 
@@ -382,6 +393,9 @@ async function updateInPlace(
     `tier = '${sqlStr(tier)}', ` +
     `status = '${sqlStr(status)}', ` +
     `project = '${sqlStr(project)}', ` +
+    // Only rewrite the search vector when a fresh one is supplied — a
+    // status-only edit must NOT null out the existing embedding.
+    `${next.content_embedding !== undefined ? `content_embedding = ${embeddingSqlLiteral(next.content_embedding)}, ` : ""}` +
     `version = ${nextVersion}, ` +
     `updated_at = '${sqlStr(now)}', ` +
     `agent = '${sqlStr(next.agent ?? "manual")}', ` +

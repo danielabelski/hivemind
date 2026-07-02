@@ -205,6 +205,10 @@ export const DOCS_COLUMNS: readonly ColumnDef[] = Object.freeze([
   { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
   { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  // Semantic-search vector over `content` (nomic, DOC_PREFIX). Nullable/empty
+  // when embeddings are off or not yet backfilled — `docs/find/` guards with
+  // ARRAY_LENGTH(...) > 0, exactly like grep-core does for summaries.
+  { name: "content_embedding", sql: "FLOAT4[]" },
 ]);
 
 // ── Module-load lint ────────────────────────────────────────────────────────
