@@ -49,6 +49,8 @@ import {
 } from "../docs/index.js";
 import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
+import { makeDocEmbedder } from "../docs/embed.js";
+import { backfillDocEmbeddings } from "../docs/backfill.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 
@@ -71,6 +73,9 @@ Usage:
                          [--exclude <glob>] [--limit N] [--concurrency N]
                          [--batch N] [--force] [--dry-run]
       Batches 5 files per LLM call by default (~2.5x faster); --batch 1 to opt out.
+  hivemind docs reindex
+      Backfill semantic-search vectors for docs that lack them (no LLM, embed
+      daemon only). Run once after enabling embeddings on an existing corpus.
       Auto-author docs for the codebase from the AST graph (which already skips
       .gitignored / non-code files). Default scope=file (one doc per file,
       anchored to its symbols). Skips files that already have a doc unless
@@ -420,6 +425,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
         impacted,
         docsById,
         generate: makeHostGenerate(),
+        embed: makeDocEmbedder(),
         agent: cfg.userName,
         pluginVersion,
       });
@@ -448,6 +454,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
         include: changed,
         existing,
         generate: makeHostGenerateDoc(),
+        embed: makeDocEmbedder(),
         agent: cfg.userName,
         pluginVersion,
       });
@@ -457,6 +464,20 @@ export async function runDocsCommand(args: string[]): Promise<void> {
           if (o.status === "created") console.log(`  created ${o.doc_id}`);
         }
       }
+    }
+    return;
+  }
+
+  if (sub === "reindex") {
+    // Backfill content_embedding for docs missing it (no LLM — embed daemon only).
+    if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
+    try {
+      await api.ensureDocsTable(tableName);
+      const report = await backfillDocEmbeddings(query, tableName, makeDocEmbedder());
+      console.log(`Reindexed: ${report.embedded} embedded (of ${report.scanned} active docs; ${report.skipped} already had a vector or skipped).`);
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+      console.log("(no docs table yet — nothing to reindex)");
     }
     return;
   }
@@ -517,6 +538,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       generate: makeHostGenerateDoc(),
       batchSize,
       batchGenerate: batchSize > 1 ? makeHostBatchGenerateDoc() : undefined,
+      embed: makeDocEmbedder(),
       agent: cfg.userName, pluginVersion,
     });
     console.log(`Generated ${report.created}, skipped ${report.skipped}, failed ${report.failed} (of ${report.targets} targets).`);

@@ -80,3 +80,48 @@ describe("handleDocsVfs", () => {
     expect(r.kind === "not-found" && r.message).toContain("No such file");
   });
 });
+
+describe("handleDocsVfs — find/ search route", () => {
+  const hitRows = [
+    { path: "src/auth.ts", content: "# src/auth.ts\nHandles login and tokens." },
+    { path: "src/session.ts", content: "# src/session.ts\nSession lifecycle." },
+  ];
+
+  it("empty query → usage message, no SQL", async () => {
+    const query = vi.fn(async () => []);
+    const r = await handleDocsVfs("find", query, TBL);
+    expect(r.kind).toBe("ok");
+    expect(r.kind === "ok" && r.body).toContain("Usage:");
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("lexical (no embedder): lists ranked docs, marks (keyword)", async () => {
+    const query = vi.fn(async (_sql: string) => hitRows);
+    const r = await handleDocsVfs("find/login token", query, TBL);
+    expect(r.kind).toBe("ok");
+    const body = r.kind === "ok" ? r.body : "";
+    expect(body).toContain('2 doc(s) match "login token" (keyword)');
+    expect(body).toContain("## src/auth.ts");
+    expect(body).toContain("## src/session.ts");
+    // searched with an ILIKE over content, no cosine (no embedding provided)
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toContain("ILIKE");
+    expect(sql).not.toContain("<#>");
+  });
+
+  it("semantic (embedder returns a vector): marks (semantic + keyword) and runs cosine", async () => {
+    const query = vi.fn(async (_sql: string) => hitRows);
+    const embedQuery = vi.fn(async () => [0.1, 0.2, 0.3]);
+    const r = await handleDocsVfs("find/where are tokens minted", query, TBL, { embedQuery });
+    expect(embedQuery).toHaveBeenCalledOnce();
+    const body = r.kind === "ok" ? r.body : "";
+    expect(body).toContain("(semantic + keyword)");
+    expect((query.mock.calls[0][0] as string)).toContain("content_embedding <#>");
+  });
+
+  it("no matches → friendly empty message", async () => {
+    const query = vi.fn(async () => []);
+    const r = await handleDocsVfs("find/nonexistent thing", query, TBL);
+    expect(r.kind === "ok" && r.body).toContain('No docs match "nonexistent thing"');
+  });
+});

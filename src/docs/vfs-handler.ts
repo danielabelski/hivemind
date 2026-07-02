@@ -21,18 +21,51 @@
 
 import { listDocMeta, listDocsByIds, getDocLatest, type QueryFn } from "./read.js";
 import { buildDocsIndex, dirOf, firstDocLine, type DocMeta } from "./index-render.js";
+import { searchDocs, type SearchOptions } from "../shell/grep-core.js";
+import { sqlLike } from "../utils/sql.js";
+import type { DocEmbedder } from "./embed.js";
 
 export type DocsVfsResult =
   | { kind: "ok"; body: string }
   | { kind: "not-found"; message: string };
+
+export interface DocsVfsOptions {
+  /** Query embedder (kind='query') for semantic `find/`. Absent → lexical only. */
+  embedQuery?: DocEmbedder;
+}
 
 /** Resolve a `<memory>/docs/` subpath to rendered text from the docs table. */
 export async function handleDocsVfs(
   subpath: string,
   query: QueryFn,
   tableName: string,
+  opts: DocsVfsOptions = {},
 ): Promise<DocsVfsResult> {
   const path = subpath.replace(/^\/+/, "").replace(/\/+$/, "");
+
+  // `find/<query>` — hybrid semantic+lexical search over doc content. Checked
+  // BEFORE the directory/leaf resolution so `find` is never treated as a dir.
+  if (path === "find" || path.startsWith("find/")) {
+    const q = path === "find" ? "" : path.slice("find/".length).trim();
+    if (q === "") {
+      return { kind: "ok", body: "Usage: cat <memory>/docs/find/<query> — search docs by meaning/keyword." };
+    }
+    const queryEmbedding = opts.embedQuery ? await opts.embedQuery(q) : null;
+    const searchOpts: SearchOptions = {
+      pathFilter: "",
+      contentScanOnly: false,
+      likeOp: "ILIKE",
+      escapedPattern: sqlLike(q),
+      queryEmbedding,
+      limit: 20,
+    };
+    const hits = await searchDocs(query, tableName, searchOpts);
+    if (hits.length === 0) return { kind: "ok", body: `No docs match "${q}".` };
+    const lines = [`${hits.length} doc(s) match "${q}"${queryEmbedding ? " (semantic + keyword)" : " (keyword)"}:`, ""];
+    for (const h of hits) lines.push(`## ${h.path}\n${firstDocLine(h.content)}`);
+    lines.push("", `Open one with: cat <memory>/docs/<path>.md`);
+    return { kind: "ok", body: lines.join("\n") };
+  }
 
   // Decide whether this is a directory index or a leaf doc.
   let dir: string | null = null;

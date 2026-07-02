@@ -10,7 +10,49 @@ import {
   refineGrepMatches,
   searchDeeplakeTables,
   grepBothTables,
+  searchDocs,
 } from "../../src/shell/grep-core.js";
+
+// ── searchDocs (per-file docs search — the docs/find backend) ─────────────────
+
+describe("searchDocs", () => {
+  const baseOpts = { pathFilter: "", contentScanOnly: false, likeOp: "ILIKE" as const, escapedPattern: "auth", limit: 20 };
+
+  it("hybrid: UNIONs a semantic (content_embedding <#>) + lexical query, active-only", async () => {
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => { calls.push(sql); return [{ path: "a.ts", content: "# A" }]; });
+    const rows = await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: [0.1, 0.2, 0.3] });
+    expect(calls).toHaveLength(1);
+    const sql = calls[0];
+    expect(sql).toContain("content_embedding <#> ");              // semantic branch
+    expect(sql).toContain("ARRAY_LENGTH(content_embedding, 1) > 0"); // empty-vector guard
+    expect(sql).toContain("status = 'active'");                    // active only
+    expect(sql).toContain("UNION ALL");                            // + lexical
+    expect(sql).toContain("ILIKE");
+    expect(rows).toEqual([{ path: "a.ts", content: "# A" }]);
+  });
+
+  it("lexical-only when no query embedding: content ILIKE, no cosine operator", async () => {
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => { calls.push(sql); return []; });
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: null });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toContain("<#>");
+    expect(calls[0]).toContain("status = 'active'");
+    expect(calls[0]).toContain("ILIKE");
+  });
+
+  it("dedups results by path (semantic winner kept over lexical dup)", async () => {
+    const query = vi.fn(async () => [
+      { path: "dup.ts", content: "semantic" },
+      { path: "dup.ts", content: "lexical" },
+      { path: "b.ts", content: "b" },
+    ]);
+    const rows = await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: [0.1] });
+    expect(rows.map(r => r.path)).toEqual(["dup.ts", "b.ts"]);
+    expect(rows[0].content).toBe("semantic"); // first occurrence wins
+  });
+});
 
 // ── normalizeContent ────────────────────────────────────────────────────────
 

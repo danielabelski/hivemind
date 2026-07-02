@@ -14,6 +14,7 @@ import { isDirectRun } from "../utils/direct-run.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
 import { handleGraphVfs } from "../graph/vfs-handler.js";
 import { handleDocsVfs } from "../docs/vfs-handler.js";
+import { makeQueryEmbedder } from "../docs/embed.js";
 import { executeCompiledBashCommand } from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -456,7 +457,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/")) && !virtualPath.endsWith("/")) {
       const subpath = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
       logFn(`docs vfs: ${subpath || "(root)"}`);
-      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName);
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder() });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);

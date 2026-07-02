@@ -426,6 +426,72 @@ export async function searchDeeplakeTables(
   }));
 }
 
+/**
+ * Hybrid semantic+lexical search over the per-file docs table (`content` +
+ * `content_embedding`, `status='active'`). Mirrors {@link searchDeeplakeTables}
+ * for a single source, reusing the same primitives (float serialization,
+ * content filter, the `ARRAY_LENGTH(...) > 0` empty-vector guard, dedup-by-path)
+ * — so semantic scoring/ordering stays byte-identical to memory grep. Kept a
+ * SEPARATE entry point on purpose: docs must never leak into memory retrieval
+ * (see src/docs/vfs-handler.ts). `path` in the result is the doc's file id.
+ */
+export async function searchDocs(
+  query: (sql: string) => Promise<Record<string, unknown>[]>,
+  docsTable: string,
+  opts: SearchOptions,
+): Promise<ContentRow[]> {
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
+  const limit = opts.limit ?? 100;
+  const active = ` AND status = 'active'`;
+  const dedup = (rows: Record<string, unknown>[]): ContentRow[] => {
+    const seen = new Set<string>();
+    const out: ContentRow[] = [];
+    for (const row of rows) {
+      const p = String(row["path"]);
+      if (seen.has(p)) continue;
+      seen.add(p);
+      out.push({ path: p, content: String(row["content"] ?? "") });
+    }
+    return out;
+  };
+
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(limit, Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"));
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const filterPatternsForLex = contentScanOnly
+      ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
+      : [escapedPattern];
+    const lexFilter = buildContentFilter("content::text", likeOp, filterPatternsForLex);
+    const lexQuery = lexFilter
+      ? `SELECT doc_id AS path, content::text AS content, 1.0 AS score ` +
+        `FROM "${docsTable}" WHERE 1=1${pathFilter}${active}${lexFilter} LIMIT ${lexicalLimit}`
+      : null;
+    const semQuery =
+      `SELECT doc_id AS path, content::text AS content, (content_embedding <#> ${vecLit}) AS score ` +
+      `FROM "${docsTable}" WHERE ARRAY_LENGTH(content_embedding, 1) > 0${pathFilter}${active} ` +
+      `ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const parts = [semQuery];
+    if (lexQuery) parts.push(lexQuery);
+    const unionSql = parts.map(q => `(${q})`).join(" UNION ALL ");
+    const rows = await query(
+      `SELECT path, content, score FROM (${unionSql}) AS combined ORDER BY score DESC LIMIT ${semanticLimit + lexicalLimit}`,
+    );
+    return dedup(rows);
+  }
+
+  // Lexical-only (no query embedding available — daemon off / disabled).
+  const filterPatterns = contentScanOnly
+    ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
+    : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
+  const filter = buildContentFilter("content::text", likeOp, filterPatterns);
+  const rows = await query(
+    `SELECT doc_id AS path, content::text AS content ` +
+    `FROM "${docsTable}" WHERE 1=1${pathFilter}${active}${filter} LIMIT ${limit}`,
+  );
+  return dedup(rows);
+}
+
 function serializeFloat4Array(vec: number[]): string {
   const parts: string[] = [];
   for (const v of vec) {
