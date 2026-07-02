@@ -22,6 +22,8 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { tryGraphRead } from "../../graph/graph-command.js";
+import { handleDocsVfs } from "../../docs/vfs-handler.js";
+import { makeQueryEmbedder } from "../../docs/embed.js";
 import { executeCompiledBashCommand } from "../bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -237,6 +239,19 @@ export async function processCodexPreToolUse(
           virtualPath = wcMatch[1];
           lineLimit = -1;
         }
+      }
+
+      // Docs VFS dispatch — a cat of `/docs/*` (browse or find/) is answered by
+      // the docs table via handleDocsVfs, NOT the generic memory read below
+      // (docs live in their own table). Mirrors the graph dispatch above; async
+      // + config-backed. Same route Claude's pre-tool-use uses.
+      if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/"))) {
+        logFn(`docs vfs intercept: ${virtualPath}`);
+        const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
+        const sub = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
+        const r = await handleDocsVfs(sub, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder() });
+        const body = r.kind === "ok" ? r.body : `${virtualPath}: No such file or directory`;
+        return { action: "block", output: body, rewrittenCommand: rewritten };
       }
 
       if (virtualPath && !virtualPath.endsWith("/")) {
