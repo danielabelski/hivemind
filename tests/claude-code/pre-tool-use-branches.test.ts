@@ -214,7 +214,7 @@ describe("processPreToolUse: docs VFS routing", () => {
       { session_id: "s", tool_name: "Read", tool_input: { file_path: `${MEM_ABS}/docs/index.md` }, tool_use_id: "t" },
       { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn },
     );
-    expect(handleDocsVfsFn).toHaveBeenCalledWith("index.md", expect.any(Function), "hivemind_docs");
+    expect(handleDocsVfsFn).toHaveBeenCalledWith("index.md", expect.any(Function), "hivemind_docs", expect.anything());
     // Read must get a file_path-shaped decision (cache file), not a real command.
     expect(d?.file_path).toContain("docs/index.md");
     expect(d?.command).toBe("");
@@ -226,7 +226,7 @@ describe("processPreToolUse: docs VFS routing", () => {
       { session_id: "s", tool_name: "Read", tool_input: { file_path: `${MEM_ABS}/docs/src/graph/diff.ts.md` }, tool_use_id: "t" },
       { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn },
     );
-    expect(handleDocsVfsFn).toHaveBeenCalledWith("src/graph/diff.ts.md", expect.any(Function), "hivemind_docs");
+    expect(handleDocsVfsFn).toHaveBeenCalledWith("src/graph/diff.ts.md", expect.any(Function), "hivemind_docs", expect.anything());
   });
 
   it("routes a Bash cat of a docs path to a command-shaped allow decision", async () => {
@@ -235,7 +235,7 @@ describe("processPreToolUse: docs VFS routing", () => {
       { session_id: "s", tool_name: "Bash", tool_input: { command: "cat ~/.deeplake/memory/docs/index.md" }, tool_use_id: "t" },
       { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn, logFn: vi.fn() },
     );
-    expect(handleDocsVfsFn).toHaveBeenCalledWith("index.md", expect.any(Function), "hivemind_docs");
+    expect(handleDocsVfsFn).toHaveBeenCalledWith("index.md", expect.any(Function), "hivemind_docs", expect.anything());
     expect(d?.command).toContain("Docs Index");
   });
 });

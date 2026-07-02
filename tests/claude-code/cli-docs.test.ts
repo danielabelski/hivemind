@@ -33,7 +33,14 @@ vi.mock("../../src/graph/load-current.js", () => ({
   loadCurrentSnapshot: (...a: unknown[]) => loadCurrentSnapshotMock(...a),
 }));
 vi.mock("../../src/docs/refresh-llm.js", () => ({
-  makeClaudeGenerate: () => async () => "stub",
+  makeHostGenerate: () => async () => "stub",
+  makeHostGenerateDoc: () => async () => "stub",
+  makeHostBatchGenerateDoc: () => async () => new Map<string, string>(),
+}));
+// Hermetic: no embed daemon round-trips in unit tests.
+vi.mock("../../src/docs/embed.js", () => ({
+  makeDocEmbedder: () => async () => null,
+  makeQueryEmbedder: () => async () => null,
 }));
 
 import { runDocsCommand } from "../../src/commands/docs.js";
@@ -163,7 +170,8 @@ describe("hivemind docs archive", () => {
     queryMock.mockResolvedValueOnce([docRow({ version: 2 })]); // getDocLatest
     await run(["archive", "a.ts"]);
     const sqls = queryMock.mock.calls.map((c) => c[0] as string);
-    expect(sqls.some((s) => /INSERT INTO "hivemind_docs"/.test(s) && /archived/.test(s))).toBe(true);
+    // UPDATE-in-place (F1): archive flips status on the existing row, not a new INSERT.
+    expect(sqls.some((s) => /UPDATE "hivemind_docs" SET/.test(s) && /status = 'archived'/.test(s))).toBe(true);
     expect(logged.join()).toMatch(/Archived doc a\.ts → v3/);
   });
 });
@@ -211,9 +219,10 @@ describe("hivemind docs — anchored authoring + refresh over real files", () =>
     queryMock.mockResolvedValue([docRow({ doc_id: "f.ts", content: "old body", anchors: stale })]);
     await run(["refresh", "--cwd", dir]);
     expect(logged.join("\n")).toMatch(/Refreshed 1/);
-    const insert = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /INSERT INTO "hivemind_docs"/.test(s));
-    expect(insert).toBeDefined();
-    expect(insert!).toContain("stub"); // the generated body landed
+    // UPDATE-in-place (F1): the existing doc row is rewritten, not re-INSERTed.
+    const update = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /UPDATE "hivemind_docs" SET/.test(s));
+    expect(update).toBeDefined();
+    expect(update!).toContain("stub"); // the generated body landed
   });
 
   it("refresh prints a rejection outcome when the gate rejects (slow tier)", async () => {
