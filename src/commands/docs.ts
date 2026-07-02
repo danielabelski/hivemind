@@ -47,7 +47,7 @@ import {
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
-import { makeHostGenerate, makeHostGenerateDoc } from "../docs/refresh-llm.js";
+import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
@@ -141,7 +141,7 @@ function parseLimit(args: string[]): number {
   return n;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch"]);
 /** Flags that take NO value — they must not consume the following token. */
 const BOOLEAN_FLAGS = new Set(["--dry-run", "--force"]);
 
@@ -503,10 +503,14 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     }
 
     await api.ensureDocsTable(tableName);
+    const batchSize = Number(flagValue(args, "--batch") ?? "1");
     const report = await generateDocs({
       query, tableName, snap, repoRoot: cwd, project, scope, include, exclude,
       existing, force, limit, concurrency,
-      generate: makeHostGenerateDoc(), agent: cfg.userName, pluginVersion,
+      generate: makeHostGenerateDoc(),
+      batchSize,
+      batchGenerate: batchSize > 1 ? makeHostBatchGenerateDoc() : undefined,
+      agent: cfg.userName, pluginVersion,
     });
     console.log(`Generated ${report.created}, skipped ${report.skipped}, failed ${report.failed} (of ${report.targets} targets).`);
     for (const o of report.outcomes) {

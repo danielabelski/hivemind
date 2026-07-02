@@ -53,6 +53,19 @@ export interface GenDocInput {
 }
 export type GenerateDocFn = (input: GenDocInput) => Promise<string>;
 
+/**
+ * Batched generator: document K files in ONE host-LLM call and return a
+ * doc_id → markdown map. The per-file `claude -p` boot (~15s) dominates a single
+ * doc; batching amortizes it across K files (~3.7x faster measured). Anchors are
+ * still computed per file from the graph — only the prose is batched. Any file
+ * the model omits is simply absent from the map, so the caller falls back to a
+ * single-file call for it.
+ */
+export type BatchGenerateFn = (inputs: GenDocInput[]) => Promise<Map<string, string>>;
+
+/** Machine marker the model emits before each file's doc (robust to split). */
+const BATCH_MARKER_RE = /<<<DOC file=(.+?)>>>[ \t]*\n?/;
+
 /** Convert a glob (`*`, `**`, `?`) to an anchored RegExp over forward-slash paths. */
 export function globToRegExp(glob: string): RegExp {
   let re = "";
@@ -137,6 +150,59 @@ export function buildGeneratePrompt(input: GenDocInput): string {
   ].join("\n");
 }
 
+/** Render the symbols block for one file (shared with the batch prompt). */
+function renderSymbols(input: GenDocInput): string {
+  return input.symbols
+    .map((s) => `### ${s.id}\n${s.signature ? s.signature + "\n" : ""}\n\`\`\`\n${s.source}\n\`\`\``)
+    .join("\n\n") || "(none)";
+}
+
+/**
+ * Build ONE prompt documenting several files. The model must prefix each file's
+ * doc with an exact machine marker `<<<DOC file=PATH>>>` so the response splits
+ * back apart deterministically — see {@link parseBatchDocs}.
+ */
+export function buildBatchGeneratePrompt(inputs: GenDocInput[]): string {
+  const blocks = inputs.map((input) =>
+    [`<<<DOC file=${input.file}>>>`, `## File: ${input.file}`, "", "## Symbols", renderSymbols(input)].join("\n"),
+  );
+  return [
+    "You are writing concise internal documentation for MULTIPLE source files.",
+    "For EACH file below, output its doc PREFIXED by a line EXACTLY of the form:",
+    "<<<DOC file=RELATIVE/PATH.ts>>>",
+    "using the exact path shown for that file, then the markdown doc (what the file",
+    "is for + one short line per key symbol, under ~1200 characters).",
+    "Output ONLY these marker+doc sections, in order. No preamble, no outer code fence.",
+    "",
+    "=== FILES ===",
+    "",
+    blocks.join("\n\n----------\n\n"),
+  ].join("\n");
+}
+
+/**
+ * Split a batched response into doc_id → markdown. Keys by the marker path,
+ * matched against the requested `inputs` (so only real files map back). A file
+ * whose marker is missing is simply absent — the caller regenerates it singly.
+ */
+export function parseBatchDocs(response: string, inputs: GenDocInput[]): Map<string, string> {
+  const wanted = new Map(inputs.map((i) => [i.file, i.doc_id]));
+  const out = new Map<string, string>();
+  const marker = new RegExp(BATCH_MARKER_RE.source, "g");
+  const matches = [...response.matchAll(marker)];
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    const file = m[1].trim();
+    const docId = wanted.get(file);
+    if (!docId) continue; // unknown/hallucinated path
+    const start = m.index! + m[0].length;
+    const end = i + 1 < matches.length ? matches[i + 1].index! : response.length;
+    const body = response.slice(start, end).trim();
+    if (body) out.set(docId, body);
+  }
+  return out;
+}
+
 export interface GenerateArgs {
   query: QueryFn;
   tableName: string;
@@ -152,6 +218,10 @@ export interface GenerateArgs {
   limit?: number;
   concurrency?: number;
   generate: GenerateDocFn;
+  /** When >1 with `batchGenerate`, document this many files per LLM call. */
+  batchSize?: number;
+  /** Batched generator (documents K files at once). Falls back to `generate`. */
+  batchGenerate?: BatchGenerateFn;
   agent?: string;
   pluginVersion?: string;
 }
@@ -181,8 +251,10 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
   if (args.limit !== undefined) targets = targets.slice(0, args.limit);
 
   const outcomes: GenOutcome[] = [];
-  await runPool(targets, args.concurrency ?? 4, async (t) => {
-    // Build the prompt context from current source; also pre-build anchors.
+
+  // Prep a target into its prompt input + per-file anchors (pure, no LLM).
+  // Returns null (and records a skip) when nothing can be anchored.
+  const prep = (t: GenTarget): { input: GenDocInput; anchors: DocAnchor[] } | null => {
     const symInput: GenDocInput["symbols"] = [];
     const anchors: DocAnchor[] = [];
     for (const n of t.symbols) {
@@ -193,41 +265,76 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
     }
     if (anchors.length === 0) {
       outcomes.push({ doc_id: t.doc_id, status: "skipped", reason: "no readable symbols to anchor" });
-      return;
+      return null;
     }
-    let content: string;
-    try {
-      content = await args.generate({ doc_id: t.doc_id, file: t.file, symbols: symInput });
-    } catch (err) {
-      outcomes.push({ doc_id: t.doc_id, status: "failed", reason: `generate failed: ${(err as Error).message}` });
-      return;
-    }
+    return { input: { doc_id: t.doc_id, file: t.file, symbols: symInput }, anchors };
+  };
+
+  // Persist one doc via the idempotent upsert (deterministic id = doc_id, so a
+  // retried write can never fork a duplicate row).
+  const writeDoc = async (docId: string, content: string, anchors: DocAnchor[]): Promise<void> => {
     if (content.trim() === "") {
-      outcomes.push({ doc_id: t.doc_id, status: "failed", reason: "empty content" });
+      outcomes.push({ doc_id: docId, status: "failed", reason: "empty content" });
       return;
     }
     try {
-      const write = {
-        doc_id: t.doc_id,
-        path: defaultVfsPath(project, t.doc_id),
+      await upsertDoc(args.query, args.tableName, {
+        doc_id: docId,
+        path: defaultVfsPath(project, docId),
         content,
         anchors,
-        tier: "fast" as const,
+        tier: "fast",
         project,
         agent: args.agent ?? "docs-generate",
         plugin_version: args.pluginVersion,
-      };
-      // Idempotent upsert keyed on the deterministic id = doc_id (DELETE-then-
-      // INSERT). Retrying a timed-out write can't fork a duplicate row — the
-      // retry deletes whatever landed and re-inserts exactly one. This replaced
-      // insertDocResilient, whose random-UUID INSERT + lag-prone read-back
-      // forked up to 4 rows per file under high-concurrency bulk generate.
-      await upsertDoc(args.query, args.tableName, write);
-      outcomes.push({ doc_id: t.doc_id, status: "created" });
+      });
+      outcomes.push({ doc_id: docId, status: "created" });
     } catch (err) {
-      outcomes.push({ doc_id: t.doc_id, status: "failed", reason: `write failed: ${(err as Error).message}` });
+      outcomes.push({ doc_id: docId, status: "failed", reason: `write failed: ${(err as Error).message}` });
     }
-  });
+  };
+
+  const genSingle = async (input: GenDocInput, anchors: DocAnchor[]): Promise<void> => {
+    let content: string;
+    try {
+      content = await args.generate(input);
+    } catch (err) {
+      outcomes.push({ doc_id: input.doc_id, status: "failed", reason: `generate failed: ${(err as Error).message}` });
+      return;
+    }
+    await writeDoc(input.doc_id, content, anchors);
+  };
+
+  const concurrency = args.concurrency ?? 4;
+  const batchSize = args.batchSize ?? 1;
+
+  if (batchSize > 1 && args.batchGenerate) {
+    // Batched: document `batchSize` files per LLM call (amortizes the per-call
+    // boot). Anchors stay per-file; any file the model omits from the batch
+    // response falls back to a single-file call so coverage is never lost.
+    const prepped = targets.map(prep).filter((p): p is { input: GenDocInput; anchors: DocAnchor[] } => p !== null);
+    const batches: Array<typeof prepped> = [];
+    for (let i = 0; i < prepped.length; i += batchSize) batches.push(prepped.slice(i, i + batchSize));
+    const batchGen = args.batchGenerate;
+    await runPool(batches, concurrency, async (batch) => {
+      let map: Map<string, string>;
+      try {
+        map = await batchGen(batch.map((b) => b.input));
+      } catch {
+        map = new Map(); // whole-batch failure → everyone falls back to single
+      }
+      for (const b of batch) {
+        const content = map.get(b.input.doc_id);
+        if (content && content.trim() !== "") await writeDoc(b.input.doc_id, content, b.anchors);
+        else await genSingle(b.input, b.anchors); // omitted by the model → single
+      }
+    });
+  } else {
+    await runPool(targets, concurrency, async (t) => {
+      const p = prep(t);
+      if (p) await genSingle(p.input, p.anchors);
+    });
+  }
 
   return {
     outcomes,

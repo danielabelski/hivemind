@@ -9,7 +9,8 @@ vi.mock("../../src/docs/stable-read.js", () => ({
 }));
 
 import { normalizeForHash, hashSource } from "../../src/docs/anchors.js";
-import { globToRegExp, selectTargets, generateDocs, DEFAULT_EXCLUDE_GLOBS } from "../../src/docs/generate.js";
+import { globToRegExp, selectTargets, generateDocs, DEFAULT_EXCLUDE_GLOBS, buildBatchGeneratePrompt, parseBatchDocs } from "../../src/docs/generate.js";
+import type { GenDocInput } from "../../src/docs/generate.js";
 import type { GraphNode, GraphSnapshot } from "../../src/graph/types.js";
 
 function node(id: string, file: string, loc: string, kind: GraphNode["kind"] = "function"): GraphNode {
@@ -148,5 +149,105 @@ describe("generateDocs", () => {
     });
     expect(report.failed).toBe(1);
     expect(report.outcomes[0].reason).toMatch(/LLM down/);
+  });
+});
+
+// ── batched generation (parser + prompt) ──────────────────────────────────────
+
+const bIn = (docId: string): GenDocInput => ({ doc_id: docId, file: docId, symbols: [{ id: `${docId}:f`, source: "x" }] });
+
+describe("buildBatchGeneratePrompt", () => {
+  it("emits an exact marker + File block for every input file", () => {
+    const p = buildBatchGeneratePrompt([bIn("src/a.ts"), bIn("src/b.ts")]);
+    expect(p).toContain("<<<DOC file=src/a.ts>>>");
+    expect(p).toContain("<<<DOC file=src/b.ts>>>");
+    expect(p).toContain("## File: src/a.ts");
+    expect(p).toContain("## File: src/b.ts");
+  });
+});
+
+describe("parseBatchDocs", () => {
+  const inputs = [bIn("src/a.ts"), bIn("src/b.ts"), bIn("src/c.ts")];
+
+  it("splits a marked response into doc_id -> content", () => {
+    const resp = [
+      "<<<DOC file=src/a.ts>>>", "# A", "does A",
+      "<<<DOC file=src/b.ts>>>", "# B", "does B",
+      "<<<DOC file=src/c.ts>>>", "# C",
+    ].join("\n");
+    const m = parseBatchDocs(resp, inputs);
+    expect(m.size).toBe(3);
+    expect(m.get("src/a.ts")).toBe("# A\ndoes A");
+    expect(m.get("src/b.ts")).toBe("# B\ndoes B");
+    expect(m.get("src/c.ts")).toBe("# C");
+  });
+
+  it("omits a file the model dropped (caller falls back to single)", () => {
+    const resp = "<<<DOC file=src/a.ts>>>\n# A\n<<<DOC file=src/c.ts>>>\n# C";
+    const m = parseBatchDocs(resp, inputs);
+    expect(m.has("src/b.ts")).toBe(false); // dropped → absent
+    expect([...m.keys()].sort()).toEqual(["src/a.ts", "src/c.ts"]);
+  });
+
+  it("ignores a hallucinated path not in the batch", () => {
+    const resp = "<<<DOC file=src/a.ts>>>\n# A\n<<<DOC file=totally/made-up.ts>>>\n# nope";
+    const m = parseBatchDocs(resp, inputs);
+    expect(m.size).toBe(1);
+    expect(m.get("src/a.ts")).toBe("# A");
+  });
+
+  it("drops an empty body", () => {
+    const resp = "<<<DOC file=src/a.ts>>>\n   \n<<<DOC file=src/b.ts>>>\n# B";
+    const m = parseBatchDocs(resp, inputs);
+    expect(m.has("src/a.ts")).toBe(false);
+    expect(m.get("src/b.ts")).toBe("# B");
+  });
+});
+
+// ── generateDocs BATCH path (fallback on omitted files) ───────────────────────
+
+describe("generateDocs — batch path", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "docs-batch-"));
+    writeFileSync(join(dir, "a.ts"), "export function foo() {\n  return 1;\n}\n");
+    writeFileSync(join(dir, "b.ts"), "export function bar() {\n  return 2;\n}\n");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const s = () => snap([
+    node("a.ts:foo:function", "a.ts", "L1-L3"),
+    node("b.ts:bar:function", "b.ts", "L1-L3"),
+  ]);
+
+  it("uses the batch generator, and falls back to single for files it omits", async () => {
+    const { query } = mockQuery([]);
+    // batch returns ONLY a.ts → b.ts must fall back to the single generator.
+    const batchGenerate = vi.fn(async (inputs: GenDocInput[]) => {
+      const m = new Map<string, string>();
+      for (const i of inputs) if (i.doc_id === "a.ts") m.set("a.ts", "# a batched");
+      return m;
+    });
+    const generate = vi.fn(async (i: GenDocInput) => `# ${i.doc_id} single`);
+    const report = await generateDocs({
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      existing: new Set(), generate, batchSize: 5, batchGenerate, concurrency: 1,
+    });
+    expect(report.created).toBe(2);                 // both landed
+    expect(batchGenerate).toHaveBeenCalledOnce();    // one batch call for both
+    expect(generate).toHaveBeenCalledOnce();         // only the omitted b.ts
+    expect(generate.mock.calls[0][0].doc_id).toBe("b.ts");
+  });
+
+  it("falls back to single for the whole batch when the batch call throws", async () => {
+    const { query } = mockQuery([]);
+    const batchGenerate = vi.fn(async () => { throw new Error("batch LLM down"); });
+    const generate = vi.fn(async (i: GenDocInput) => `# ${i.doc_id}`);
+    const report = await generateDocs({
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      existing: new Set(), generate, batchSize: 5, batchGenerate, concurrency: 1,
+    });
+    expect(report.created).toBe(2);
+    expect(generate).toHaveBeenCalledTimes(2); // both fell back
   });
 });

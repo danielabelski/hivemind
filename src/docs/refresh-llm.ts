@@ -16,7 +16,14 @@ import { execFileSync } from "node:child_process";
 import { buildClaudeInvocation, buildTrailingPromptInvocation, type ClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { buildRefreshPrompt, type GenerateFn } from "./refresh.js";
-import { buildGeneratePrompt, type GenerateDocFn } from "./generate.js";
+import {
+  buildGeneratePrompt,
+  buildBatchGeneratePrompt,
+  parseBatchDocs,
+  type GenerateDocFn,
+  type BatchGenerateFn,
+  type GenDocInput,
+} from "./generate.js";
 
 /**
  * Defensively unwrap the model's output. The prompt asks for raw markdown,
@@ -100,6 +107,20 @@ export function makeHostGenerateDoc(timeoutMs = 120_000, env: NodeJS.ProcessEnv 
   const spec = resolveDocLlmSpec(env);
   const bin = resolveCliBin(spec.bin);
   return async (input) => runHostPrompt(spec, bin, buildGeneratePrompt(input), timeoutMs);
+}
+
+/**
+ * BATCHED generation backed by the resolved host agent: one CLI call documents
+ * K files. Amortizes the ~15s per-call boot across the batch (~3.7x faster).
+ * A longer default timeout accounts for the larger prompt + K docs of output.
+ */
+export function makeHostBatchGenerateDoc(timeoutMs = 240_000, env: NodeJS.ProcessEnv = process.env): BatchGenerateFn {
+  const spec = resolveDocLlmSpec(env);
+  const bin = resolveCliBin(spec.bin);
+  return async (inputs: GenDocInput[]) => {
+    const raw = runHostPrompt(spec, bin, buildBatchGeneratePrompt(inputs), timeoutMs);
+    return parseBatchDocs(raw, inputs);
+  };
 }
 
 /** Run a single prompt through the host `claude` CLI and return the unwrapped output. */
