@@ -69,7 +69,8 @@ Usage:
       impacted docs without calling the LLM or writing anything.
   hivemind docs generate [--cwd <dir>] [--scope file|symbol] [--include <glob>]
                          [--exclude <glob>] [--limit N] [--concurrency N]
-                         [--force] [--dry-run]
+                         [--batch N] [--force] [--dry-run]
+      Batches 5 files per LLM call by default (~2.5x faster); --batch 1 to opt out.
       Auto-author docs for the codebase from the AST graph (which already skips
       .gitignored / non-code files). Default scope=file (one doc per file,
       anchored to its symbols). Skips files that already have a doc unless
@@ -503,7 +504,13 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     }
 
     await api.ensureDocsTable(tableName);
-    const batchSize = Number(flagValue(args, "--batch") ?? "1");
+    // Bulk generate writes under load need a longer client timeout than the 10s
+    // default, or writes abort mid-commit and drop files. Scope it to this
+    // command (not global reads); the user can still override via env.
+    if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
+    // Batch by default (5 files/call) — amortizes the per-call LLM boot ~2.5x.
+    // `--batch 1` opts out; larger batches trade a little quality for speed.
+    const batchSize = Number(flagValue(args, "--batch") ?? "5");
     const report = await generateDocs({
       query, tableName, snap, repoRoot: cwd, project, scope, include, exclude,
       existing, force, limit, concurrency,
