@@ -18,7 +18,7 @@
 
 import { buildAnchor, readSymbolSource } from "./anchors.js";
 import { runPool } from "./pool.js";
-import { insertDocResilient, setDoc } from "./write.js";
+import { upsertDoc } from "./write.js";
 import type { DocAnchor, QueryFn } from "./read.js";
 import type { GraphNode, GraphSnapshot } from "../graph/types.js";
 
@@ -181,7 +181,7 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
   if (args.limit !== undefined) targets = targets.slice(0, args.limit);
 
   const outcomes: GenOutcome[] = [];
-  await runPool(targets, args.concurrency ?? 6, async (t) => {
+  await runPool(targets, args.concurrency ?? 4, async (t) => {
     // Build the prompt context from current source; also pre-build anchors.
     const symInput: GenDocInput["symbols"] = [];
     const anchors: DocAnchor[] = [];
@@ -217,18 +217,12 @@ export async function generateDocs(args: GenerateArgs): Promise<GenReport> {
         agent: args.agent ?? "docs-generate",
         plugin_version: args.pluginVersion,
       };
-      // Fresh docs (the common bulk-generate case) go through insertDocResilient
-      // — a single INSERT, NOT setDoc's read-stability gate (~N reads). Under
-      // high concurrency the gate's read storm overloaded the backend and timed
-      // writes out. The resilient variant retries the INSERT on the backend's
-      // intermittent under-load timeouts (checking whether the row already
-      // landed before each retry, so it never forks a second v1). Only
-      // re-authored (--force) docs need setDoc's version-bump.
-      if (args.force && args.existing.has(t.doc_id)) {
-        await setDoc(args.query, args.tableName, write);
-      } else {
-        await insertDocResilient(args.query, args.tableName, write);
-      }
+      // Idempotent upsert keyed on the deterministic id = doc_id (DELETE-then-
+      // INSERT). Retrying a timed-out write can't fork a duplicate row — the
+      // retry deletes whatever landed and re-inserts exactly one. This replaced
+      // insertDocResilient, whose random-UUID INSERT + lag-prone read-back
+      // forked up to 4 rows per file under high-concurrency bulk generate.
+      await upsertDoc(args.query, args.tableName, write);
       outcomes.push({ doc_id: t.doc_id, status: "created" });
     } catch (err) {
       outcomes.push({ doc_id: t.doc_id, status: "failed", reason: `write failed: ${(err as Error).message}` });

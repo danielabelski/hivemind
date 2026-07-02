@@ -475,7 +475,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const exclude = flagValues(args, "--exclude");
     const limitRaw = flagValue(args, "--limit");
     const limit = limitRaw === undefined ? undefined : Number(limitRaw);
-    const concurrency = Number(flagValue(args, "--concurrency") ?? "6");
+    const concurrency = Number(flagValue(args, "--concurrency") ?? "4");
     const project = flagValue(args, "--project") ?? "";
 
     const snap = loadCurrentSnapshot(cwd);

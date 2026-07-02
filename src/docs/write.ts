@@ -206,6 +206,65 @@ export async function insertDocResilient(
 }
 
 /**
+ * Idempotent generate-write keyed on a DETERMINISTIC row id = doc_id.
+ *
+ * Bulk generate under high concurrency times writes out client-side while the
+ * backend often already committed; the old `insertDocResilient` then re-INSERTed
+ * (each with a fresh random UUID) because its read-back missed the landed row
+ * under read-after-write lag — forking up to 4 duplicate rows per file.
+ *
+ * This write is DELETE-then-INSERT on the fixed id = doc_id, so retrying the
+ * WHOLE op is safe: the retry deletes whatever landed and re-inserts exactly
+ * one row. One row per doc_id by construction — no random id, no read-back gate.
+ * Only client-side timeouts are retried; other errors surface immediately.
+ */
+export async function upsertDoc(
+  query: QueryFn,
+  tableName: string,
+  input: InsertDocInput,
+  opts: ResilientWriteOpts = {},
+): Promise<WriteResult> {
+  assertValidContent(input.content);
+  if (input.doc_id.length === 0) throw new Error("Doc doc_id must not be empty");
+  const safe = sqlIdent(tableName);
+  const id = input.doc_id; // deterministic: retries + re-runs target the same row
+  const anchors = serializeAnchors(input.anchors ?? []);
+  const tier: DocTier = input.tier ?? "fast";
+
+  const retries = opts.retries ?? WRITE_RETRIES;
+  const backoff = opts.backoffMs ?? WRITE_BACKOFF_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const now = new Date().toISOString();
+      // Clear any prior/partial row for this id first, then write exactly one.
+      await query(`DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}'`);
+      const sql =
+        `INSERT INTO "${safe}" ` +
+        `(id, doc_id, path, content, anchors, tier, status, project, version, ` +
+        `created_at, updated_at, agent, plugin_version) ` +
+        `VALUES (` +
+        `'${sqlStr(id)}', '${sqlStr(input.doc_id)}', '${sqlStr(input.path)}', ` +
+        `E'${sqlStr(input.content)}', E'${sqlStr(anchors)}', '${sqlStr(tier)}', ` +
+        `'active', '${sqlStr(input.project ?? "")}', 1, ` +
+        `'${sqlStr(now)}', '${sqlStr(now)}', ` +
+        `'${sqlStr(input.agent ?? "manual")}', '${sqlStr(input.plugin_version ?? "")}'` +
+        `)`;
+      await query(sql);
+      return { doc_id: input.doc_id, version: 1 };
+    } catch (err) {
+      if (!isTimeoutError(err)) throw err;
+      lastErr = err;
+      if (attempt === retries) break;
+      await sleep(backoff[Math.min(attempt, backoff.length - 1)]);
+    }
+  }
+  throw lastErr ?? new Error("upsertDoc: exhausted retries");
+}
+
+/**
  * Edit an existing doc. Reads the latest version, then INSERTs a new row
  * with version+1 carrying the merged fields (omitted fields inherit from
  * the prior version). The immutable `created_at` is carried forward;

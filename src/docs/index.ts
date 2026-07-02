@@ -6,7 +6,7 @@
  * change for callers.
  */
 
-export { insertDoc, insertDocResilient, editDoc, setDoc, archiveDoc, _MAX_CONTENT_LENGTH } from "./write.js";
+export { insertDoc, insertDocResilient, upsertDoc, editDoc, setDoc, archiveDoc, _MAX_CONTENT_LENGTH } from "./write.js";
 export type { InsertDocInput, EditDocInput, SetDocInput, WriteResult, ResilientWriteOpts } from "./write.js";
 
 export { listDocs, listDocMeta, listDocsByIds, getDocLatest, parseAnchors } from "./read.js";

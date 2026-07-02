@@ -10,6 +10,7 @@ vi.mock("../../src/docs/stable-read.js", () => ({
 import {
   insertDoc,
   insertDocResilient,
+  upsertDoc,
   editDoc,
   setDoc,
   archiveDoc,
@@ -234,6 +235,45 @@ describe("insertDocResilient", () => {
     ).rejects.toThrow(/timeout/);
     // 3 INSERT attempts (retries=2) + 2 read-backs between them.
     expect(calls.filter(c => c.startsWith("INSERT INTO"))).toHaveLength(3);
+  });
+});
+
+// ── upsertDoc (idempotent generate-write — the duplicate-row fix) ─────────────
+
+describe("upsertDoc", () => {
+  const noSleep = async () => {};
+  const timeout = () => { throw new Error("Query timeout after 10000ms"); };
+
+  it("DELETEs by deterministic id=doc_id then INSERTs exactly one row", async () => {
+    const { calls, query } = mockQuery([() => [], () => []]);
+    const res = await upsertDoc(query, TBL, { doc_id: "src/a.ts", path: "/docs/p/a.ts.md", content: "x", project: "p" });
+    expect(res).toEqual({ doc_id: "src/a.ts", version: 1 });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toBe(`DELETE FROM "hivemind_docs" WHERE id = 'src/a.ts'`);
+    expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
+    // id column is the doc_id, NOT a random uuid
+    expect(calls[1]).toContain(`'src/a.ts', 'src/a.ts',`);
+    expect(calls[1]).toContain(", 1, "); // always version 1
+  });
+
+  it("retry after a timeout re-runs DELETE+INSERT — never forks a second row", async () => {
+    // 1st DELETE ok, INSERT times out; retry: DELETE ok, INSERT ok.
+    const { calls, query } = mockQuery([() => [], timeout, () => [], () => []]);
+    const res = await upsertDoc(query, TBL, { doc_id: "src/a.ts", path: "/p", content: "x" }, { sleep: noSleep });
+    expect(res).toEqual({ doc_id: "src/a.ts", version: 1 });
+    // exactly one INSERT succeeds; the DELETE on retry guarantees single-row.
+    const inserts = calls.filter(c => c.startsWith("INSERT INTO"));
+    const deletes = calls.filter(c => c.startsWith("DELETE FROM"));
+    expect(inserts.length).toBeGreaterThanOrEqual(1);
+    expect(deletes.length).toBe(inserts.length); // every INSERT preceded by a DELETE
+  });
+
+  it("surfaces a non-timeout error immediately (no retry)", async () => {
+    const { calls, query } = mockQuery([() => [], () => { throw new Error("403 forbidden"); }]);
+    await expect(
+      upsertDoc(query, TBL, { doc_id: "src/a.ts", path: "/p", content: "x" }, { sleep: noSleep }),
+    ).rejects.toThrow(/403/);
+    expect(calls).toHaveLength(2); // DELETE + the failing INSERT, no retry
   });
 });
 
