@@ -91,11 +91,14 @@ const REGISTRY: Record<string, (env: NodeJS.ProcessEnv) => DocLlmSpec> = {
   pi: (env) => ({
     label: "pi",
     bin: "pi",
+    // No provider/model defaults: pi uses whatever the user logged into
+    // (forcing e.g. google would break an anthropic-OAuth login — verified
+    // live). Env overrides remain for explicit pinning.
     build: (b, p) =>
       buildTrailingPromptInvocation(b, [
         "--print",
-        "--provider", env.HIVEMIND_PI_PROVIDER ?? "google",
-        "--model", env.HIVEMIND_PI_MODEL ?? "gemini-2.5-flash",
+        ...(env.HIVEMIND_PI_PROVIDER ? ["--provider", env.HIVEMIND_PI_PROVIDER] : []),
+        ...(env.HIVEMIND_PI_MODEL ? ["--model", env.HIVEMIND_PI_MODEL] : []),
       ], p),
   }),
   cursor: (env) => ({

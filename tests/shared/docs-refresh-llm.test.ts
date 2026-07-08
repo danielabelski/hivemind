@@ -69,8 +69,12 @@ describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
   });
 
   it("pi and cursor specs mirror their production wiki workers (trailing prompt)", () => {
+    // pi: NO provider/model defaults — it must use whatever the user logged
+    // into (a forced provider broke a real OAuth login, verified live).
     const pi = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "pi" });
-    const inv = pi.build("/usr/bin/pi", "PROMPT");
+    expect(pi.build("/usr/bin/pi", "PROMPT").args).toEqual(["--print", "PROMPT"]);
+    const pinned = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "pi", HIVEMIND_PI_PROVIDER: "google", HIVEMIND_PI_MODEL: "gemini-2.5-flash" });
+    const inv = pinned.build("/usr/bin/pi", "PROMPT");
     expect(inv.args).toEqual(["--print", "--provider", "google", "--model", "gemini-2.5-flash", "PROMPT"]);
     const cursor = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "cursor" });
     const cinv = cursor.build("/usr/bin/cursor-agent", "PROMPT");
