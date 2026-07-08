@@ -69,6 +69,10 @@ const BATCH_MARKER_RE = /<<<DOC file=(.+?)>>>[ \t]*\n?/;
 
 /** Convert a glob (`*`, `**`, `?`) to an anchored RegExp over forward-slash paths. */
 export function globToRegExp(glob: string): RegExp {
+  // CodeQL: the glob comes from CLI argv. Every regex metacharacter below is
+  // escaped, so injection is not possible — but an adversarial multi-kilobyte
+  // pattern could still be pathological to compile. Cap the length.
+  if (glob.length > 512) throw new Error(`glob pattern too long (${glob.length} > 512 chars)`);
   let re = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];

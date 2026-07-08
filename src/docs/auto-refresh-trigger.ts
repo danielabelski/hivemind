@@ -32,8 +32,11 @@ export interface AutoRefreshDeps {
  * re-invoke). Best-effort and non-throwing.
  */
 export function maybeSpawnDocsRefresh(cwd: string, deps: AutoRefreshDeps = {}): boolean {
-  const env = deps.env ?? process.env;
-  if (env.HIVEMIND_DOCS_AUTO_REFRESH !== "1") return false;
+  // Member access only (never bare `process.env`): esbuild `define` rewrites
+  // `process.env.HIVEMIND_DOCS_AUTO_REFRESH` for the openclaw bundle so its
+  // ClawHub static scan sees zero process.env reads.
+  const flag = deps.env ? deps.env.HIVEMIND_DOCS_AUTO_REFRESH : process.env.HIVEMIND_DOCS_AUTO_REFRESH;
+  if (flag !== "1") return false;
   const cliEntry = deps.cliEntry ?? process.argv[1];
   if (!cliEntry) return false;
   const spawn = deps.spawn ?? spawnDetachedNodeWorker;
