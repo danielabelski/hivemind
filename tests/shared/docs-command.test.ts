@@ -10,10 +10,9 @@ describe("tryDocsRead", () => {
     const out = await tryDocsRead(`cat /docs/find/injection`, query, "docs");
     expect(out).toContain("src/utils/sql.ts");
   });
-  it("ls /docs → directory listing (index.md + find/)", async () => {
+  it("ls /docs → the rendered docs index (same root view as the Claude hook)", async () => {
     const out = await tryDocsRead(`ls /docs`, query, "docs");
-    expect(out).toContain("find/");
-    expect(out).toContain("index.md");
+    expect(out).toContain("# Docs Index");
   });
   it("returns null for a non-/docs read (caller falls through)", async () => {
     expect(await tryDocsRead(`cat /summaries/alice/x.md`, query, "docs")).toBeNull();

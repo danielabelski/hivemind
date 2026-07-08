@@ -324,6 +324,13 @@ export async function processCodexPreToolUse(
         const dir = (lsMatch[1] ?? "/").replace(/\/+$/, "") || "/";
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         logFn(`direct ls: ${dir}`);
+        // `ls /docs` belongs to the docs VFS, not the memory listing — render
+        // the same root index the cat branch serves (parity with the Claude hook).
+        if (dir === "/docs") {
+          const r = await handleDocsVfs("", (sql) => api.query(sql), process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+          const body = r.kind === "ok" ? r.body : "(docs unavailable)";
+          return { action: "block", output: body, rewrittenCommand: rewritten };
+        }
         const rows = await listVirtualPathRowsFn(api, table, sessionsTable, dir);
         const entries = new Map<string, { isDir: boolean; size: number }>();
         const prefix = dir === "/" ? "/" : `${dir}/`;

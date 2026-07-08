@@ -146,7 +146,7 @@ export async function insertDoc(
 
   const sql =
     `INSERT INTO "${safe}" ` +
-    `(id, doc_id, path, content, anchors, tier, status, project, version, ` +
+    `(id, doc_id, path, content, anchors, tier, status, project, scope, version, ` +
     `created_at, updated_at, agent, plugin_version, content_embedding) ` +
     `VALUES (` +
     `'${sqlStr(rowId)}', ` +
@@ -157,6 +157,7 @@ export async function insertDoc(
     `'${sqlStr(tier)}', ` +
     `'active', ` +
     `'${sqlStr(input.project ?? "")}', ` +
+    `'${sqlStr(input.scope ?? "main")}', ` +
     `1, ` +
     `'${sqlStr(now)}', ` +
     `'${sqlStr(now)}', ` +

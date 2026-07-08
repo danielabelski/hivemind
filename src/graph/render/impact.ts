@@ -29,6 +29,12 @@ const MAX_DEPTH = 25;
  * Returns `depthOf` (every reached node incl. seeds at depth 0) and `viaOf`
  * (the relation/source that first reached each non-seed node).
  */
+/** Relations that express a code dependency; the reverse walk follows ONLY
+ *  these (today EdgeRelation is a closed union of exactly these, so this is a
+ *  no-op guard — it exists so a future non-dependency relation cannot silently
+ *  widen the blast radius). */
+const DEP_RELATIONS = new Set(["calls", "imports", "extends", "implements", "method_of"]);
+
 function reverseBfs(
   snap: GraphSnapshot,
   seeds: Iterable<string>,
@@ -39,6 +45,7 @@ function reverseBfs(
   const nodeIds = new Set(snap.nodes.map((n) => n.id));
   const incoming = new Map<string, GraphEdge[]>();
   for (const e of snap.links) {
+    if (!DEP_RELATIONS.has(e.relation)) continue;
     if (!nodeIds.has(e.source)) continue;
     const list = incoming.get(e.target);
     if (list) list.push(e); else incoming.set(e.target, [e]);

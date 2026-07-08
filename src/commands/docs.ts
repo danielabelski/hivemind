@@ -81,6 +81,10 @@ Usage:
   hivemind docs generate [--cwd <dir>] [--scope file|symbol] [--include <glob>]
                          [--exclude <glob>] [--limit N] [--concurrency N]
                          [--batch N] [--force] [--dry-run]
+      Auto-author docs for the codebase from the AST graph (which already skips
+      .gitignored / non-code files). Default scope=file (one doc per file,
+      anchored to its symbols). Skips files that already have a doc unless
+      --force. --dry-run lists the targets without calling the LLM.
       Batches 5 files per LLM call by default (~2.5x faster); --batch 1 to opt out.
   hivemind docs wiki [--cwd <dir>] [--include <glob>] [--exclude <glob>]
                      [--limit N] [--concurrency N] [--force] [--dry-run]
@@ -107,10 +111,6 @@ Usage:
   hivemind docs reindex
       Backfill semantic-search vectors for docs that lack them (no LLM, embed
       daemon only). Run once after enabling embeddings on an existing corpus.
-      Auto-author docs for the codebase from the AST graph (which already skips
-      .gitignored / non-code files). Default scope=file (one doc per file,
-      anchored to its symbols). Skips files that already have a doc unless
-      --force. --dry-run lists the targets without calling the LLM.
 `.trim();
 
 function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
@@ -482,6 +482,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
         tableName,
         snap,
         repoRoot: cwd,
+        project: deriveProjectKey(cwd).key,
         include: changed,
         existing,
         generate: makeHostGenerateDoc(),
@@ -659,7 +660,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const limitRaw = flagValue(args, "--limit");
     const limit = limitRaw === undefined ? undefined : Number(limitRaw);
     const concurrency = Number(flagValue(args, "--concurrency") ?? "4");
-    const project = flagValue(args, "--project") ?? "";
+    // Same default as wiki/pull/wiki-refresh — a doc written under project ''
+    // would be invisible to the project-scoped readers of the other commands.
+    const project = flagValue(args, "--project") ?? deriveProjectKey(cwd).key;
 
     const snap = loadCurrentSnapshot(cwd);
     if (!snap) {
@@ -678,8 +681,11 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const todo = force ? allTargets : allTargets.filter((t) => !existing.has(t.doc_id));
 
     if (dryRun) {
-      console.log(`${todo.length} target(s) would be documented (scope=${scope}); ${allTargets.length - todo.length} already documented or skipped.`);
-      for (const t of todo.slice(0, limit ?? 60)) {
+      // Mirror the real run: generateDocs slices targets to --limit, so the
+      // dry-run count must too or it overstates what will actually happen.
+      const effective = limit !== undefined ? todo.slice(0, limit) : todo;
+      console.log(`${effective.length} target(s) would be documented (scope=${scope}); ${allTargets.length - effective.length} already documented or skipped.`);
+      for (const t of effective.slice(0, 60)) {
         console.log(`  ${t.doc_id}  (${t.symbols.length} symbols)`);
       }
       return;

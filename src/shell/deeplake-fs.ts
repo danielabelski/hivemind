@@ -200,6 +200,8 @@ export class DeeplakeFs implements IFileSystem {
   private kpisTable: string | null = null;
   // Per-file docs table, for /docs/ VFS reads + docs/find search. Null = off.
   private docsTable: string | null = null;
+  /** Project scope for docs reads on shared tables (legacy '' rows included). */
+  private docsProject: string | null = null;
 
   // Embedding client lazily created on first flush. Lives as long as the process.
   private embedClient: EmbedClient | null = null;
@@ -218,13 +220,14 @@ export class DeeplakeFs implements IFileSystem {
     table: string,
     mount = "/memory",
     sessionsTable?: string,
-    extra?: { goalsTable?: string; kpisTable?: string; docsTable?: string },
+    extra?: { goalsTable?: string; kpisTable?: string; docsTable?: string; docsProject?: string },
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
     fs.sessionsTable = sessionsTable ?? null;
     fs.goalsTable = extra?.goalsTable ?? null;
     fs.kpisTable = extra?.kpisTable ?? null;
     fs.docsTable = extra?.docsTable ?? null;
+    fs.docsProject = extra?.docsProject ?? null;
     // Ensure the memory table + goal/kpi tables exist before
     // bootstrapping. Each ensure call is idempotent and lazy-heals
     // any column drift from prior schema versions. Failures bubble
@@ -741,7 +744,7 @@ export class DeeplakeFs implements IFileSystem {
     // cursor / hermes / interactive), not just the pre-tool-use hook (Claude).
     if (isDocsPath(p) && this.docsTable) {
       if (isDocsDir(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
-      const r = await handleDocsVfs(docsSubpathOf(p), (sql) => this.client.query(sql), this.docsTable, { embedQuery: makeQueryEmbedder() });
+      const r = await handleDocsVfs(docsSubpathOf(p), (sql) => this.client.query(sql), this.docsTable, { embedQuery: makeQueryEmbedder(), project: this.docsProject ?? undefined });
       if (r.kind === "ok") return r.body;
       throw fsErr("ENOENT", `${r.message}`, p);
     }
@@ -996,6 +999,10 @@ export class DeeplakeFs implements IFileSystem {
     const p = normPath(path);
     // Graph VFS — directory listings synthesized from a fixed taxonomy.
     if (p === GRAPH_ROOT) return ["index.md", "find", "show"];
+    // Docs VFS — same synthesized taxonomy so `ls /docs` never ENOTDIRs.
+    if (this.docsTable && (p === "/docs" || p === "/docs/find")) {
+      return p === "/docs" ? ["index.md", "find"] : [];
+    }
     if (p === "/graph/find" || p === "/graph/show") {
       // No children to enumerate: arguments are user-supplied patterns, not
       // a finite set we could list. Return empty so `ls` shows nothing
@@ -1012,6 +1019,10 @@ export class DeeplakeFs implements IFileSystem {
     // Surface the graph subtree in the root listing.
     if (p === "/" && !entries.includes("graph")) {
       entries.push("graph");
+    }
+    // Surface the docs subtree too, when the feature is configured.
+    if (p === "/" && this.docsTable && !entries.includes("docs")) {
+      entries.push("docs");
     }
     return entries;
   }
@@ -1030,6 +1041,15 @@ export class DeeplakeFs implements IFileSystem {
           name,
           isFile: !isGraphDir(child),
           isDirectory: isGraphDir(child),
+          isSymbolicLink: false,
+        };
+      }
+      // Docs entries are synthesized too — classify by the docs taxonomy.
+      if (this.docsTable && isDocsPath(child)) {
+        return {
+          name,
+          isFile: !isDocsDir(child),
+          isDirectory: isDocsDir(child),
           isSymbolicLink: false,
         };
       }

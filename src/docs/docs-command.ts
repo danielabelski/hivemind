@@ -32,7 +32,11 @@ export async function tryDocsRead(
   const ls = rewrittenCommand.replace(/\s+2>\S+/g, "").trim().match(/^ls\s+(?:-\S+\s+)*(\S+)\s*$/);
   if (ls) {
     const dir = stripQuotes(ls[1]!).replace(/\/+$/, "") || "/";
-    return dir === DOCS_ROOT ? DOCS_LISTING : null;
+    if (dir !== DOCS_ROOT) return null;
+    // Same root view as the Claude hook: the rendered docs index, not a
+    // hardcoded listing that drifts from it.
+    const root = await handleDocsVfs("", query, docsTable, opts);
+    return root.kind === "ok" ? root.body : `(${root.kind}) ${root.message}`;
   }
 
   const virtualPath = parseReadTargetPath(rewrittenCommand);

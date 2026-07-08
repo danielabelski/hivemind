@@ -100,7 +100,15 @@ async function main(): Promise<void> {
   // docs table, same rewrite trick as the graph dispatch above. Runs before the
   // grep parse so `cat /docs/find/x` (not a grep) isn't left to Cursor's host bash.
   const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
-  const docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+  // Fail OPEN like the grep path below: a throw here would crash the hook
+  // without a decision and let a memory-touching command reach the host shell.
+  let docsBody: string | null = null;
+  try {
+    docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+  } catch (err) {
+    log(`docs vfs failed: ${(err as Error).message}`);
+    docsBody = "(docs temporarily unavailable — try again)";
+  }
   if (docsBody !== null) {
     log(`docs vfs intercept: ${command.slice(0, 80)}`);
     const echoCmd = `cat <<'__HIVEMIND_RESULT__'\n${docsBody}\n__HIVEMIND_RESULT__`;
