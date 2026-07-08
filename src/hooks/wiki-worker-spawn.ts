@@ -72,3 +72,27 @@ export function buildTrailingPromptInvocation(bin: string, flags: string[], prom
     options: { stdio: ["ignore", "pipe", "pipe"] },
   };
 }
+
+/**
+ * Build an invocation whose prompt ALWAYS travels over stdin, never argv.
+ * Doc generation feeds whole source files into the prompt, which can exceed
+ * the OS argv limit (E2BIG on multi-hundred-KB files); stdin has no such cap.
+ * `flags` must already include whatever tells the CLI to read stdin
+ * (claude: `-p` with no positional; codex: trailing `-`).
+ */
+export function buildStdinPromptInvocation(bin: string, flags: string[], prompt: string): ClaudeInvocation {
+  return {
+    file: bin,
+    args: [...flags],
+    options: {
+      input: prompt,
+      stdio: ["pipe", "pipe", "pipe"],
+      ...(binNeedsShell(bin) ? { shell: true } : {}),
+    },
+  };
+}
+
+/** Claude variant of {@link buildStdinPromptInvocation} (same fixed flags as the argv path). */
+export function buildClaudeStdinInvocation(claudeBin: string, prompt: string): ClaudeInvocation {
+  return buildStdinPromptInvocation(claudeBin, ["-p", ...CLAUDE_FLAGS], prompt);
+}

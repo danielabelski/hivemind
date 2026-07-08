@@ -13,7 +13,12 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { buildClaudeInvocation, buildTrailingPromptInvocation, type ClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
+import {
+  buildClaudeStdinInvocation,
+  buildStdinPromptInvocation,
+  buildTrailingPromptInvocation,
+  type ClaudeInvocation,
+} from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { buildRefreshPrompt, type GenerateFn } from "./refresh.js";
 import {
@@ -49,12 +54,15 @@ export interface DocLlmSpec {
   build: (bin: string, prompt: string) => ClaudeInvocation;
 }
 
+// Known agents read the prompt from STDIN (claude: `-p` with piped input;
+// codex: `exec … -`). Doc prompts embed whole source files and can exceed the
+// OS argv limit — E2BIG — so they must never ride the command line.
 const REGISTRY: Record<string, DocLlmSpec> = {
-  claude: { label: "claude", bin: "claude", build: (b, p) => buildClaudeInvocation(b, p) },
+  claude: { label: "claude", bin: "claude", build: (b, p) => buildClaudeStdinInvocation(b, p) },
   codex: {
     label: "codex",
     bin: "codex",
-    build: (b, p) => buildTrailingPromptInvocation(b, ["exec", "--dangerously-bypass-approvals-and-sandbox"], p),
+    build: (b, p) => buildStdinPromptInvocation(b, ["exec", "--dangerously-bypass-approvals-and-sandbox", "-"], p),
   },
 };
 

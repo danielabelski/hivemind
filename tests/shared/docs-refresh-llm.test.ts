@@ -22,20 +22,23 @@ const ctx: RefreshContext = {
 beforeEach(() => execFileSyncMock.mockReset());
 
 describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
-  it("defaults to claude — a `-p <prompt>` invocation (unchanged behavior)", () => {
+  it("defaults to claude — `-p` with the prompt on STDIN, never argv (E2BIG)", () => {
     const spec = resolveDocLlmSpec({});
     expect(spec.label).toBe("claude");
     expect(spec.bin).toBe("claude");
     const inv = spec.build("/usr/bin/claude", "PROMPT");
     expect(inv.file).toBe("/usr/bin/claude");
-    expect(inv.args.slice(0, 2)).toEqual(["-p", "PROMPT"]);
+    expect(inv.args[0]).toBe("-p");
+    expect(inv.args).not.toContain("PROMPT");
+    expect(inv.options.input).toBe("PROMPT");
   });
 
-  it("HIVEMIND_DOCS_LLM_AGENT=codex → `codex exec … <prompt>` (prompt trailing)", () => {
+  it("HIVEMIND_DOCS_LLM_AGENT=codex → `codex exec … -` with the prompt on STDIN", () => {
     const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "codex" });
     expect(spec.bin).toBe("codex");
     const inv = spec.build("/usr/bin/codex", "PROMPT");
-    expect(inv.args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "PROMPT"]);
+    expect(inv.args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "-"]);
+    expect(inv.options.input).toBe("PROMPT");
   });
 
   it("HIVEMIND_DOCS_LLM_BIN (+FLAGS) → a fully custom CLI, prompt as the last arg", () => {
@@ -63,18 +66,18 @@ describe("makeClaudeGenerate", () => {
     expect(out).toBe("# Updated doc\nbody");
   });
 
-  it("passes the refresh prompt to the claude binary", async () => {
+  it("passes the refresh prompt to the claude binary over STDIN", async () => {
     execFileSyncMock.mockReturnValue("x");
     const gen = makeClaudeGenerate("/usr/bin/claude");
     await gen(ctx);
     expect(execFileSyncMock).toHaveBeenCalledOnce();
-    const [file, args] = execFileSyncMock.mock.calls[0] as [string, string[]];
+    const [file, args, options] = execFileSyncMock.mock.calls[0] as [string, string[], { input?: string }];
     expect(file).toBe("/usr/bin/claude");
-    // On unix buildClaudeInvocation puts the prompt as a positional arg; it must
-    // carry the changed symbol source so the model can update the doc.
-    const joined = args.join(" ");
-    expect(joined).toContain("function foo() { return 42; }");
-    expect(joined).toContain("SMALLEST edit");
+    // The prompt (with the changed symbol source) must ride stdin, never argv,
+    // so multi-hundred-KB source files cannot blow the OS arg limit (E2BIG).
+    expect(args.join(" ")).not.toContain("function foo()");
+    expect(options.input).toContain("function foo() { return 42; }");
+    expect(options.input).toContain("SMALLEST edit");
   });
 
   it("tolerates empty/undefined stdout", async () => {
