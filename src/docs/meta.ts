@@ -172,6 +172,32 @@ export async function tryClaimTurn(
 export type CommitResult = { committed: true } | { committed: false; reason: "lost-lease" };
 
 /**
+ * Release the claim WITHOUT advancing the sha — the exit path of an
+ * INCOMPLETE cycle. Leaving the lease held until TTL would block every retry
+ * for 30 minutes after a single failed page; releasing (sha untouched) lets
+ * the next tick redo the same window immediately. Ownership is verified the
+ * same way as commitRefresh: a stale worker must not clobber a newer claim.
+ */
+export async function releaseClaim(
+  query: QueryFn,
+  tableName: string,
+  project: string,
+  scope: string,
+  opts: { owner: string; patchCounts?: Record<string, number>; now?: () => Date },
+): Promise<boolean> {
+  const nowFn = opts.now ?? (() => new Date());
+  const current = await readRefreshMeta(query, tableName, project, scope);
+  if (current?.meta.claimed_by !== opts.owner) return false;
+  await writeMetaRow(query, tableName, project, scope, {
+    last_refresh_sha: current.meta.last_refresh_sha,
+    claimed_by: null,
+    claimed_at: null,
+    patch_counts: opts.patchCounts ?? current.meta.patch_counts,
+  }, nowFn().toISOString());
+  return true;
+}
+
+/**
  * Commit point of a successful refresh cycle: advance the sha, release the
  * claim, and persist the updated per-page patch counters — one row write.
  *

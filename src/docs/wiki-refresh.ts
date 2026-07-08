@@ -25,7 +25,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { commitRefresh, readRefreshMeta, tryClaimTurn } from "./meta.js";
+import { commitRefresh, readRefreshMeta, releaseClaim, tryClaimTurn } from "./meta.js";
 import { gateDocEdit } from "./gate.js";
 import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
 import {
@@ -70,7 +70,7 @@ export interface WikiRefreshArgs {
   /** Injectable settle delay for the claim read-back (tests). */
   sleep?: (ms: number) => Promise<void>;
   /** Full-page regeneration seam (defaults to generateWikiPages, force). */
-  regenerate?: (group: WikiGroup) => Promise<"created" | "failed">;
+  regenerate?: (group: WikiGroup) => Promise<"created" | "failed" | "skipped">;
   /**
    * Snapshot-at-sha loader (production: loadSnapshotByCommit on the repo's
    * graphs dir). When it can resolve the snapshot at `last_refresh_sha`, the
@@ -87,7 +87,7 @@ export interface WikiRefreshArgs {
 
 export interface WikiRefreshOutcome {
   doc_id: string;
-  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed";
+  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped";
   reasons?: string[];
 }
 
@@ -97,7 +97,7 @@ export interface WikiRefreshReport {
   outcomes: WikiRefreshOutcome[];
 }
 
-function defaultRegenerate(args: WikiRefreshArgs): (group: WikiGroup) => Promise<"created" | "failed"> {
+function defaultRegenerate(args: WikiRefreshArgs): (group: WikiGroup) => Promise<"created" | "failed" | "skipped"> {
   return async (group) => {
     const report = await generateWikiPages({
       query: args.query,
@@ -115,7 +115,12 @@ function defaultRegenerate(args: WikiRefreshArgs): (group: WikiGroup) => Promise
       agent: args.agent,
       pluginVersion: args.pluginVersion,
     });
-    return report.created > 0 && report.failed === 0 ? "created" : "failed";
+    if (report.created > 0 && report.failed === 0) return "created";
+    // A group the generator SKIPS (min-size gate, no readable sources) wants
+    // no page at all — treating it as a failure would poison every cycle on
+    // any repo with tiny groups, keeping the sha from ever advancing.
+    if (report.failed === 0 && report.skipped > 0) return "skipped";
+    return "failed";
   };
 }
 
@@ -290,6 +295,10 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     // New subsystem → fresh page.
     if (!page) {
       const res = await regenerate(group);
+      if (res === "skipped") {
+        outcomes.push({ doc_id: docId, action: "skipped", reasons: ["below min size — no page wanted"] });
+        continue;
+      }
       outcomes.push({ doc_id: docId, action: res === "created" ? "generated" : "failed" });
       if (res === "failed") failures++;
       else patchCounts[docId] = 0;
@@ -310,7 +319,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     if (diff === null && !membershipChanged) {
       // No usable diff to patch from → regenerate rather than guess.
       const res = await regenerate(group);
-      outcomes.push({ doc_id: docId, action: res === "created" ? "regenerated" : "failed", reasons: ["no usable diff"] });
+      outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: ["no usable diff"] });
       if (res === "failed") failures++;
       else patchCounts[docId] = 0;
       continue;
@@ -338,7 +347,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
 
     if (out.action === "escalate") {
       const res = await regenerate(group);
-      outcomes.push({ doc_id: docId, action: res === "created" ? "regenerated" : "failed", reasons: out.reasons });
+      outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: out.reasons });
       if (res === "failed") failures++;
       else patchCounts[docId] = 0;
     } else if (out.action === "failed") {
@@ -356,6 +365,13 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   // it untouched so the next turn redoes the window (idempotent by design).
   if (failures > 0) {
     log(`${failures} page(s) failed — sha NOT advanced, next turn redoes the window`);
+    // Free the lease so the retry does not have to wait out the 30-min TTL;
+    // the untouched sha makes the redo idempotent.
+    await releaseClaim(args.query, args.tableName, args.project, scope, {
+      owner: args.owner,
+      patchCounts,
+      now: args.now,
+    });
     return { status: "incomplete", head, outcomes };
   }
   const committed = await commitRefresh(args.query, args.tableName, args.project, scope, head, patchCounts, {

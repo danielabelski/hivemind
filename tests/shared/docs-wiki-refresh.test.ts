@@ -251,6 +251,33 @@ describe("runWikiRefreshCycle", () => {
     expect(core?.reasons?.join(" ")).toMatch(/signature changes/);
   });
 
+  it("a min-size-SKIPPED group never poisons the cycle (skipped != failed)", async () => {
+    const backend = makeBackend({
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\ncore")], // pkg/io has NO page
+    });
+    const regenerate = vi.fn(async (g: { key: string }) => (g.key === "pkg/io" ? "skipped" as const : "created" as const));
+    const report = await runWikiRefreshCycle(baseArgs(backend, gitOk([]), { regenerate }));
+    // The tiny group is reported as skipped, the cycle still COMMITS the sha.
+    expect(report.outcomes).toContainEqual({ doc_id: "wiki/pkg/io", action: "skipped", reasons: ["below min size — no page wanted"] });
+    expect(report.status).toBe("committed");
+    expect((backend.state.meta as { last_refresh_sha: string }).last_refresh_sha).toBe(HEAD);
+  });
+
+  it("an INCOMPLETE cycle releases the lease immediately (sha untouched, no 30-min block)", async () => {
+    const backend = makeBackend({
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\ncore"), pageRow("pkg/io", ["pkg/io/b.ts"], "## Purpose\nio")],
+    });
+    const report = await runWikiRefreshCycle(
+      baseArgs(backend, gitOk(["pkg/core/a.ts"]), { run: async () => { throw new Error("LLM down"); } }),
+    );
+    expect(report.status).toBe("incomplete");
+    const meta = backend.state.meta as { last_refresh_sha: string; claimed_by: string | null };
+    expect(meta.last_refresh_sha).toBe(PREV); // NOT advanced
+    expect(meta.claimed_by).toBeNull();       // lease FREED — retry needs no TTL wait
+  });
+
   it("no git → no-git, nothing read or written", async () => {
     const backend = makeBackend({ meta: null });
     const report = await runWikiRefreshCycle(baseArgs(backend, () => null));
