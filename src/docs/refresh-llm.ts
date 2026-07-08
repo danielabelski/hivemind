@@ -131,6 +131,18 @@ export function makeHostBatchGenerateDoc(timeoutMs = 240_000, env: NodeJS.Proces
   };
 }
 
+/**
+ * Generic prompt runner backed by the resolved host agent — the production
+ * `RunPromptFn` for wiki page generation (chunk notes + synthesis prompts are
+ * built by the caller; this just executes them). Longer default timeout: a
+ * wiki chunk embeds up to ~120k chars of source.
+ */
+export function makeHostRunPrompt(timeoutMs = 300_000, env: NodeJS.ProcessEnv = process.env): (prompt: string) => Promise<string> {
+  const spec = resolveDocLlmSpec(env);
+  const bin = resolveCliBin(spec.bin);
+  return async (prompt) => runHostPrompt(spec, bin, prompt, timeoutMs);
+}
+
 /** Run a single prompt through the host `claude` CLI and return the unwrapped output. */
 export function runClaudePrompt(bin: string, prompt: string, timeoutMs = 120_000): string {
   return runHostPrompt(REGISTRY.claude, bin, prompt, timeoutMs);

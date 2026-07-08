@@ -41,6 +41,28 @@ export type { StaleReason, ImpactedDoc } from "./impact.js";
 export { gateDocEdit, countChangedLines, DEFAULT_MAX_CHANGED_LINES, GATE_MAX_CONTENT_LENGTH } from "./gate.js";
 export type { GateInput, GateResult } from "./gate.js";
 
+export { groupFilesBySubsystem, DEFAULT_MAX_FILES } from "./wiki-groups.js";
+export type { WikiGroup } from "./wiki-groups.js";
+
+export {
+  generateWikiPages,
+  selectWikiGroups,
+  wikiDocId,
+  chunkFiles,
+  capFileContent,
+  appendFilesIndex,
+  buildWikiPagePrompt,
+  buildWikiNotesPrompt,
+  buildWikiSynthesisPrompt,
+  WIKI_DOC_PREFIX,
+  DEFAULT_CHUNK_CHARS,
+  MAX_FILE_CHARS,
+} from "./wiki-generate.js";
+export type { WikiGenArgs, WikiReport, WikiOutcome, WikiFileSource, RunPromptFn } from "./wiki-generate.js";
+
+export { readRefreshMeta, tryClaimTurn, commitRefresh, META_DOC_ID, CLAIM_TTL_MS } from "./meta.js";
+export type { RefreshMeta, MetaReadResult, ClaimOpts, ClaimResult } from "./meta.js";
+
 export { refreshDocs, buildRefreshPrompt } from "./refresh.js";
 export type {
   GenerateFn,

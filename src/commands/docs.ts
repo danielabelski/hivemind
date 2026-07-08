@@ -47,8 +47,10 @@ import {
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
-import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc } from "../docs/refresh-llm.js";
+import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
+import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeDocEmbedder } from "../docs/embed.js";
 import { backfillDocEmbeddings } from "../docs/backfill.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
@@ -73,6 +75,13 @@ Usage:
                          [--exclude <glob>] [--limit N] [--concurrency N]
                          [--batch N] [--force] [--dry-run]
       Batches 5 files per LLM call by default (~2.5x faster); --batch 1 to opt out.
+  hivemind docs wiki [--cwd <dir>] [--include <glob>] [--exclude <glob>]
+                     [--limit N] [--concurrency N] [--force] [--dry-run]
+      Author ONE narrative wiki page per subsystem (directory group) from the
+      chunked source, plus a mechanical file index. Pages are stored as
+      doc_id wiki/<subsystem> (tier=slow, scope=main), anchored to every
+      documentable symbol in the member files. Skips subsystems that already
+      have a page unless --force. --dry-run lists the groups.
   hivemind docs reindex
       Backfill semantic-search vectors for docs that lack them (no LLM, embed
       daemon only). Run once after enabling embeddings on an existing corpus.
@@ -464,6 +473,61 @@ export async function runDocsCommand(args: string[]): Promise<void> {
           if (o.status === "created") console.log(`  created ${o.doc_id}`);
         }
       }
+    }
+    return;
+  }
+
+  if (sub === "wiki") {
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const dryRun = args.includes("--dry-run");
+    const force = args.includes("--force");
+    const include = flagValues(args, "--include");
+    const exclude = flagValues(args, "--exclude");
+    const limitRaw = flagValue(args, "--limit");
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    const concurrency = Number(flagValue(args, "--concurrency") ?? "2");
+    // Wiki pages are canonical, shared rows — stamp the repo-derived project
+    // key (same identity the graph pull/push uses) unless overridden.
+    const project = flagValue(args, "--project") ?? deriveProjectKey(cwd).key;
+
+    const snap = loadCurrentSnapshot(cwd);
+    if (!snap) {
+      console.error("No local graph for this directory. Run `hivemind graph build` first.");
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+
+    let existingDocs: DocRow[] = [];
+    try {
+      existingDocs = await listDocs(query, tableName, { status: "all", limit: 1000000 });
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+    }
+    const existing = new Set(existingDocs.filter((d) => d.doc_id.startsWith(WIKI_DOC_PREFIX)).map((d) => d.doc_id));
+
+    if (dryRun) {
+      const groups = selectWikiGroups(snap, { include, exclude });
+      const todo = force ? groups : groups.filter((g) => !existing.has(wikiDocId(g.key)));
+      console.log(`${todo.length} wiki page(s) would be generated (${groups.length - todo.length} already exist).`);
+      for (const g of todo.slice(0, limit ?? 60)) {
+        console.log(`  wiki/${g.key}  (${g.files.length} files)`);
+      }
+      return;
+    }
+
+    await api.ensureDocsTable(tableName);
+    if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
+    const report = await generateWikiPages({
+      query, tableName, snap, repoRoot: cwd, project,
+      include, exclude, existing, force, limit, concurrency,
+      run: makeHostRunPrompt(),
+      embed: makeDocEmbedder(),
+      agent: cfg.userName, pluginVersion,
+    });
+    console.log(`Wiki: created ${report.created}, skipped ${report.skipped}, failed ${report.failed} (of ${report.groups} groups).`);
+    for (const o of report.outcomes) {
+      if (o.status === "created") console.log(`  created ${o.doc_id} (${o.files} files, ${o.chunks} chunk${o.chunks === 1 ? "" : "s"})`);
+      else console.log(`  ${o.status} ${o.doc_id}: ${o.reason ?? ""}`);
     }
     return;
   }
