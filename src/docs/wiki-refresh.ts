@@ -39,6 +39,7 @@ import {
   type RunPromptFn,
 } from "./wiki-generate.js";
 import { listDocs } from "./read.js";
+import { diffSnapshots, type ModifiedNode } from "../graph/diff.js";
 import type { GitRunner } from "./candidates.js";
 import type { DocEmbedder } from "./embed.js";
 import type { DocRow, QueryFn } from "./read.js";
@@ -68,6 +69,14 @@ export interface WikiRefreshArgs {
   sleep?: (ms: number) => Promise<void>;
   /** Full-page regeneration seam (defaults to generateWikiPages, force). */
   regenerate?: (group: WikiGroup) => Promise<"created" | "failed">;
+  /**
+   * Snapshot-at-sha loader (production: loadSnapshotByCommit on the repo's
+   * graphs dir). When it can resolve the snapshot at `last_refresh_sha`, the
+   * cycle counts per-group SIGNATURE changes and escalates pages whose public
+   * contracts churned en masse. Absent/unresolvable → 0 (patching still safe:
+   * mass rewrites are caught by the edit budget instead).
+   */
+  loadSnapshotAt?: (sha: string) => GraphSnapshot | null;
   embed?: DocEmbedder;
   agent?: string;
   pluginVersion?: string;
@@ -232,6 +241,19 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     log("first refresh cycle — full-candidate cycle");
   }
 
+  // Signature churn per file (Phase 7): diff the graph at last_refresh_sha
+  // against the current one. Best-effort — no snapshot, no signal.
+  let modified: ModifiedNode[] = [];
+  if (lastSha !== "" && args.loadSnapshotAt) {
+    const prevSnap = args.loadSnapshotAt(lastSha);
+    if (prevSnap) modified = diffSnapshots(prevSnap, args.snap).nodes.modified ?? [];
+    else log(`no graph snapshot at ${lastSha} — signature-churn escalation disabled this cycle`);
+  }
+  const sigChangesByFile = new Map<string, number>();
+  for (const m of modified) {
+    sigChangesByFile.set(m.after.source_file, (sigChangesByFile.get(m.after.source_file) ?? 0) + 1);
+  }
+
   const groups = selectWikiGroups(args.snap);
   const pages = new Map<string, DocRow>();
   for (const d of await listDocs(args.query, args.tableName, { project: args.project, status: "active", limit: 100000 })) {
@@ -287,7 +309,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       run: args.run,
       escalation: {
         membershipChanged,
-        signatureChanges: 0, // fed by the diff-signature extension (see graph/diff)
+        signatureChanges: group.files.reduce((n, f) => n + (sigChangesByFile.get(f) ?? 0), 0),
         patchCount: patchCounts[docId] ?? 0,
       },
       embed: args.embed,

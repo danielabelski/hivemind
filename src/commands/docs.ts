@@ -52,6 +52,8 @@ import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js"
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
 import { runWikiRefreshCycle, runLocalWikiRefresh } from "../docs/wiki-refresh.js";
+import { loadSnapshotByCommit } from "../graph/diff.js";
+import { repoDir } from "../graph/snapshot.js";
 import { execFileSync } from "node:child_process";
 import { hostname, userInfo } from "node:os";
 import type { GitRunner } from "../docs/candidates.js";
@@ -536,6 +538,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       run: makeHostRunPrompt(), git,
       owner: `${userInfo().username}@${hostname()}:${process.pid}`,
       force,
+      // Snapshots live under the repo-derived key even when --project overrides
+      // the table stamp.
+      loadSnapshotAt: (sha) => loadSnapshotByCommit(repoDir(deriveProjectKey(cwd).key), sha),
       embed: makeDocEmbedder(),
       agent: cfg.userName, pluginVersion,
       log: (m) => console.error(`[wiki-refresh] ${m}`),

@@ -224,6 +224,33 @@ describe("runWikiRefreshCycle", () => {
     expect(report.status).toBe("committed");
   });
 
+  it("signature churn (via loadSnapshotAt) escalates to a regen instead of a patch", async () => {
+    const backend = makeBackend({
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\ncore"), pageRow("pkg/io", ["pkg/io/b.ts"], "## Purpose\nio")],
+    });
+    // Previous snapshot: same node ids but 6 extra signature-changed symbols in pkg/core.
+    const churnNodes = Array.from({ length: 6 }, (_, i) => ({
+      ...node(`pkg/core/a.ts:f${i}:function`, "pkg/core/a.ts"), signature: `function f${i}(): number`,
+    }));
+    const prevSnap = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts"), node("pkg/io/b.ts:bar:function", "pkg/io/b.ts"), ...churnNodes]);
+    const currSnap = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts"), node("pkg/io/b.ts:bar:function", "pkg/io/b.ts"),
+      ...churnNodes.map((c) => ({ ...c, signature: c.signature + " | CHANGED" }))]);
+    const regenerate = vi.fn(async () => "created" as const);
+    const run = vi.fn(async () => "NO_CHANGE");
+    const report = await runWikiRefreshCycle({
+      ...baseArgs(backend, gitOk(["pkg/core/a.ts"]), { regenerate, run }),
+      snap: currSnap,
+      loadSnapshotAt: (sha) => (sha === PREV ? prevSnap : null),
+    });
+    expect(report.status).toBe("committed");
+    expect(run).not.toHaveBeenCalled(); // escalated pre-flight, no patch attempted
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    const core = report.outcomes.find((o) => o.doc_id === "wiki/pkg/core");
+    expect(core?.action).toBe("regenerated");
+    expect(core?.reasons?.join(" ")).toMatch(/signature changes/);
+  });
+
   it("no git → no-git, nothing read or written", async () => {
     const backend = makeBackend({ meta: null });
     const report = await runWikiRefreshCycle(baseArgs(backend, () => null));
