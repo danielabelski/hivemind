@@ -23,12 +23,17 @@
  * whole protocol is unit-testable without a repo or a backend.
  */
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { commitRefresh, readRefreshMeta, tryClaimTurn } from "./meta.js";
-import { updateWikiPage } from "./wiki-update.js";
+import { gateDocEdit } from "./gate.js";
+import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
 import {
+  appendFilesIndex,
   generateWikiPages,
   parseFilesIndex,
   selectWikiGroups,
+  stripFilesIndex,
   wikiDocId,
   WIKI_DOC_PREFIX,
   type RunPromptFn,
@@ -100,6 +105,85 @@ function defaultRegenerate(args: WikiRefreshArgs): (group: WikiGroup) => Promise
     });
     return report.created > 0 && report.failed === 0 ? "created" : "failed";
   };
+}
+
+export interface LocalWikiRefreshArgs {
+  snap: GraphSnapshot;
+  repoRoot: string;
+  run: RunPromptFn;
+  git: GitRunner;
+  maxChangedLines?: number;
+  log?: (msg: string) => void;
+}
+
+export interface LocalWikiRefreshOutcome {
+  /** Repo-relative materialized file, e.g. `pkg/core.hivemind.md`. */
+  file: string;
+  action: "patched" | "no_change" | "not-materialized" | "escalate-skipped" | "failed";
+  reasons?: string[];
+}
+
+/**
+ * LOCAL preview refresh: same patch pipeline, but the diff is the WORKING
+ * TREE (uncommitted edits) and the writes go ONLY to the local gitignored
+ * `<key>.hivemind.md` files — never the table. No lease, no meta, no sha:
+ * this is a per-developer preview of what the canonical refresh will say
+ * once the work is committed and merged. Pages not materialized locally
+ * (no `docs pull` yet) are reported and skipped, and an over-budget patch
+ * is skipped rather than escalated — a full regen belongs to the canonical
+ * cycle, not a preview.
+ */
+export async function runLocalWikiRefresh(args: LocalWikiRefreshArgs): Promise<{ outcomes: LocalWikiRefreshOutcome[] }> {
+  const changedOut = args.git(["diff", "--name-only", "HEAD"]);
+  const changed = new Set((changedOut ?? "").split("\n").map((l) => l.trim()).filter(Boolean));
+  const untracked = args.git(["ls-files", "--others", "--exclude-standard"]);
+  for (const l of (untracked ?? "").split("\n")) if (l.trim()) changed.add(l.trim());
+
+  const outcomes: LocalWikiRefreshOutcome[] = [];
+  if (changed.size === 0) return { outcomes };
+
+  for (const group of selectWikiGroups(args.snap)) {
+    const touched = group.files.filter((f) => changed.has(f));
+    if (touched.length === 0) continue;
+    const localFile = `${group.key}.hivemind.md`;
+    const abs = join(args.repoRoot, localFile);
+    if (!existsSync(abs)) {
+      outcomes.push({ file: localFile, action: "not-materialized", reasons: ["run `hivemind docs pull` first"] });
+      continue;
+    }
+    const diff = args.git(["diff", "HEAD", "--", ...touched]) ?? "";
+    if (diff.trim() === "") continue;
+
+    const current = readFileSync(abs, "utf-8");
+    let response: string;
+    try {
+      response = (await args.run(buildUpdatePrompt(group.key, stripFilesIndex(current), diff))).trim();
+    } catch (err) {
+      outcomes.push({ file: localFile, action: "failed", reasons: [(err as Error).message] });
+      continue;
+    }
+    if (response === NO_CHANGE || response === "") {
+      outcomes.push({ file: localFile, action: "no_change" });
+      continue;
+    }
+    const next = appendFilesIndex(response, group.files);
+    const gate = gateDocEdit({
+      tier: "slow",
+      allowSlow: true,
+      prevContent: current,
+      newContent: next,
+      newAnchors: [],
+      snap: args.snap,
+      maxChangedLines: args.maxChangedLines ?? DEFAULT_WIKI_MAX_CHANGED_LINES,
+    });
+    if (!gate.ok) {
+      outcomes.push({ file: localFile, action: "escalate-skipped", reasons: gate.reasons });
+      continue;
+    }
+    writeFileSync(abs, next.endsWith("\n") ? next : next + "\n");
+    outcomes.push({ file: localFile, action: "patched" });
+  }
+  return { outcomes };
 }
 
 /** One full refresh cycle. See module docstring for the protocol. */

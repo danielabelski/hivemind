@@ -51,7 +51,7 @@ import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHo
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
-import { runWikiRefreshCycle } from "../docs/wiki-refresh.js";
+import { runWikiRefreshCycle, runLocalWikiRefresh } from "../docs/wiki-refresh.js";
 import { execFileSync } from "node:child_process";
 import { hostname, userInfo } from "node:os";
 import type { GitRunner } from "../docs/candidates.js";
@@ -92,7 +92,9 @@ Usage:
       files next to the code (wiki/xarray/plot -> xarray/plot.hivemind.md).
       Incremental: only rows newer than the local cursor
       (.hivemind/docs-pull.json) are read. --force re-pulls everything.
-  hivemind docs wiki-refresh [--cwd <dir>] [--force]
+  hivemind docs wiki-refresh [--cwd <dir>] [--force] [--local]
+      --local: preview mode — the diff is the WORKING TREE and the patches
+      land only on the local gitignored *.hivemind.md files, never the table.
       One lease-guarded refresh cycle for the wiki pages: diff since the last
       refreshed sha -> patch each touched page in place (escalating to a full
       regen when patching is the wrong tool) -> advance the sha only when the
@@ -174,9 +176,9 @@ function parseLimit(args: string[]): number {
   return n;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local"]);
 /** Flags that take NO value — they must not consume the following token. */
-const BOOLEAN_FLAGS = new Set(["--dry-run", "--force"]);
+const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -498,6 +500,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
   if (sub === "wiki-refresh") {
     const cwd = flagValue(args, "--cwd") ?? process.cwd();
     const force = args.includes("--force");
+    const local = args.includes("--local");
     const project = flagValue(args, "--project") ?? deriveProjectKey(cwd).key;
     const snap = loadCurrentSnapshot(cwd);
     if (!snap) {
@@ -505,8 +508,6 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       process.exit(1);
       throw new Error("unreachable");
     }
-    await api.ensureDocsTable(tableName);
-    if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
     const git: GitRunner = (gitArgs) => {
       try {
         return execFileSync("git", ["-C", cwd, ...gitArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
@@ -514,6 +515,22 @@ export async function runDocsCommand(args: string[]): Promise<void> {
         return null;
       }
     };
+    if (local) {
+      // Working-tree preview: patches ONLY the local *.hivemind.md files,
+      // never the table — no lease, no meta, no network write.
+      const report = await runLocalWikiRefresh({ snap, repoRoot: cwd, run: makeHostRunPrompt(), git });
+      if (report.outcomes.length === 0) {
+        console.log("Local wiki preview: nothing touched by the working tree.");
+      } else {
+        console.log(`Local wiki preview: ${report.outcomes.length} page(s) considered.`);
+        for (const o of report.outcomes) {
+          console.log(`  ${o.action} ${o.file}${o.reasons ? ` (${o.reasons.join("; ")})` : ""}`);
+        }
+      }
+      return;
+    }
+    await api.ensureDocsTable(tableName);
+    if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
     const report = await runWikiRefreshCycle({
       query, tableName, snap, repoRoot: cwd, project,
       run: makeHostRunPrompt(), git,

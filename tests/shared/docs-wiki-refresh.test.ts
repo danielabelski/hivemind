@@ -8,7 +8,7 @@ vi.mock("../../src/docs/stable-read.js", () => ({
   stableUnionRows: (q: (sql: string) => unknown, sql: string) => q(sql),
 }));
 
-import { runWikiRefreshCycle, DEFAULT_MIN_PERIOD_MS, type WikiRefreshArgs } from "../../src/docs/wiki-refresh.js";
+import { runWikiRefreshCycle, runLocalWikiRefresh, DEFAULT_MIN_PERIOD_MS, type WikiRefreshArgs } from "../../src/docs/wiki-refresh.js";
 import { appendFilesIndex, collectWikiAnchors } from "../../src/docs/wiki-generate.js";
 import { docRowId } from "../../src/docs/write.js";
 import type { GitRunner } from "../../src/docs/candidates.js";
@@ -229,5 +229,68 @@ describe("runWikiRefreshCycle", () => {
     const report = await runWikiRefreshCycle(baseArgs(backend, () => null));
     expect(report.status).toBe("no-git");
     expect(backend.calls).toHaveLength(0);
+  });
+});
+
+describe("runLocalWikiRefresh (--local preview)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "docs-wlocal-"));
+    mkdirSync(join(dir, "pkg", "core"), { recursive: true });
+    writeFileSync(join(dir, "pkg", "core", "a.ts"), "export function foo() {\n  return 1;\n}\n");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const SNAP = () => snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts")]);
+  const gitLocal =
+    (workingTree: string[]): GitRunner =>
+    (args) => {
+      if (args[0] === "diff" && args[1] === "--name-only") return workingTree.join("\n") + "\n";
+      if (args[0] === "ls-files") return "";
+      if (args[0] === "diff") return "- return 1\n+ return 7\n";
+      return null;
+    };
+
+  it("patches ONLY the local materialized file — no query function even exists in its API", async () => {
+    const { readFileSync: rf, writeFileSync: wf } = await import("node:fs");
+    const { appendFilesIndex: afi } = await import("../../src/docs/wiki-generate.js");
+    wf(join(dir, "pkg", "core.hivemind.md"), afi("## Purpose\nfoo returns 1.", ["pkg/core/a.ts"]));
+    const { outcomes } = await runLocalWikiRefresh({
+      snap: SNAP(), repoRoot: dir, git: gitLocal(["pkg/core/a.ts"]),
+      run: async () => "## Purpose\nfoo returns 7.",
+    });
+    expect(outcomes).toEqual([{ file: "pkg/core.hivemind.md", action: "patched" }]);
+    const body = rf(join(dir, "pkg", "core.hivemind.md"), "utf-8");
+    expect(body).toContain("foo returns 7.");
+    expect(body).toContain("## Files"); // mechanics re-appended
+  });
+
+  it("page not materialized locally → reported, nothing written", async () => {
+    const { outcomes } = await runLocalWikiRefresh({
+      snap: SNAP(), repoRoot: dir, git: gitLocal(["pkg/core/a.ts"]),
+      run: async () => "x",
+    });
+    expect(outcomes[0].action).toBe("not-materialized");
+  });
+
+  it("clean working tree → nothing considered, no LLM call", async () => {
+    const run = vi.fn(async () => "x");
+    const { outcomes } = await runLocalWikiRefresh({ snap: SNAP(), repoRoot: dir, git: gitLocal([]), run });
+    expect(outcomes).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("an over-budget preview patch is SKIPPED (regen belongs to the canonical cycle)", async () => {
+    const { writeFileSync: wf, readFileSync: rf } = await import("node:fs");
+    const { appendFilesIndex: afi } = await import("../../src/docs/wiki-generate.js");
+    const before = afi("## Purpose\nshort.", ["pkg/core/a.ts"]);
+    wf(join(dir, "pkg", "core.hivemind.md"), before);
+    const huge = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n");
+    const { outcomes } = await runLocalWikiRefresh({
+      snap: SNAP(), repoRoot: dir, git: gitLocal(["pkg/core/a.ts"]),
+      run: async () => huge,
+    });
+    expect(outcomes[0].action).toBe("escalate-skipped");
+    expect(rf(join(dir, "pkg", "core.hivemind.md"), "utf-8")).toBe(before); // untouched
   });
 });

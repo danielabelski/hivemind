@@ -63,8 +63,14 @@ export {
 } from "./wiki-generate.js";
 export type { WikiGenArgs, WikiReport, WikiOutcome, WikiFileSource, RunPromptFn } from "./wiki-generate.js";
 
-export { runWikiRefreshCycle, DEFAULT_MIN_PERIOD_MS } from "./wiki-refresh.js";
-export type { WikiRefreshArgs, WikiRefreshReport, WikiRefreshOutcome } from "./wiki-refresh.js";
+export { runWikiRefreshCycle, runLocalWikiRefresh, DEFAULT_MIN_PERIOD_MS } from "./wiki-refresh.js";
+export type {
+  WikiRefreshArgs,
+  WikiRefreshReport,
+  WikiRefreshOutcome,
+  LocalWikiRefreshArgs,
+  LocalWikiRefreshOutcome,
+} from "./wiki-refresh.js";
 
 export {
   updateWikiPage,
