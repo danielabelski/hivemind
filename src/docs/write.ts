@@ -219,7 +219,7 @@ export async function insertDocResilient(
       // EVERY attempt including the last — otherwise a final-attempt timeout
       // whose write landed reports failure and invites a duplicating retry.
       await sleep(backoff[Math.min(attempt, backoff.length - 1)]);
-      const landed = await getDocLatest(query, tableName, input.doc_id).catch(() => null);
+      const landed = await getDocLatest(query, tableName, input.doc_id, { project: input.project }).catch(() => null);
       if (landed) return { doc_id: landed.doc_id, version: landed.version };
       if (attempt === retries) break;
     }
@@ -270,7 +270,7 @@ export async function upsertDoc(
       // can legitimately own a legacy row with the same bare doc_id.
       await query(
         `DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}' ` +
-          `OR (id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}')`,
+          `OR (doc_id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}')`,
       );
       const sql =
         `INSERT INTO "${safe}" ` +

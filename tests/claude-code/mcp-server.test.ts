@@ -116,8 +116,8 @@ describe("hivemind_docs_search", () => {
   it("zero hits → error text naming the query", async () => {
     searchDocsMock.mockResolvedValue([]);
     await importServer();
-    const out = await registeredTools.get("hivemind_docs_search")!.handler({ query: "nope" });
-    expect(JSON.stringify(out)).toContain('No docs match');
+    const out = await registeredTools.get("hivemind_docs_search")!.handler({ query: "nope" }) as { content: { text: string }[] };
+    expect(out.content[0].text).toBe('No docs match "nope".');
   });
 });
 

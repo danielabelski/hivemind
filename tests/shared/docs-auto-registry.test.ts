@@ -38,6 +38,15 @@ describe("auto-registry (the only switch for automatic doc sync)", () => {
     expect(isAutoEnabled("o", "p", file)).toBe(false);
   });
 
+  it("an entry without path is dropped (listEntries sort must never throw)", () => {
+    writeFileSync(file, JSON.stringify({ entries: [
+      { orgId: "o", project: "p", auto: true, enabledAt: "t" }, // path missing
+      { orgId: "o", project: "q", path: "/r", auto: true, enabledAt: "t" },
+    ] }));
+    expect(() => listEntries(file)).not.toThrow();
+    expect(listEntries(file)).toHaveLength(1);
+  });
+
   it("malformed entries are dropped, valid ones survive", () => {
     writeFileSync(file, JSON.stringify({ entries: [
       { orgId: "o", project: "p", path: "/r", auto: true, enabledAt: "t" },

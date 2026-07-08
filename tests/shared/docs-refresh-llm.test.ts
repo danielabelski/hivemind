@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({
   execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
 }));
 
-import { makeClaudeGenerate, resolveDocLlmSpec, unwrapModelOutput } from "../../src/docs/refresh-llm.js";
+import { detectHostAgent, makeClaudeGenerate, resolveDocLlmSpec, unwrapModelOutput } from "../../src/docs/refresh-llm.js";
 import type { RefreshContext } from "../../src/docs/index.js";
 
 const ctx: RefreshContext = {
@@ -66,6 +66,22 @@ describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
     const inv = spec.build("my-llm", "PROMPT");
     expect(inv.args).toEqual(["run"]); // no prompt in argv
     expect(inv.options.input).toBe("PROMPT");
+  });
+
+  it("pi and cursor specs mirror their production wiki workers (trailing prompt)", () => {
+    const pi = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "pi" });
+    const inv = pi.build("/usr/bin/pi", "PROMPT");
+    expect(inv.args).toEqual(["--print", "--provider", "google", "--model", "gemini-2.5-flash", "PROMPT"]);
+    const cursor = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "cursor" });
+    const cinv = cursor.build("/usr/bin/cursor-agent", "PROMPT");
+    expect(cinv.args).toEqual(["--print", "--model", "auto", "--force", "--output-format", "text", "PROMPT"]);
+  });
+
+  it("auto-detects the host agent from installed CLIs, stdin-safe first, fail-loud on none", () => {
+    expect(detectHostAgent((b) => (b === "codex" ? "/bin/codex" : null))).toBe("codex");
+    expect(detectHostAgent((b) => (b === "claude" || b === "codex" ? `/bin/${b}` : null))).toBe("claude");
+    expect(detectHostAgent((b) => (b === "cursor-agent" ? "/bin/ca" : null))).toBe("cursor");
+    expect(() => detectHostAgent(() => null)).toThrow(/No host agent CLI found/);
   });
 
   it("the custom escape hatch beats a named agent when both are set", () => {

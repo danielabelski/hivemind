@@ -216,7 +216,9 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       return;
     }
 
-    const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
+    // Best-effort by contract: an embed failure must cost the VECTOR, never
+    // the refresh (an uncaught throw here would reject the whole runPool batch).
+    const content_embedding = args.embed ? (await args.embed(newContent).catch(() => null)) ?? undefined : undefined;
     const res = await setDoc(args.query, args.tableName, {
       doc_id: doc.doc_id,
       path: doc.path,

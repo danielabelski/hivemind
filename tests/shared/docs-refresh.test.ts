@@ -83,18 +83,18 @@ describe("gateDocEdit", () => {
   it("rejects empty content", () => {
     const r = gateDocEdit({ tier: "fast", prevContent: "x", newContent: "", newAnchors: [], snap: s });
     expect(r.ok).toBe(false);
-    expect(r.reasons.join()).toMatch(/empty/);
+    expect(r.reasons).toEqual(["proposed content is empty"]);
   });
   it("rejects content over the length cap", () => {
     const big = "x".repeat(GATE_MAX_CONTENT_LENGTH + 1);
     const r = gateDocEdit({ tier: "fast", prevContent: "x", newContent: big, newAnchors: [], snap: s });
     expect(r.ok).toBe(false);
-    expect(r.reasons.join()).toMatch(/exceeds .* chars/);
+    expect(r.reasons).toEqual([`proposed content exceeds ${GATE_MAX_CONTENT_LENGTH} chars (got ${big.length})`]);
   });
   it("rejects automatic refresh of a slow-tier doc", () => {
     const r = gateDocEdit({ tier: "slow", prevContent: "x", newContent: "y", newAnchors: [anchor], snap: s });
     expect(r.ok).toBe(false);
-    expect(r.reasons.join()).toMatch(/slow-tier/);
+    expect(r.reasons).toEqual(["slow-tier docs are human-curated; automatic refresh is not allowed"]);
   });
   it("allowSlow opts a slow-tier edit in (the wiki update-worker's own pipeline)", () => {
     const r = gateDocEdit({ tier: "slow", allowSlow: true, prevContent: "x", newContent: "y", newAnchors: [anchor], snap: s });
@@ -103,13 +103,13 @@ describe("gateDocEdit", () => {
   it("rejects an anchor pointing at a symbol absent from the graph", () => {
     const r = gateDocEdit({ tier: "fast", prevContent: "x", newContent: "y", newAnchors: [{ symbol_id: "a.ts:gone:function", content_hash: "h" }], snap: s });
     expect(r.ok).toBe(false);
-    expect(r.reasons.join()).toMatch(/absent from the graph/);
+    expect(r.reasons).toEqual(["anchor references a symbol absent from the graph: a.ts:gone:function"]);
   });
   it("rejects an edit beyond the changed-line budget", () => {
     const huge = Array.from({ length: DEFAULT_MAX_CHANGED_LINES + 5 }, (_, i) => `line ${i}`).join("\n");
     const r = gateDocEdit({ tier: "fast", prevContent: "old doc", newContent: huge, newAnchors: [anchor], snap: s });
     expect(r.ok).toBe(false);
-    expect(r.reasons.join()).toMatch(/bounded-change budget/);
+    expect(r.reasons).toEqual([expect.stringMatching(/^edit exceeds the bounded-change budget: \d+ > \d+ lines$/)]);
   });
   it("honors a custom maxChangedLines override", () => {
     const r = gateDocEdit({ tier: "fast", prevContent: "a", newContent: "b\nc\nd", newAnchors: [anchor], snap: s, maxChangedLines: 1 });
@@ -186,7 +186,7 @@ describe("refreshDocs", () => {
     });
     expect(report.rejected).toBe(1);
     expect(report.outcomes[0].status).toBe("rejected");
-    expect(report.outcomes[0].reasons?.join()).toMatch(/budget/);
+    expect(report.outcomes[0].reasons).toEqual([expect.stringMatching(/^edit exceeds the bounded-change budget: \d+ > \d+ lines$/)]);
     expect(calls).toHaveLength(0); // nothing written
   });
 
@@ -199,7 +199,7 @@ describe("refreshDocs", () => {
       impacted: impacted(), docsById: new Map([["a.ts", d]]), generate,
     });
     expect(report.rejected).toBe(1);
-    expect(report.outcomes[0].reasons?.join()).toMatch(/slow-tier/);
+    expect(report.outcomes[0].reasons).toEqual(["slow-tier docs are human-curated; automatic refresh is not allowed"]);
     // The generator is never invoked for slow-tier docs.
     expect(generate).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
@@ -224,7 +224,7 @@ describe("refreshDocs", () => {
       generate: async () => { throw new Error("LLM down"); },
     });
     expect(report.skipped).toBe(1);
-    expect(report.outcomes[0].reasons?.join()).toMatch(/LLM down/);
+    expect(report.outcomes[0].reasons).toEqual(["generate failed: LLM down"]);
     expect(calls).toHaveLength(0);
   });
 

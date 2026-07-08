@@ -77,10 +77,63 @@ function codexSpec(env: NodeJS.ProcessEnv): DocLlmSpec {
   return { label: "codex", bin: "codex", build: (b, p) => buildStdinPromptInvocation(b, flags, p) };
 }
 
+/**
+ * pi and cursor read the prompt as a TRAILING ARG (their own wiki workers
+ * prove the shape); stdin is not verified for either, so oversized prompts
+ * can hit the OS argv limit — acceptable for now, matching their workers.
+ * openclaw has NO prompt CLI (it is a gateway) and can never host doc
+ * generation: on an openclaw box the auto-detection below picks whichever
+ * real agent CLI is installed.
+ */
 const REGISTRY: Record<string, (env: NodeJS.ProcessEnv) => DocLlmSpec> = {
   claude: () => ({ label: "claude", bin: "claude", build: (b, p) => buildClaudeStdinInvocation(b, p) }),
   codex: codexSpec,
+  pi: (env) => ({
+    label: "pi",
+    bin: "pi",
+    build: (b, p) =>
+      buildTrailingPromptInvocation(b, [
+        "--print",
+        "--provider", env.HIVEMIND_PI_PROVIDER ?? "google",
+        "--model", env.HIVEMIND_PI_MODEL ?? "gemini-2.5-flash",
+      ], p),
+  }),
+  cursor: (env) => ({
+    label: "cursor",
+    bin: "cursor-agent",
+    build: (b, p) =>
+      buildTrailingPromptInvocation(b, [
+        "--print",
+        "--model", env.HIVEMIND_CURSOR_MODEL ?? "auto",
+        "--force",
+        "--output-format", "text",
+      ], p),
+  }),
 };
+
+/**
+ * Pick the host agent by what is actually installed — no ambient env needed.
+ * Order = stdin-safe first (claude, codex), then trailing-arg CLIs. Fails
+ * loud when nothing is found: silent fallbacks are how wrong bills happen.
+ */
+export function detectHostAgent(resolve: (bin: string) => string | null = tryResolveCliBin): string {
+  for (const name of ["claude", "codex", "pi", "cursor"] as const) {
+    const spec = REGISTRY[name]({});
+    if (resolve(spec.bin) !== null) return name;
+  }
+  throw new Error(
+    "No host agent CLI found for doc generation (looked for: claude, codex, pi, cursor-agent). " +
+      "Install one, or set HIVEMIND_DOCS_LLM_AGENT / HIVEMIND_DOCS_LLM_BIN explicitly.",
+  );
+}
+
+function tryResolveCliBin(bin: string): string | null {
+  try {
+    return resolveCliBin(bin);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * PAGE-AUTHORING spec: the wiki audit showed final-page writing is where
@@ -141,7 +194,9 @@ export function resolveDocLlmSpec(env: NodeJS.ProcessEnv = process.env): DocLlmS
       build: (b, p) => (viaStdin ? buildStdinPromptInvocation(b, flags, p) : buildTrailingPromptInvocation(b, flags, p)),
     };
   }
-  const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? "claude").toLowerCase();
+  // Explicit selection wins; otherwise detect from what is installed —
+  // "on claude code it is claude, on codex it is codex", with no env needed.
+  const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? detectHostAgent()).toLowerCase();
   const spec = REGISTRY[agent]?.(env);
   if (!spec) {
     throw new Error(

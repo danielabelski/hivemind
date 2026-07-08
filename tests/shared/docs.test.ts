@@ -253,8 +253,11 @@ describe("upsertDoc", () => {
     // pre-scope tables converge instead of accumulating a duplicate doc_id.
     // The legacy clause is constrained to THIS project — another project's
     // legacy row with the same bare doc_id must survive in a shared table.
+    // The second clause sweeps by doc_id+project: it converges BOTH legacy
+    // bare-id rows AND setDoc's random-UUID rows onto the composite id,
+    // without ever touching another project's rows.
     expect(calls[0]).toBe(
-      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (id = 'src/a.ts' AND project = 'p')`,
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (doc_id = 'src/a.ts' AND project = 'p')`,
     );
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
     // id column is the deterministic composite, NOT a random uuid

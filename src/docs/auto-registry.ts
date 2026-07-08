@@ -51,6 +51,7 @@ export function readAutoRegistry(file = registryPath()): AutoRegistry {
         !!e && typeof e === "object" &&
         typeof (e as AutoEntry).orgId === "string" &&
         typeof (e as AutoEntry).project === "string" &&
+        typeof (e as AutoEntry).path === "string" &&
         typeof (e as AutoEntry).auto === "boolean",
     );
     return { entries };

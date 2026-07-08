@@ -53,8 +53,10 @@ export interface DocRow {
 export interface ListDocsOpts {
   /** Filter by status. Default 'active'. Pass 'all' for everything. */
   status?: "active" | "archived" | "all";
-  /** Filter to one project. Omit for all projects. */
+  /** Filter to one project (STRICT). Omit for all projects. */
   project?: string;
+  /** Filter to one project but keep legacy unstamped rows (project='') visible. */
+  projectOrLegacy?: string;
   /** Max rows returned. Default 200. */
   limit?: number;
 }
@@ -113,6 +115,7 @@ export async function listDocs(
     if (!row) continue;
     if (row.doc_id === "_meta") continue; // reserved refresh-bookkeeping row, not a doc
     if (opts.project !== undefined && row.project !== opts.project) continue;
+    if (opts.projectOrLegacy !== undefined && row.project !== opts.projectOrLegacy && row.project !== "") continue;
     const key = `${row.project}\u0000${row.doc_id}`;
     const prev = latest.get(key);
     if (

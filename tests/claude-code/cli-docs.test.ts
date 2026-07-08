@@ -58,7 +58,9 @@ const VALID_CONFIG = {
 function docRow(over: Record<string, unknown> = {}) {
   return {
     id: "row", doc_id: "a.ts", path: "/docs/p/a.ts.md", content: "body",
-    anchors: "[]", tier: "fast", status: "active", project: "p", version: 1,
+    anchors: "[]", tier: "fast", status: "active",
+    // Legacy unstamped row: visible under projectOrLegacy scoping from any repo.
+    project: "", version: 1,
     created_at: "t", updated_at: "t", agent: "m", plugin_version: "0", ...over,
   };
 }

@@ -79,7 +79,8 @@ Everyday:
       Bring the docs up to date with the code (wiki pages + per-file docs).
       Builds the code graph under the hood if missing. First interactive run
       on an empty corpus walks the same consent flow as graph init. --local
-      previews patches on the working tree only (never writes the table).
+      previews WIKI-page patches on the working tree only (never writes the
+      table; per-file docs have no local preview).
   hivemind docs pull [--cwd <dir>] [--project P] [--scope S] [--force]
       Materialize the docs locally as gitignored *.hivemind.md files next to
       the code. Incremental (local cursor); --force re-pulls everything.
@@ -455,11 +456,11 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     try {
       if (changed !== null) {
         const candidates = expandToCandidateFiles(snap, changed);
-        docs = await listDocsByIds(query, tableName, candidates);
+        docs = await listDocsByIds(query, tableName, candidates, { projectOrLegacy: deriveProjectKey(cwd).key });
         docs = docs.filter((d) => d.status === "active");
         console.error(`[docs refresh] scoped to ${candidates.length} candidate file(s) from git diff (${changed.length} changed)`);
       } else {
-        docs = await listDocs(query, tableName, { status: "active", limit: 100000 });
+        docs = await listDocs(query, tableName, { status: "active", limit: 100000, projectOrLegacy: deriveProjectKey(cwd).key });
         console.error(`[docs refresh] no git signal — full scan of ${docs.length} doc(s)`);
       }
     } catch (err) {
@@ -835,7 +836,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
     // Batch by default (5 files/call) — amortizes the per-call LLM boot ~2.5x.
     // `--batch 1` opts out; larger batches trade a little quality for speed.
-    const batchSize = Number(flagValue(args, "--batch") ?? "5");
+    // The batch protocol keys responses by FILE, so symbol scope (N targets
+    // per file) must not batch — same-file symbols would collapse.
+    const batchSize = scope === "symbol" ? 1 : Number(flagValue(args, "--batch") ?? "5");
     const report = await generateDocs({
       query, tableName, snap, repoRoot: cwd, project, scope, include, exclude,
       existing, force, limit, concurrency,
