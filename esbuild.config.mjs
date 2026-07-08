@@ -394,7 +394,6 @@ await build({
     "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS",
     "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMIT_ALL",
     "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
-    "process.env.HIVEMIND_DOCS_AUTO_REFRESH": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_AUTO_REFRESH",
     // `HIVEMIND_STATE_DIR` is the test-isolation override that points
     // `~/.deeplake/state/skillify` at a `mkdtempSync()` dir. OpenClaw has
     // no testing surface and no reason to redirect state, so it always
@@ -499,7 +498,6 @@ await build({
     "process.env.HIVEMIND_PI_MODEL": "globalThis.__hivemind_tuning__.HIVEMIND_PI_MODEL",
     "process.env.HIVEMIND_SKILLIFY_WORKER": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_WORKER",
     "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
-    "process.env.HIVEMIND_DOCS_AUTO_REFRESH": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_AUTO_REFRESH",
     "process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_EVERY_N_TURNS",
     "process.env.HIVEMIND_AUTOPULL_DISABLED": "globalThis.__hivemind_tuning__.HIVEMIND_AUTOPULL_DISABLED",
     // Skillify state-dir test-isolation override. OpenClaw never needs
@@ -547,7 +545,6 @@ const openclawGraphWorkerDefine = {
     "process.env.HIVEMIND_GRAPH_PULL": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL",
     "process.env.HIVEMIND_GRAPH_PULL_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL_TIMEOUT_MS",
     "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
-    "process.env.HIVEMIND_DOCS_AUTO_REFRESH": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_AUTO_REFRESH",
     // Transitively imported via DeeplakeApi -> index-marker-store.ts. Without
     // these two rewrites the bundle keeps literal `process.env.HIVEMIND_INDEX_MARKER_*`
     // reads alongside fetch() and trips ClawHub's env-harvesting critical rule.

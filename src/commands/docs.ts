@@ -51,6 +51,8 @@ import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHo
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
+import { setAuto, findEntry, listEntries } from "../docs/auto-registry.js";
+import { defaultIo } from "../docs/onboarding.js";
 import { runWikiRefreshCycle, runLocalWikiRefresh } from "../docs/wiki-refresh.js";
 import { loadSnapshotByCommit } from "../graph/diff.js";
 import { repoDir } from "../graph/snapshot.js";
@@ -550,6 +552,49 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     for (const o of report.outcomes) {
       console.log(`  ${o.action} ${o.doc_id}${o.reasons ? ` (${o.reasons.join("; ")})` : ""}`);
     }
+    return;
+  }
+
+  if (sub === "auto") {
+    const mode = args[1];
+    if (mode !== "on" && mode !== "off") {
+      console.error("Usage: hivemind docs auto on|off [--cwd <dir>]");
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const project = deriveProjectKey(cwd).key;
+    if (mode === "off") {
+      setAuto({ orgId: cfg.orgId, orgName: cfg.orgName, project, path: cwd, auto: false });
+      console.log(`Auto sync OFF for this repo on org ${cfg.orgName ?? cfg.orgId}.`);
+      return;
+    }
+    // ON: explicit consent when the corpus does not exist yet — enabling auto
+    // on an empty corpus means the first cycle generates EVERY page.
+    const snap = loadCurrentSnapshot(cwd);
+    let pages = 0;
+    try {
+      const rows = await listDocs(query, tableName, { project, status: "active", limit: 100000 });
+      pages = rows.filter((r) => r.doc_id.startsWith(WIKI_DOC_PREFIX)).length;
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+    }
+    if (pages === 0) {
+      const est = snap ? `~${selectWikiGroups(snap).length} pages` : "the full corpus";
+      const io = defaultIo();
+      if (!io.interactive) {
+        console.error(`No wiki corpus yet for this repo — enabling auto would generate ${est} on the first cycle. Run interactively (or generate first with \`hivemind docs wiki\`).`);
+        process.exit(1);
+        throw new Error("unreachable");
+      }
+      const a = await io.ask(`No wiki corpus yet: ${est} will be generated on the first cycle (LLM cost). Proceed? [y/N] `);
+      if (!/^y(es)?$/i.test(a.trim())) {
+        console.log("Left OFF. Generate first with: hivemind docs wiki");
+        return;
+      }
+    }
+    setAuto({ orgId: cfg.orgId, orgName: cfg.orgName, project, path: cwd, auto: true });
+    console.log(`Auto sync ON for this repo on org ${cfg.orgName ?? cfg.orgId}. Docs stay fresh on every commit (consumes LLM tokens). Turn off with: hivemind docs auto off`);
     return;
   }
 

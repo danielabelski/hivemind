@@ -13,13 +13,15 @@
  */
 
 import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
+import { isAutoEnabled } from "./auto-registry.js";
 
 export interface AutoRefreshDeps {
-  env?: NodeJS.ProcessEnv;
   /** The CLI entry script to re-invoke (defaults to the running cli bundle). */
   cliEntry?: string;
   /** Injectable spawn for tests. */
   spawn?: (workerPath: string, args: readonly string[]) => void;
+  /** Injectable registry check for tests. */
+  isAutoEnabledFn?: (orgId: string, project: string) => boolean;
 }
 
 /**
@@ -31,12 +33,12 @@ export interface AutoRefreshDeps {
  * were spawned, false if it was a no-op (flag off, or no CLI entry to
  * re-invoke). Best-effort and non-throwing.
  */
-export function maybeSpawnDocsRefresh(cwd: string, deps: AutoRefreshDeps = {}): boolean {
-  // Member access only (never bare `process.env`): esbuild `define` rewrites
-  // `process.env.HIVEMIND_DOCS_AUTO_REFRESH` for the openclaw bundle so its
-  // ClawHub static scan sees zero process.env reads.
-  const flag = deps.env ? deps.env.HIVEMIND_DOCS_AUTO_REFRESH : process.env.HIVEMIND_DOCS_AUTO_REFRESH;
-  if (flag !== "1") return false;
+export function maybeSpawnDocsRefresh(cwd: string, ctx: { orgId: string; project: string }, deps: AutoRefreshDeps = {}): boolean {
+  // The ONLY switch is the per-(org, project) registry the user opted into via
+  // the CLI. No env var: an automatic LLM spend must never start from ambient
+  // shell state the user did not explicitly set for THIS repo and THIS org.
+  const enabled = (deps.isAutoEnabledFn ?? isAutoEnabled)(ctx.orgId, ctx.project);
+  if (!enabled) return false;
   const cliEntry = deps.cliEntry ?? process.argv[1];
   if (!cliEntry) return false;
   const spawn = deps.spawn ?? spawnDetachedNodeWorker;

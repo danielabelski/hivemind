@@ -10,6 +10,11 @@
  */
 
 import { execSync } from "node:child_process";
+import { loadConfig } from "../config.js";
+import { runDocsOnboarding } from "../docs/onboarding.js";
+import { tryGitTopLevel } from "../graph/git-hook-install.js";
+import { loadCurrentSnapshot } from "../graph/load-current.js";
+import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
@@ -183,6 +188,32 @@ async function runInitCommand(args: string[]): Promise<void> {
   } else {
     console.log("");
     console.log("Skipped initial build (--no-initial-build). Run `hivemind graph build` when ready.");
+  }
+
+  // Docs onboarding — the one moment a human consents to LLM spend. The
+  // build above makes the ~N pages estimate real. Fail-closed by contract:
+  // no git → hint only; no TTY → silent; defaults are No.
+  const initCfg = loadConfig();
+  if (initCfg) {
+    const root = tryGitTopLevel(opts.cwd) ?? opts.cwd;
+    console.log("");
+    const result = await runDocsOnboarding({
+      root,
+      isGitRepo: tryGitTopLevel(opts.cwd) !== null,
+      orgId: initCfg.orgId,
+      orgName: initCfg.orgName,
+      project: deriveProjectKey(root).key,
+      snap: loadCurrentSnapshot(root),
+    });
+    if (result.generate) {
+      const cliEntry = process.argv[1];
+      if (cliEntry) {
+        spawnDetachedNodeWorker(cliEntry, ["docs", "wiki", "--cwd", root]);
+        console.log("Generating wiki docs in the background — check with: hivemind docs list");
+      } else {
+        console.log("Run `hivemind docs wiki` to generate the corpus.");
+      }
+    }
   }
 }
 
@@ -539,11 +570,12 @@ export async function runBuildCommand(args: string[]): Promise<void> {
       break;
   }
 
-  // Step 8: after the snapshot is fresh on disk, optionally refresh any docs
-  // whose anchored code drifted. Opt-in (HIVEMIND_DOCS_AUTO_REFRESH=1),
-  // detached, best-effort — never blocks the build.
-  if (maybeSpawnDocsRefresh(cwd)) {
-    console.log("Docs:          spawned drift refresh (HIVEMIND_DOCS_AUTO_REFRESH=1)");
+  // Step 8: after the snapshot is fresh on disk, refresh docs IF the user
+  // opted this (org, repo) in via the CLI registry (`docs auto on` or the
+  // graph-init onboarding). Detached, best-effort — never blocks the build.
+  const autoCfg = loadConfig();
+  if (autoCfg && maybeSpawnDocsRefresh(cwd, { orgId: autoCfg.orgId, project: deriveProjectKey(cwd).key })) {
+    console.log("Docs:          spawned auto sync (enabled for this repo — `hivemind docs list`)");
   }
 }
 
