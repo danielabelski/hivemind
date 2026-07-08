@@ -1170,6 +1170,14 @@ describe("docs VFS routing in the shell", () => {
     expect(calls.some((s) => /FROM "hivemind_docs"/.test(s))).toBe(true);  // queried docs table
   });
 
+  it("a bare /docs directory read throws EISDIR; a missing leaf throws ENOENT", async () => {
+    const client = makeDocsClient(() => []);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", { docsTable: "hivemind_docs" });
+    await expect(fs.readFile("/docs")).rejects.toMatchObject({ code: "EISDIR" });
+    // Leaf doc that does not exist → the handler's not-found maps to ENOENT.
+    await expect(fs.readFile("/docs/no/such/file.ts.md")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("does NOT route /docs when docsTable is unset (feature off)", async () => {
     const client = makeDocsClient(() => []);
     const fs = await DeeplakeFs.create(client as never, "memory", "/");

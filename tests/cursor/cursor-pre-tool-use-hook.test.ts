@@ -25,7 +25,10 @@ vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => std
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
 vi.mock("../../src/utils/debug.js", () => ({ log: (_tag: string, msg: string) => debugLogMock(msg) }));
 vi.mock("../../src/deeplake-api.js", () => ({
-  DeeplakeApi: class { constructor(..._: unknown[]) {} },
+  DeeplakeApi: class {
+    constructor(..._: unknown[]) {}
+    query = vi.fn(async () => []);
+  },
 }));
 const tryDocsReadMock = vi.fn();
 vi.mock("../../src/docs/docs-command.js", () => ({
@@ -81,7 +84,11 @@ describe("cursor pre-tool-use hook — guard branches", () => {
   it("a /docs read is served by tryDocsRead, PROJECT-SCOPED to the session cwd repo", async () => {
     stdinMock.mockResolvedValue({ tool_name: "Shell", tool_input: { command: "cat ~/.deeplake/memory/docs/index.md" }, cwd: "/tmp" });
     parseBashGrepMock.mockReturnValue(null); // not a grep → falls through to docs dispatch
-    tryDocsReadMock.mockResolvedValue("DOCS INDEX BODY");
+    // Invoke the query thunk the hook hands over, so the real arrow executes.
+    tryDocsReadMock.mockImplementation(async (_cmd: string, q: (sql: string) => Promise<unknown>) => {
+      await q("SELECT 1");
+      return "DOCS INDEX BODY";
+    });
     await runHook();
     const out = stdoutWriteMock.mock.calls.map((c: unknown[]) => String(c[0])).join("");
     expect(out).toContain("DOCS INDEX BODY");

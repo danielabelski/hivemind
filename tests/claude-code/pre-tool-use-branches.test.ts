@@ -230,7 +230,13 @@ describe("processPreToolUse: docs VFS routing", () => {
   });
 
   it("routes a Bash cat of a docs path to a command-shaped allow decision", async () => {
-    const handleDocsVfsFn = vi.fn(async () => ({ kind: "ok" as const, body: "# Docs Index\n" }));
+    // Exercise the (sql) => api.query(sql) thunk the hook passes down, and
+    // pin the project scoping on the opts (shared-table safety).
+    const handleDocsVfsFn = vi.fn(async (_sub: string, q: (sql: string) => Promise<Record<string, unknown>[]>, _t: string, opts?: { project?: string }) => {
+      await q("SELECT 1");
+      expect(typeof opts?.project).toBe("string");
+      return { kind: "ok" as const, body: "# Docs Index\n" };
+    }) as any;
     const d = await processPreToolUse(
       { session_id: "s", tool_name: "Bash", tool_input: { command: "cat ~/.deeplake/memory/docs/index.md" }, tool_use_id: "t" },
       { config: DOCS_CONFIG, createApi: () => makeApi(), handleDocsVfsFn, logFn: vi.fn() },

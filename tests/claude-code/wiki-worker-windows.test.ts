@@ -29,7 +29,7 @@ vi.mock("node:os", async () => {
 });
 
 import { resolveCliBin, binNeedsShell } from "../../src/utils/resolve-cli-bin.js";
-import { buildClaudeInvocation, buildTrailingPromptInvocation } from "../../src/hooks/wiki-worker-spawn.js";
+import { buildClaudeInvocation, buildTrailingPromptInvocation, buildStdinPromptInvocation, buildClaudeStdinInvocation } from "../../src/hooks/wiki-worker-spawn.js";
 
 const realPlatform = process.platform;
 function setPlatform(p: NodeJS.Platform): void {
@@ -110,6 +110,18 @@ describe("resolveCliBin — Unix (unchanged behavior)", () => {
 });
 
 describe("binNeedsShell", () => {
+  it("stdin builders add shell:true for a Windows .cmd shim, and omit it otherwise", () => {
+    setPlatform("win32");
+    const winInv = buildStdinPromptInvocation("claude.cmd", ["-p"], "PROMPT");
+    expect(winInv.options.shell).toBe(true);
+    expect(winInv.options.input).toBe("PROMPT");
+    const winClaude = buildClaudeStdinInvocation("claude.cmd", "PROMPT");
+    expect(winClaude.options.shell).toBe(true);
+    setPlatform("linux");
+    const nixInv = buildStdinPromptInvocation("/usr/bin/claude", ["-p"], "PROMPT");
+    expect(nixInv.options.shell).toBeUndefined();
+  });
+
   it("is true only for Windows .cmd/.bat shims", () => {
     setPlatform("win32");
     expect(binNeedsShell("C:\\x\\claude.cmd")).toBe(true);

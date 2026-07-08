@@ -32,6 +32,25 @@ describe("searchDocs", () => {
     expect(rows).toEqual([{ path: "a.ts", content: "# A" }]);
   });
 
+  it("lexical branches: contentScanOnly prefers prefilterPatterns; multi-word queries OR-join", async () => {
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => { calls.push(sql); return []; });
+    // contentScanOnly + prefilterPatterns → those anchors filter server-side.
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: null, contentScanOnly: true, prefilterPatterns: ["foo", "bar"] });
+    expect(calls[0]).toContain("foo");
+    expect(calls[0]).toContain("bar");
+    // contentScanOnly + single prefilterPattern fallback.
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: null, contentScanOnly: true, prefilterPatterns: [], prefilterPattern: "solo" });
+    expect(calls[1]).toContain("solo");
+    // multi-word non-regex → per-word patterns.
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: null, multiWordPatterns: ["alpha", "beta"] });
+    expect(calls[2]).toContain("alpha");
+    expect(calls[2]).toContain("beta");
+    // hybrid + contentScanOnly: lexical arm uses the prefilter anchors too.
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: [0.1], contentScanOnly: true, prefilterPatterns: ["hyb"] });
+    expect(calls[3]).toContain("hyb");
+  });
+
   it("project scoping: filters to (project OR legacy '') when set, none when unset", async () => {
     const calls: string[] = [];
     const query = vi.fn(async (sql: string) => { calls.push(sql); return []; });
