@@ -65,11 +65,15 @@ export function readSymbolSource(node: GraphNode, repoRoot: string): string | nu
  */
 export function normalizeForHash(src: string, language?: string): string {
   let s = src;
+  // Line comments are stripped only at line start or after whitespace — a
+  // bare /.*$/ would also truncate string literals ("https://x", "a#b"),
+  // blinding drift detection to real changes on those lines. NOTE: changing
+  // this normalization changes every anchor hash once (one-time full drift).
   if (language === "python" || language === "ruby") {
-    s = s.replace(/#.*$/gm, ""); // line comments
+    s = s.replace(/(^|\s)#.*$/gm, "$1"); // line comments
   } else {
     s = s.replace(/\/\*[\s\S]*?\*\//g, ""); // block comments
-    s = s.replace(/\/\/.*$/gm, ""); // line comments
+    s = s.replace(/(^|\s)\/\/.*$/gm, "$1"); // line comments
   }
   return s
     .split(/\r?\n/)

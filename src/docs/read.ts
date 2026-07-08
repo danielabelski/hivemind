@@ -59,6 +59,20 @@ export interface ListDocsOpts {
   limit?: number;
 }
 
+/**
+ * Project selector SQL. `project` = STRICT (write paths: never touch another
+ * project's row). `projectOrLegacy` = read paths on shared tables: scope to
+ * one project but keep legacy rows (written before stamping, project='')
+ * visible everywhere.
+ */
+function buildProjectFilter(opts: { project?: string; projectOrLegacy?: string }): string {
+  if (opts.project !== undefined) return ` AND project = '${sqlStr(opts.project)}'`;
+  if (opts.projectOrLegacy !== undefined) {
+    return ` AND (project = '${sqlStr(opts.projectOrLegacy)}' OR project = '')`;
+  }
+  return "";
+}
+
 const SELECT_COLS =
   "id, doc_id, path, content, anchors, tier, status, project, version, " +
   "created_at, updated_at, agent, plugin_version";
@@ -145,13 +159,19 @@ export interface DocMetaRow {
 export async function listDocMeta(
   query: QueryFn,
   tableName: string,
-  opts: { dirPrefix?: string } = {},
+  opts: { dirPrefix?: string; project?: string } = {},
 ): Promise<DocMetaRow[]> {
   const safe = sqlIdent(tableName);
-  const where =
-    opts.dirPrefix !== undefined && opts.dirPrefix !== ""
-      ? ` WHERE doc_id LIKE '${sqlLike(opts.dirPrefix)}/%'`
-      : "";
+  const clauses: string[] = [];
+  if (opts.dirPrefix !== undefined && opts.dirPrefix !== "") {
+    clauses.push(`doc_id LIKE '${sqlLike(opts.dirPrefix)}/%'`);
+  }
+  // Project scoping for shared org tables. Legacy rows (written before
+  // project stamping) carry '' and stay visible to every project.
+  if (opts.project !== undefined) {
+    clauses.push(`(project = '${sqlStr(opts.project)}' OR project = '')`);
+  }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
   // `id` is selected (not returned) so the read-stability gate can union rows
   // by their unique key — see stableUnionRows(idKey="id").
   const rows = await stableUnionRows(
@@ -193,7 +213,7 @@ export async function listDocsByIds(
   query: QueryFn,
   tableName: string,
   docIds: string[],
-  opts: { project?: string } = {},
+  opts: { project?: string; projectOrLegacy?: string } = {},
 ): Promise<DocRow[]> {
   const ids = [...new Set(docIds.filter((d) => d !== ""))];
   if (ids.length === 0) return [];
@@ -202,7 +222,7 @@ export async function listDocsByIds(
   // Optional project selector: in a shared org table the same doc_id exists
   // once per project, and an unscoped read can resolve to the wrong project's
   // row. Omitting it keeps the historical single-project behavior.
-  const projFilter = opts.project === undefined ? "" : ` AND project = '${sqlStr(opts.project)}'`;
+  const projFilter = buildProjectFilter(opts);
   const rows = await stableUnionRows(
     query,
     `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id IN (${inList})${projFilter}`,
@@ -228,7 +248,7 @@ export async function getDocLatest(
   query: QueryFn,
   tableName: string,
   docId: string,
-  opts: { project?: string } = {},
+  opts: { project?: string; projectOrLegacy?: string } = {},
 ): Promise<DocRow | null> {
   const safe = sqlIdent(tableName);
   // Read ALL version rows for this doc through the stability gate, then pick
@@ -237,7 +257,7 @@ export async function getDocLatest(
   // zero rows) right after a write. Unioning every version row and choosing
   // the max guarantees we never resolve to a stale version or miss the doc.
   // Optional project selector — see listDocsByIds.
-  const projFilter = opts.project === undefined ? "" : ` AND project = '${sqlStr(opts.project)}'`;
+  const projFilter = buildProjectFilter(opts);
   const raw = await stableUnionRows(
     query,
     `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'${projFilter}`,

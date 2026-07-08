@@ -22,6 +22,7 @@
  */
 
 import { join, dirname } from "node:path";
+import { deriveProjectKey } from "../../utils/repo-identity.js";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
@@ -276,7 +277,7 @@ export async function processCodexPreToolUse(
         logFn(`docs vfs intercept: ${virtualPath}`);
         const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
         const sub = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
-        const r = await handleDocsVfs(sub, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder() });
+        const r = await handleDocsVfs(sub, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
         const body = r.kind === "ok" ? r.body : `${virtualPath}: No such file or directory`;
         return { action: "block", output: body, rewrittenCommand: rewritten };
       }

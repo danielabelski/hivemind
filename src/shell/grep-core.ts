@@ -52,6 +52,8 @@ export interface SearchOptions {
   multiWordPatterns?: string[];
   /** Per-table row cap. */
   limit?: number;
+  /** Scope docs search to one project (legacy '' rows always included). */
+  project?: string;
   /**
    * If set, switches to semantic (cosine) search via Deeplake's `<#>` operator
    * against `summary_embedding` / `message_embedding` FLOAT4[] columns. When
@@ -443,7 +445,9 @@ export async function searchDocs(
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const safeDocsTable = sqlIdent(docsTable);
   const limit = opts.limit ?? 100;
-  const active = ` AND status = 'active'`;
+  // Legacy rows carry project '' and stay visible to every project.
+  const projFilter = opts.project !== undefined ? ` AND (project = '${sqlStr(opts.project)}' OR project = '')` : "";
+  const active = ` AND status = 'active'${projFilter}`;
   const dedup = (rows: Record<string, unknown>[]): ContentRow[] => {
     const seen = new Set<string>();
     const out: ContentRow[] = [];

@@ -23,6 +23,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
 import { searchDeeplakeTables, searchDocs, buildGrepSearchOptions, normalizeContent, TRUNCATION_NOTICE, type GrepMatchParams } from "../shell/grep-core.js";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeQueryEmbedder } from "../docs/embed.js";
 import { getVersion } from "../cli/version.js";
 import { startCoworkIngestLoop, coworkDataNoticeOnce } from "./cowork-ingest.js";
@@ -139,6 +140,9 @@ server.registerTool(
     };
     const opts = buildGrepSearchOptions(params, "/");
     opts.limit = limit ?? 10;
+    // Scope to the server's repo (legacy '' rows stay visible) — a shared org
+    // table must not leak another repo's docs into this one's search.
+    opts.project = deriveProjectKey(process.cwd()).key;
     // Same rail as memory search: semantic when embeddings are on, else lexical.
     opts.queryEmbedding = await makeQueryEmbedder()(query);
 

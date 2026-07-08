@@ -32,6 +32,8 @@ export type DocsVfsResult =
 export interface DocsVfsOptions {
   /** Query embedder (kind='query') for semantic `find/`. Absent → lexical only. */
   embedQuery?: DocEmbedder;
+  /** Project scope for shared org tables (legacy '' rows always included). */
+  project?: string;
 }
 
 /** Resolve a `<memory>/docs/` subpath to rendered text from the docs table. */
@@ -58,6 +60,7 @@ export async function handleDocsVfs(
       escapedPattern: sqlLike(q),
       queryEmbedding,
       limit: 20,
+      project: opts.project,
     };
     const hits = await searchDocs(query, tableName, searchOpts);
     if (hits.length === 0) return { kind: "ok", body: `No docs match "${q}".` };
@@ -74,7 +77,7 @@ export async function handleDocsVfs(
   else if (!path.endsWith(".md")) dir = path; // a bare directory (e.g. `cat .../docs/src/graph`)
 
   if (dir !== null) {
-    const meta: DocMeta[] = (await listDocMeta(query, tableName, { dirPrefix: dir })).map((r) => ({
+    const meta: DocMeta[] = (await listDocMeta(query, tableName, { dirPrefix: dir, project: opts.project })).map((r) => ({
       doc_id: r.doc_id,
       version: r.version,
       updated_at: r.updated_at,
@@ -86,7 +89,7 @@ export async function handleDocsVfs(
       .map((m) => m.doc_id);
     const summaries = new Map<string, string>();
     if (directFiles.length > 0) {
-      for (const d of await listDocsByIds(query, tableName, directFiles)) {
+      for (const d of await listDocsByIds(query, tableName, directFiles, { projectOrLegacy: opts.project })) {
         summaries.set(d.doc_id, firstDocLine(d.content));
       }
     }
@@ -95,7 +98,7 @@ export async function handleDocsVfs(
 
   // Leaf: "<source-file>.md" → doc for that file.
   const docId = path.slice(0, -".md".length);
-  const row = await getDocLatest(query, tableName, docId);
+  const row = await getDocLatest(query, tableName, docId, { projectOrLegacy: opts.project });
   if (!row) return { kind: "not-found", message: `${subpath}: No such file or directory` };
   const header =
     `# ${row.doc_id}\n` +

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { homedir } from "node:os";
 import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +38,8 @@ const log = (msg: string) => _log("pre", msg);
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 
 export interface PreToolUseInput {
+  /** Session working directory (present in the hook payload). */
+  cwd?: string;
   session_id: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
@@ -457,7 +460,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/")) && !virtualPath.endsWith("/")) {
       const subpath = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
       logFn(`docs vfs: ${subpath || "(root)"}`);
-      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder() });
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);
@@ -466,7 +469,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       return buildAllowDecision(safeEchoCommand(capOutputForClaude(body, { kind: "docs" })), `[hivemind docs] /docs/${subpath}`);
     }
     if (lsDir === "/docs" || lsDir === "/docs/") {
-      const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName);
+      const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, "/docs/_listing.txt", body);

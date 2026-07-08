@@ -45,6 +45,14 @@ describe("normalizeForHash", () => {
     expect(hashSource("return 1;")).not.toBe(hashSource("return 2;"));
     expect(hashSource("const x = 1;")).not.toBe(hashSource("const y = 1;"));
   });
+  it("does NOT truncate string literals containing // or # (drift-detection blindness fix)", () => {
+    // A change after "//" inside a string MUST change the hash.
+    expect(hashSource('const url = "https://api.example.com";')).not.toBe(hashSource('const url = "https://api.OTHER.com";'));
+    expect(hashSource('x = "a#b"', "python")).not.toBe(hashSource('x = "a#c"', "python"));
+    // Real comments (start-of-line or after whitespace) are still ignored.
+    expect(hashSource("return 1; // old note")).toBe(hashSource("return 1; // new note"));
+  });
+
   it("uses # comments for python and preserves indentation", () => {
     expect(normalizeForHash("def f():\n    # comment\n    return 1", "python")).toBe("def f():\n    return 1");
   });
