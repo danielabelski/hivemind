@@ -214,12 +214,13 @@ export async function insertDocResilient(
     } catch (err) {
       if (!isTimeoutError(err)) throw err;
       lastErr = err;
-      if (attempt === retries) break;
+      // Did the timed-out attempt actually commit server-side? Checked on
+      // EVERY attempt including the last — otherwise a final-attempt timeout
+      // whose write landed reports failure and invites a duplicating retry.
       await sleep(backoff[Math.min(attempt, backoff.length - 1)]);
-      // Did the timed-out attempt actually commit server-side? If so, stop —
-      // re-inserting would fork a second version=1 row.
       const landed = await getDocLatest(query, tableName, input.doc_id).catch(() => null);
       if (landed) return { doc_id: landed.doc_id, version: landed.version };
+      if (attempt === retries) break;
     }
   }
   throw lastErr ?? new Error("insertDocResilient: exhausted retries");
@@ -330,8 +331,11 @@ export async function setDoc(
   query: QueryFn,
   tableName: string,
   input: SetDocInput,
+  opts: { project?: string } = {},
 ): Promise<WriteResult> {
-  const previous = await getDocLatest(query, tableName, input.doc_id);
+  // Project SELECTOR (shared-table safety): without it the bare doc_id can
+  // resolve to another project's row and this write would version-bump THAT.
+  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project });
   if (!previous) {
     return insertDoc(query, tableName, {
       doc_id: input.doc_id,
@@ -369,13 +373,14 @@ export async function archiveDoc(
   query: QueryFn,
   tableName: string,
   input: { doc_id: string; agent?: string; plugin_version?: string },
+  opts: { project?: string } = {},
 ): Promise<WriteResult> {
   return editDoc(query, tableName, {
     doc_id: input.doc_id,
     status: "archived",
     agent: input.agent,
     plugin_version: input.plugin_version,
-  });
+  }, opts);
 }
 
 /**

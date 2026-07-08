@@ -292,7 +292,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
         project,
         agent: cfg.userName,
         plugin_version: pluginVersion,
-      });
+      }, { project: flagValue(args, "--project") });
       console.log(`Set doc ${out.doc_id} → v${out.version}.`);
     } catch (err) {
       console.error(`Set failed: ${(err as Error).message}`);
@@ -393,7 +393,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
         doc_id: docId,
         agent: cfg.userName,
         plugin_version: pluginVersion,
-      });
+      }, { project: flagValue(args, "--project") });
       console.log(`Archived doc ${out.doc_id} → v${out.version}.`);
     } catch (err) {
       console.error(`Archive failed: ${(err as Error).message}`);

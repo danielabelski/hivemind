@@ -166,7 +166,13 @@ export async function runLocalWikiRefresh(args: LocalWikiRefreshArgs): Promise<{
     const diff = args.git(["diff", "HEAD", "--", ...touched]) ?? "";
     if (diff.trim() === "") continue;
 
-    const current = readFileSync(abs, "utf-8");
+    let current: string;
+    try {
+      current = readFileSync(abs, "utf-8"); // existsSync raced a concurrent delete → treat as not materialized
+    } catch {
+      outcomes.push({ file: localFile, action: "not-materialized", reasons: ["file vanished during refresh"] });
+      continue;
+    }
     let response: string;
     try {
       response = (await args.run(buildUpdatePrompt(group.key, stripFilesIndex(current), diff))).trim();

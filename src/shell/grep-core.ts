@@ -15,7 +15,7 @@
  */
 
 import type { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -441,6 +441,7 @@ export async function searchDocs(
   opts: SearchOptions,
 ): Promise<ContentRow[]> {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
+  const safeDocsTable = sqlIdent(docsTable);
   const limit = opts.limit ?? 100;
   const active = ` AND status = 'active'`;
   const dedup = (rows: Record<string, unknown>[]): ContentRow[] => {
@@ -465,11 +466,11 @@ export async function searchDocs(
     const lexFilter = buildContentFilter("content::text", likeOp, filterPatternsForLex);
     const lexQuery = lexFilter
       ? `SELECT doc_id AS path, content::text AS content, 1.0 AS score ` +
-        `FROM "${docsTable}" WHERE 1=1${pathFilter}${active}${lexFilter} LIMIT ${lexicalLimit}`
+        `FROM "${safeDocsTable}" WHERE 1=1${pathFilter}${active}${lexFilter} LIMIT ${lexicalLimit}`
       : null;
     const semQuery =
       `SELECT doc_id AS path, content::text AS content, (content_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${docsTable}" WHERE ARRAY_LENGTH(content_embedding, 1) > 0${pathFilter}${active} ` +
+      `FROM "${safeDocsTable}" WHERE ARRAY_LENGTH(content_embedding, 1) > 0${pathFilter}${active} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
     const parts = [semQuery];
     if (lexQuery) parts.push(lexQuery);
@@ -487,7 +488,7 @@ export async function searchDocs(
   const filter = buildContentFilter("content::text", likeOp, filterPatterns);
   const rows = await query(
     `SELECT doc_id AS path, content::text AS content ` +
-    `FROM "${docsTable}" WHERE 1=1${pathFilter}${active}${filter} LIMIT ${limit}`,
+    `FROM "${safeDocsTable}" WHERE 1=1${pathFilter}${active}${filter} LIMIT ${limit}`,
   );
   return dedup(rows);
 }

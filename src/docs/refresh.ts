@@ -179,7 +179,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
         doc_id: doc.doc_id,
         agent: args.agent ?? "docs-refresh",
         plugin_version: args.pluginVersion,
-      });
+      }, { project: doc.project });
       outcomes.push({
         doc_id: imp.doc_id,
         status: "archived",
@@ -227,7 +227,7 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       agent: args.agent ?? "docs-refresh",
       plugin_version: args.pluginVersion,
       content_embedding,
-    });
+    }, { project: doc.project });
     outcomes.push({ doc_id: imp.doc_id, status: "refreshed", version: res.version });
   });
 

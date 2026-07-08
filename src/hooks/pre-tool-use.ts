@@ -463,7 +463,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);
         return buildReadDecision(file_path, `[hivemind docs] ${virtualPath}`);
       }
-      return buildAllowDecision(safeEchoCommand(body), `[hivemind docs] /docs/${subpath}`);
+      return buildAllowDecision(safeEchoCommand(capOutputForClaude(body, { kind: "docs" })), `[hivemind docs] /docs/${subpath}`);
     }
     if (lsDir === "/docs" || lsDir === "/docs/") {
       const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName);
@@ -472,7 +472,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         const file_path = writeReadCacheFileFn(input.session_id, "/docs/_listing.txt", body);
         return buildReadDecision(file_path, "[hivemind docs] ls /docs");
       }
-      return buildAllowDecision(safeEchoCommand(body), `[hivemind docs] ls /docs`);
+      return buildAllowDecision(safeEchoCommand(capOutputForClaude(body, { kind: "docs" })), `[hivemind docs] ls /docs`);
     }
 
     if (virtualPath && !virtualPath.endsWith("/")) {
