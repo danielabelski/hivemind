@@ -118,6 +118,21 @@ function hasLocalClaudeSessions(): boolean {
   return false;
 }
 
+/**
+ * Tuning for the spawned `mine-local` worker. All optional — omitting them
+ * reproduces the plain SessionStart auto-mine (mine-local's own defaults,
+ * all agents, no advisor). The install-time background scan passes a larger
+ * session count, restricts to Claude Code, and opts into the advisor.
+ */
+export interface AutoMineOptions {
+  /** `--n`: how many recent sessions to mine. */
+  sessionCount?: number;
+  /** `--only`: restrict mining to a single agent (e.g. "claude_code"). */
+  onlyAgent?: string;
+  /** `--advise`: run the sonnet advisor to mark the strongest insight primary. */
+  advise?: boolean;
+}
+
 export interface AutoMineGuardReport {
   triggered: boolean;
   /** Why the spawn was skipped. Useful for the SessionStart hook log. */
@@ -135,7 +150,7 @@ export interface AutoMineGuardReport {
  * every guard passes. The caller has already verified that no Deeplake
  * credentials are present (we only auto-mine for not-signed-in users).
  */
-export function maybeAutoMineLocal(): AutoMineGuardReport {
+export function maybeAutoMineLocal(opts: AutoMineOptions = {}): AutoMineGuardReport {
   if (existsSync(LOCAL_MANIFEST_PATH)) return { triggered: false, reason: "manifest-exists" };
   if (existsSync(LOCAL_MINE_LOCK_PATH)) {
     // If a prior auto-mine crashed before unlinking the lock, override it
@@ -167,9 +182,13 @@ export function maybeAutoMineLocal(): AutoMineGuardReport {
   try {
     mkdirSync(join(HOME, ".claude", "hooks"), { recursive: true });
     const out = openSync(LOG_PATH, "a");
+    const mineArgs = ["skillify", "mine-local"];
+    if (opts.sessionCount != null) mineArgs.push("--n", String(opts.sessionCount));
+    if (opts.onlyAgent) mineArgs.push("--only", opts.onlyAgent);
+    if (opts.advise) mineArgs.push("--advise");
     const [cmd, args] = launcher.kind === "node-script"
-      ? [process.execPath, [launcher.path, "skillify", "mine-local"]]
-      : [launcher.path, ["skillify", "mine-local"]];
+      ? [process.execPath, [launcher.path, ...mineArgs]]
+      : [launcher.path, mineArgs];
     const child = spawn(cmd, args, {
       detached: true,
       stdio: ["ignore", out, out],
