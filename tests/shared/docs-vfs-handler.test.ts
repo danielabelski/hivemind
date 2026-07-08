@@ -124,4 +124,18 @@ describe("handleDocsVfs — find/ search route", () => {
     const r = await handleDocsVfs("find/nonexistent thing", query, TBL);
     expect(r.kind === "ok" && r.body).toContain('No docs match "nonexistent thing"');
   });
+
+  it("does NOT swallow docs under a real find/ source directory — .md paths fall through to leaf resolution", async () => {
+    const query = vi.fn(async (sql: string) =>
+      sql.includes("WHERE doc_id = 'find/lookup.ts'")
+        ? [{ id: "r1", doc_id: "find/lookup.ts", path: "/docs/p/find/lookup.ts.md", content: "# find/lookup.ts\n\nLookup doc body.", anchors: "[]", tier: "fast", status: "active", project: "", scope: "main", version: 1, created_at: "t", updated_at: "t", agent: "m", plugin_version: "0" }]
+        : []);
+    const r = await handleDocsVfs("find/lookup.ts.md", query, TBL);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain("Lookup doc body.");
+      expect(r.body).not.toContain("doc(s) match"); // not the search route
+    }
+    expect(query.mock.calls.some((c) => (c[0] as string).includes("WHERE doc_id = 'find/lookup.ts'"))).toBe(true);
+  });
 });

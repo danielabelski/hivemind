@@ -47,7 +47,10 @@ export async function handleDocsVfs(
 
   // `find/<query>` — hybrid semantic+lexical search over doc content. Checked
   // BEFORE the directory/leaf resolution so `find` is never treated as a dir.
-  if (path === "find" || path.startsWith("find/")) {
+  // `.md` subpaths fall through: docs whose source lives under a real `find/`
+  // directory render as `find/<file>.md` leaves and must stay browsable
+  // (search queries are free text and never end in `.md`).
+  if (path === "find" || (path.startsWith("find/") && !path.endsWith(".md"))) {
     const q = path === "find" ? "" : path.slice("find/".length).trim();
     if (q === "") {
       return { kind: "ok", body: "Usage: cat <memory>/docs/find/<query> — search docs by meaning/keyword." };
