@@ -51,6 +51,10 @@ import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHo
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
+import { runWikiRefreshCycle } from "../docs/wiki-refresh.js";
+import { execFileSync } from "node:child_process";
+import { hostname, userInfo } from "node:os";
+import type { GitRunner } from "../docs/candidates.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeDocEmbedder } from "../docs/embed.js";
 import { backfillDocEmbeddings } from "../docs/backfill.js";
@@ -88,6 +92,14 @@ Usage:
       files next to the code (wiki/xarray/plot -> xarray/plot.hivemind.md).
       Incremental: only rows newer than the local cursor
       (.hivemind/docs-pull.json) are read. --force re-pulls everything.
+  hivemind docs wiki-refresh [--cwd <dir>] [--force]
+      One lease-guarded refresh cycle for the wiki pages: diff since the last
+      refreshed sha -> patch each touched page in place (escalating to a full
+      regen when patching is the wrong tool) -> advance the sha only when the
+      whole cycle succeeded. Safe to fire from any machine at any time: the
+      claim lease (30 min TTL) and the quiet period (6h) make it a no-op when
+      there is nothing to do or someone else is already on it. --force skips
+      the quiet-period guard.
   hivemind docs reindex
       Backfill semantic-search vectors for docs that lack them (no LLM, embed
       daemon only). Run once after enabling embeddings on an existing corpus.
@@ -479,6 +491,41 @@ export async function runDocsCommand(args: string[]): Promise<void> {
           if (o.status === "created") console.log(`  created ${o.doc_id}`);
         }
       }
+    }
+    return;
+  }
+
+  if (sub === "wiki-refresh") {
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const force = args.includes("--force");
+    const project = flagValue(args, "--project") ?? deriveProjectKey(cwd).key;
+    const snap = loadCurrentSnapshot(cwd);
+    if (!snap) {
+      console.error("No local graph for this directory. Run `hivemind graph build` first.");
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+    await api.ensureDocsTable(tableName);
+    if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
+    const git: GitRunner = (gitArgs) => {
+      try {
+        return execFileSync("git", ["-C", cwd, ...gitArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      } catch {
+        return null;
+      }
+    };
+    const report = await runWikiRefreshCycle({
+      query, tableName, snap, repoRoot: cwd, project,
+      run: makeHostRunPrompt(), git,
+      owner: `${userInfo().username}@${hostname()}:${process.pid}`,
+      force,
+      embed: makeDocEmbedder(),
+      agent: cfg.userName, pluginVersion,
+      log: (m) => console.error(`[wiki-refresh] ${m}`),
+    });
+    console.log(`Wiki refresh: ${report.status}${report.head ? ` @ ${report.head.slice(0, 8)}` : ""}.`);
+    for (const o of report.outcomes) {
+      console.log(`  ${o.action} ${o.doc_id}${o.reasons ? ` (${o.reasons.join("; ")})` : ""}`);
     }
     return;
   }

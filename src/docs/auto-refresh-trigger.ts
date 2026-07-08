@@ -23,9 +23,13 @@ export interface AutoRefreshDeps {
 }
 
 /**
- * Spawn `hivemind docs refresh --cwd <cwd>` detached when auto-refresh is
- * enabled. Returns true if a refresh was spawned, false if it was a no-op
- * (flag off, or no CLI entry to re-invoke). Best-effort and non-throwing.
+ * Spawn `hivemind docs refresh --cwd <cwd>` (per-file docs) and
+ * `hivemind docs wiki-refresh --cwd <cwd>` (subsystem pages) detached when
+ * auto-refresh is enabled. The wiki cycle carries its own cheap guards
+ * (sha-unchanged, 6h quiet period, lease claim), so firing it on every
+ * commit is safe — most spawns exit in one read. Returns true if refreshes
+ * were spawned, false if it was a no-op (flag off, or no CLI entry to
+ * re-invoke). Best-effort and non-throwing.
  */
 export function maybeSpawnDocsRefresh(cwd: string, deps: AutoRefreshDeps = {}): boolean {
   const env = deps.env ?? process.env;
@@ -34,5 +38,6 @@ export function maybeSpawnDocsRefresh(cwd: string, deps: AutoRefreshDeps = {}): 
   if (!cliEntry) return false;
   const spawn = deps.spawn ?? spawnDetachedNodeWorker;
   spawn(cliEntry, ["docs", "refresh", "--cwd", cwd]);
+  spawn(cliEntry, ["docs", "wiki-refresh", "--cwd", cwd]);
   return true;
 }

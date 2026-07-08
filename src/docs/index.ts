@@ -52,6 +52,7 @@ export {
   capFileContent,
   appendFilesIndex,
   stripFilesIndex,
+  parseFilesIndex,
   collectWikiAnchors,
   buildWikiPagePrompt,
   buildWikiNotesPrompt,
@@ -61,6 +62,9 @@ export {
   MAX_FILE_CHARS,
 } from "./wiki-generate.js";
 export type { WikiGenArgs, WikiReport, WikiOutcome, WikiFileSource, RunPromptFn } from "./wiki-generate.js";
+
+export { runWikiRefreshCycle, DEFAULT_MIN_PERIOD_MS } from "./wiki-refresh.js";
+export type { WikiRefreshArgs, WikiRefreshReport, WikiRefreshOutcome } from "./wiki-refresh.js";
 
 export {
   updateWikiPage,

@@ -157,6 +157,23 @@ export function appendFilesIndex(narrative: string, files: string[]): string {
 }
 
 /**
+ * Parse the mechanical `## Files` index back into its member list. This is
+ * how the refresh loop detects membership drift: the page's stored index is
+ * the group composition at last write; comparing it to the current grouping
+ * says whether files joined or left the subsystem.
+ */
+export function parseFilesIndex(content: string): string[] {
+  const m = /^## Files\s*$([\s\S]*?)(?=^## |\n*$(?![\s\S]))/m.exec(content);
+  if (!m) return [];
+  const files: string[] = [];
+  for (const line of m[1].split("\n")) {
+    const item = /^- `(.+)`\s*$/.exec(line.trim());
+    if (item) files.push(item[1]);
+  }
+  return files;
+}
+
+/**
  * Anchors for every documentable symbol across `files` (drift detection for a
  * wiki page reuses the per-file doc machinery unchanged). Unreadable symbols
  * are skipped — an anchor is only as good as the source it hashes.
