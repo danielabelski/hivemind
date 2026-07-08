@@ -119,6 +119,9 @@ const PAGE_STYLE = [
   'invariants ("X is immutable", "Y rejects Z", "almost everything goes through W")',
   "unless a specific line you saw says exactly that — prefer describing what one",
   "named function does over generalizing across the subsystem.",
+  "NEVER cite line numbers or numeric counts (\"line 887\", \"~60 methods\") — line",
+  "numbers rot with every commit and you cannot know them reliably; anchor claims",
+  "to file + symbol names only.",
   "Do NOT include a file listing section; one is appended mechanically.",
   "Output ONLY markdown, no preamble, no outer code fence. Keep it under ~4000 characters.",
 ].join("\n");
@@ -144,6 +147,7 @@ export function buildWikiNotesPrompt(key: string, sources: WikiFileSource[], chu
     "rest (imports/exports/calls). Note cross-file flows you can SEE in this code.",
     "Every bullet must name the file and symbol it comes from — the synthesis step",
     "can only trust attributed notes. Do not generalize beyond this chunk.",
+    "Never record line numbers (they rot and mislead the synthesis); file + symbol only.",
     "Be terse and factual — these notes feed a synthesis step, not humans.",
     "Output ONLY markdown bullets grouped under `### <file>` headings.",
     "",
