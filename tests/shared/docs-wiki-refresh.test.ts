@@ -51,7 +51,9 @@ function makeBackend(opts: { meta?: Record<string, unknown> | null; metaUpdatedA
       return state.pages; // listDocs / getDocLatest read
     }
     if (/^DELETE/i.test(s) && s.includes(`'${metaId}'`)) {
-      state.meta = null;
+      // The healing sweep (`updated_at < ...`) removes only OLDER siblings —
+      // in this single-row simulation that is a no-op, not a row wipe.
+      if (!s.includes("updated_at <")) state.meta = null;
       return [];
     }
     if (/^INSERT/i.test(s) && s.includes(`'${metaId}'`)) {

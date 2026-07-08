@@ -76,9 +76,10 @@ describe("tryClaimTurn", () => {
     const { query, calls } = makeQuery([stale, mine]);
     const res = await tryClaimTurn(query, T, P, "main", { owner: "me", now, sleep: noSleep });
     expect(res.won).toBe(true);
-    // Exactly one row write: DELETE + INSERT on the fixed meta id.
+    // One row write: DELETE + INSERT + the race-healing sweep (older rows).
     const writes = calls.filter((c) => /^(DELETE|INSERT)/i.test(c));
-    expect(writes).toHaveLength(2);
+    expect(writes).toHaveLength(3);
+    expect(writes[2]).toContain("updated_at <"); // sweep only removes OLDER siblings
     expect(writes[0]).toContain(`id = '${P}|main|_meta'`);
     expect(writes[1]).toContain("'meta'"); // status=meta keeps it out of doc listings
   });
@@ -133,7 +134,7 @@ describe("commitRefresh", () => {
     const res = await commitRefresh(query, T, P, "main", "sha999", { "wiki/core": 2 }, { owner: "me" });
     expect(res).toEqual({ committed: true });
     const writes = calls.filter((c) => /^(DELETE|INSERT)/i.test(c));
-    expect(writes).toHaveLength(2); // DELETE + single INSERT of the whole row
+    expect(writes).toHaveLength(3); // DELETE + single INSERT + healing sweep
     const insert = writes[1];
     expect(insert).toContain('"last_refresh_sha":"sha999"');
     expect(insert).toContain('"claimed_by":null');

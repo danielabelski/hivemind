@@ -107,6 +107,13 @@ async function writeMetaRow(
       `'slow', 'meta', '${sqlStr(project)}', '${sqlStr(scope)}', 1, ` +
       `'${sqlStr(now)}', '${sqlStr(now)}', 'refresh-meta', '')`,
   );
+  // Heal races: DELETE+INSERT is not transactional here, so two concurrent
+  // writers can interleave (A del, B del, A ins, B ins) and leave duplicate
+  // meta rows. Readers already pick the newest, and every write starts with a
+  // full DELETE — this trailing sweep removes any OLDER sibling immediately
+  // instead of waiting for the next write, keeping the one-row invariant a
+  // steady state rather than an eventual one.
+  await query(`DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}' AND updated_at < '${sqlStr(now)}'`);
 }
 
 export interface ClaimOpts {
