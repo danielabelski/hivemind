@@ -114,13 +114,30 @@ describe("tryClaimTurn", () => {
 
 describe("commitRefresh", () => {
   it("advances the sha, releases the claim, persists counters — one row write", async () => {
-    const { query, calls } = makeQuery([[]]);
-    await commitRefresh(query, T, P, "main", "sha999", { "wiki/core": 2 });
+    const mine = metaRow({ claimed_by: "me", claimed_at: "2026-07-08T12:00:00.000Z" });
+    const { query, calls } = makeQuery([mine]);
+    const res = await commitRefresh(query, T, P, "main", "sha999", { "wiki/core": 2 }, { owner: "me" });
+    expect(res).toEqual({ committed: true });
     const writes = calls.filter((c) => /^(DELETE|INSERT)/i.test(c));
     expect(writes).toHaveLength(2); // DELETE + single INSERT of the whole row
     const insert = writes[1];
     expect(insert).toContain('"last_refresh_sha":"sha999"');
     expect(insert).toContain('"claimed_by":null');
     expect(insert).toContain('"wiki/core":2');
+  });
+
+  it("REFUSES the commit when the lease was lost (stale worker must not regress the sha)", async () => {
+    const rival = metaRow({ claimed_by: "rival", claimed_at: "2026-07-08T12:05:00.000Z", last_refresh_sha: "newer" });
+    const { query, calls } = makeQuery([rival]);
+    const res = await commitRefresh(query, T, P, "main", "old-sha", {}, { owner: "me" });
+    expect(res).toEqual({ committed: false, reason: "lost-lease" });
+    expect(calls.filter((c) => /^(DELETE|INSERT|UPDATE)/i.test(c))).toHaveLength(0);
+  });
+
+  it("refuses when the meta row vanished (no claim = no ownership)", async () => {
+    const { query, calls } = makeQuery([[]]);
+    const res = await commitRefresh(query, T, P, "main", "sha", {}, { owner: "me" });
+    expect(res.committed).toBe(false);
+    expect(calls.filter((c) => /^(DELETE|INSERT)/i.test(c))).toHaveLength(0);
   });
 });

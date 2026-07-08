@@ -263,9 +263,12 @@ export async function upsertDoc(
       const now = new Date().toISOString();
       // Clear any prior/partial row for this id first, then write exactly one.
       // The legacy bare-doc_id id is deleted too so pre-scope tables converge
-      // to the namespaced id instead of accumulating a duplicate doc_id row.
+      // to the namespaced id instead of accumulating a duplicate doc_id row —
+      // but ONLY within this project: in a shared org table another project
+      // can legitimately own a legacy row with the same bare doc_id.
       await query(
-        `DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}' OR id = '${sqlStr(input.doc_id)}'`,
+        `DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}' ` +
+          `OR (id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}')`,
       );
       const sql =
         `INSERT INTO "${safe}" ` +

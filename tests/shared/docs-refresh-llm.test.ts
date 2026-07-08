@@ -48,6 +48,13 @@ describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
     expect(inv.args).toEqual(["run", "--json", "PROMPT"]);
   });
 
+  it("HIVEMIND_DOCS_LLM_STDIN=1 routes the custom CLI's prompt via stdin (E2BIG safety)", () => {
+    const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_BIN: "my-llm", HIVEMIND_DOCS_LLM_FLAGS: "run", HIVEMIND_DOCS_LLM_STDIN: "1" });
+    const inv = spec.build("my-llm", "PROMPT");
+    expect(inv.args).toEqual(["run"]); // no prompt in argv
+    expect(inv.options.input).toBe("PROMPT");
+  });
+
   it("the custom escape hatch beats a named agent when both are set", () => {
     const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_BIN: "x", HIVEMIND_DOCS_LLM_AGENT: "codex" });
     expect(spec.label).toBe("custom:x");

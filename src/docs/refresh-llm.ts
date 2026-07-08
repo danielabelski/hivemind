@@ -78,7 +78,15 @@ export function resolveDocLlmSpec(env: NodeJS.ProcessEnv = process.env): DocLlmS
   const customBin = env.HIVEMIND_DOCS_LLM_BIN;
   if (customBin && customBin.trim() !== "") {
     const flags = (env.HIVEMIND_DOCS_LLM_FLAGS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    return { label: `custom:${customBin}`, bin: customBin, build: (b, p) => buildTrailingPromptInvocation(b, flags, p) };
+    // Trailing-arg is the historical contract for custom CLIs, but argv has an
+    // OS size limit (E2BIG) that wiki/doc prompts can exceed. Set
+    // HIVEMIND_DOCS_LLM_STDIN=1 if the custom CLI reads its prompt from stdin.
+    const viaStdin = env.HIVEMIND_DOCS_LLM_STDIN === "1";
+    return {
+      label: `custom:${customBin}`,
+      bin: customBin,
+      build: (b, p) => (viaStdin ? buildStdinPromptInvocation(b, flags, p) : buildTrailingPromptInvocation(b, flags, p)),
+    };
   }
   const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? "claude").toLowerCase();
   const spec = REGISTRY[agent];

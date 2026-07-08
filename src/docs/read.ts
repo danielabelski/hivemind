@@ -86,18 +86,23 @@ export async function listDocs(
     `SELECT ${SELECT_COLS} FROM "${safe}" ORDER BY version DESC, updated_at DESC, id DESC`,
   );
 
+  // Dedup key includes the project: in a shared org table the same doc_id
+  // legitimately exists once per project, and a doc_id-only dedup would let
+  // one project's row shadow another's (the project filter below would then
+  // silently drop the requested project's doc).
   const latest = new Map<string, DocRow>();
   for (const r of rows) {
     const row = normalize(r);
     if (!row) continue;
     if (row.doc_id === "_meta") continue; // reserved refresh-bookkeeping row, not a doc
-    if (!latest.has(row.doc_id)) latest.set(row.doc_id, row);
+    if (opts.project !== undefined && row.project !== opts.project) continue;
+    const key = `${row.project}\u0000${row.doc_id}`;
+    if (!latest.has(key)) latest.set(key, row);
   }
 
   const statusFilter = opts.status ?? "active";
   const filtered = [...latest.values()].filter(r => {
     if (statusFilter !== "all" && r.status !== statusFilter) return false;
-    if (opts.project !== undefined && r.project !== opts.project) return false;
     return true;
   });
 
@@ -176,14 +181,19 @@ export async function listDocsByIds(
   query: QueryFn,
   tableName: string,
   docIds: string[],
+  opts: { project?: string } = {},
 ): Promise<DocRow[]> {
   const ids = [...new Set(docIds.filter((d) => d !== ""))];
   if (ids.length === 0) return [];
   const safe = sqlIdent(tableName);
   const inList = ids.map((d) => `'${sqlStr(d)}'`).join(", ");
+  // Optional project selector: in a shared org table the same doc_id exists
+  // once per project, and an unscoped read can resolve to the wrong project's
+  // row. Omitting it keeps the historical single-project behavior.
+  const projFilter = opts.project === undefined ? "" : ` AND project = '${sqlStr(opts.project)}'`;
   const rows = await stableUnionRows(
     query,
-    `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id IN (${inList})`,
+    `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id IN (${inList})${projFilter}`,
   );
   const latest = new Map<string, DocRow>();
   for (const r of rows) {
@@ -206,6 +216,7 @@ export async function getDocLatest(
   query: QueryFn,
   tableName: string,
   docId: string,
+  opts: { project?: string } = {},
 ): Promise<DocRow | null> {
   const safe = sqlIdent(tableName);
   // Read ALL version rows for this doc through the stability gate, then pick
@@ -213,9 +224,11 @@ export async function getDocLatest(
   // this backend: a partial read can return an OLD version as "latest" (or
   // zero rows) right after a write. Unioning every version row and choosing
   // the max guarantees we never resolve to a stale version or miss the doc.
+  // Optional project selector — see listDocsByIds.
+  const projFilter = opts.project === undefined ? "" : ` AND project = '${sqlStr(opts.project)}'`;
   const raw = await stableUnionRows(
     query,
-    `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'`,
+    `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'${projFilter}`,
   );
   let best: DocRow | null = null;
   for (const r of raw) {

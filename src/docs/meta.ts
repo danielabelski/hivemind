@@ -163,9 +163,17 @@ export async function tryClaimTurn(
   return { won: false, reason: "lost-race" };
 }
 
+export type CommitResult = { committed: true } | { committed: false; reason: "lost-lease" };
+
 /**
  * Commit point of a successful refresh cycle: advance the sha, release the
  * claim, and persist the updated per-page patch counters — one row write.
+ *
+ * Ownership is re-verified first: a refresh that outlived its TTL may have
+ * lost the lease to another worker, and a stale worker must NEVER overwrite
+ * the newer claim or regress `last_refresh_sha`. When `owner` no longer holds
+ * the claim the commit is refused (the redone cycle is idempotent, so the
+ * new owner converges to the same result).
  */
 export async function commitRefresh(
   query: QueryFn,
@@ -174,13 +182,19 @@ export async function commitRefresh(
   scope: string,
   sha: string,
   patchCounts: Record<string, number>,
-  now: () => Date = () => new Date(),
-): Promise<void> {
+  opts: { owner: string; now?: () => Date },
+): Promise<CommitResult> {
+  const nowFn = opts.now ?? (() => new Date());
+  const current = await readRefreshMeta(query, tableName, project, scope);
+  if (current?.meta.claimed_by !== opts.owner) {
+    return { committed: false, reason: "lost-lease" };
+  }
   const meta: RefreshMeta = {
     last_refresh_sha: sha,
     claimed_by: null,
     claimed_at: null,
     patch_counts: patchCounts,
   };
-  await writeMetaRow(query, tableName, project, scope, meta, now().toISOString());
+  await writeMetaRow(query, tableName, project, scope, meta, nowFn().toISOString());
+  return { committed: true };
 }

@@ -251,8 +251,10 @@ describe("upsertDoc", () => {
     expect(calls).toHaveLength(2);
     // The DELETE clears the namespaced id AND the legacy bare-doc_id row, so
     // pre-scope tables converge instead of accumulating a duplicate doc_id.
+    // The legacy clause is constrained to THIS project — another project's
+    // legacy row with the same bare doc_id must survive in a shared table.
     expect(calls[0]).toBe(
-      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR id = 'src/a.ts'`,
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (id = 'src/a.ts' AND project = 'p')`,
     );
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
     // id column is the deterministic composite, NOT a random uuid
@@ -464,6 +466,19 @@ describe("listDocs", () => {
     expect(rows.map(r => r.doc_id).sort()).toEqual(["A", "B"]);
   });
 
+  it("same doc_id in two projects: neither row shadows the other", async () => {
+    const bothRows = () => [
+      fakeRow({ id: "p1|main|X", doc_id: "X", version: 1, project: "p1", content: "p1 doc", updated_at: "2026-05-20T10:02:00Z" }),
+      fakeRow({ id: "p2|main|X", doc_id: "X", version: 1, project: "p2", content: "p2 doc", updated_at: "2026-05-20T10:01:00Z" }),
+    ];
+    const { query } = mockQuery([bothRows, bothRows]);
+    const all = await listDocs(query, TBL);
+    expect(all).toHaveLength(2); // both projects listed
+    const p2 = await listDocs(query, TBL, { project: "p2" });
+    expect(p2).toHaveLength(1);
+    expect(p2[0].content).toBe("p2 doc"); // NOT shadowed by p1's newer row
+  });
+
   it("filters by project", async () => {
     const { query } = mockQuery([
       () => [
@@ -539,6 +554,12 @@ describe("getDocLatest", () => {
     await getDocLatest(query, TBL, "x' OR '1'='1");
     expect(calls[0]).toContain(`doc_id = 'x'' OR ''1''=''1'`);
   });
+
+  it("optional project selector scopes the read server-side (shared-table safety)", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await getDocLatest(query, TBL, "X", { project: "p2" });
+    expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2'`);
+  });
 });
 
 // ── listDocMeta (light index read — no content) ──────────────────────────────
@@ -607,6 +628,12 @@ describe("listDocsByIds", () => {
     const { calls, query } = mockQuery([() => []]);
     await listDocsByIds(query, TBL, ["x' OR '1'='1"]);
     expect(calls[0]).toContain(`'x'' OR ''1''=''1'`);
+  });
+
+  it("optional project selector scopes the IN read server-side", async () => {
+    const { calls, query } = mockQuery([() => []]);
+    await listDocsByIds(query, TBL, ["a.ts"], { project: "p1" });
+    expect(calls[0]).toContain(`doc_id IN ('a.ts') AND project = 'p1'`);
   });
 });
 
