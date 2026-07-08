@@ -97,7 +97,8 @@ Advanced / plumbing:
   hivemind docs refresh [--cwd <dir>] [--dry-run]
       Per-file docs drift refresh (what sync runs for you).
   hivemind docs generate [--cwd] [--scope file|symbol] [--include] [--exclude]
-                         [--limit] [--concurrency] [--batch] [--force] [--dry-run]
+                         [--limit] [--concurrency] [--batch] [--project P]
+                         [--force] [--dry-run]
       Auto-author per-file docs from the AST graph. Batches 5 files/call.
   hivemind docs set <doc-id> ["<markdown>"] [--file <path>] [--project P] [--tier fast|slow] [--path <vfs-path>]
   hivemind docs index [<dir>]
@@ -168,9 +169,9 @@ function parseTier(args: string[]): DocTier {
   throw new Error("unreachable");
 }
 
-function parseLimit(args: string[]): number {
+function parseOptionalLimit(args: string[]): number | undefined {
   const raw = flagValue(args, "--limit");
-  if (raw === undefined) return 200;
+  if (raw === undefined) return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
     console.error(`Invalid --limit value: ${raw}. Must be a positive integer.`);
@@ -178,6 +179,10 @@ function parseLimit(args: string[]): number {
     throw new Error("unreachable");
   }
   return n;
+}
+
+function parseLimit(args: string[]): number {
+  return parseOptionalLimit(args) ?? 200;
 }
 
 const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local", "--repos", "--full"]);
@@ -723,8 +728,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const force = args.includes("--force");
     const include = flagValues(args, "--include");
     const exclude = flagValues(args, "--exclude");
-    const limitRaw = flagValue(args, "--limit");
-    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    const limit = parseOptionalLimit(args);
     const concurrency = Number(flagValue(args, "--concurrency") ?? "2");
     // Wiki pages are canonical, shared rows — stamp the repo-derived project
     // key (same identity the graph pull/push uses) unless overridden.
@@ -748,8 +752,11 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     if (dryRun) {
       const groups = selectWikiGroups(snap, { include, exclude });
       const todo = force ? groups : groups.filter((g) => !existing.has(wikiDocId(g.key)));
-      console.log(`${todo.length} wiki page(s) would be generated (${groups.length - todo.length} already exist).`);
-      for (const g of todo.slice(0, limit ?? 60)) {
+      // Mirror the real run: generateWikiPages slices groups to --limit, so
+      // the dry-run count must too or it overstates what will actually happen.
+      const effective = limit !== undefined ? todo.slice(0, limit) : todo;
+      console.log(`${effective.length} wiki page(s) would be generated (${groups.length - effective.length} already exist or skipped).`);
+      for (const g of effective.slice(0, 60)) {
         console.log(`  wiki/${g.key}  (${g.files.length} files)`);
       }
       return;
@@ -800,8 +807,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const scope = scopeRaw as GenScope;
     const include = flagValues(args, "--include");
     const exclude = flagValues(args, "--exclude");
-    const limitRaw = flagValue(args, "--limit");
-    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    const limit = parseOptionalLimit(args);
     const concurrency = Number(flagValue(args, "--concurrency") ?? "4");
     // Same default as wiki/pull/wiki-refresh — a doc written under project ''
     // would be invisible to the project-scoped readers of the other commands.
