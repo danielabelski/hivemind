@@ -152,10 +152,15 @@ describe("hivemind docs list", () => {
     await run(["list"]);
     expect(logged.join()).toMatch(/no docs with status=active/);
   });
-  it("lists rows", async () => {
+  it("lists rows (after the status-header meta read)", async () => {
+    // The status header reads the _meta row FIRST; script that read as empty,
+    // then the page rows for the actual listing.
+    queryMock.mockResolvedValueOnce([]); // header: readRefreshMeta
     queryMock.mockResolvedValueOnce([docRow({ doc_id: "x.ts", version: 2 })]);
     await run(["list", "--status", "all"]);
-    expect(logged.join("\n")).toMatch(/x\.ts/);
+    const out = logged.join("\n");
+    expect(out).toMatch(/x\.ts/);
+    expect(out).toMatch(/repo: .*  org: /); // header present
   });
   it("rejects a bad --status", async () => {
     expect(await run(["list", "--status", "bogus"])).toBe(1);
