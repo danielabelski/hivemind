@@ -49,7 +49,8 @@ export {
   selectWikiGroups,
   wikiDocId,
   chunkFiles,
-  capFileContent,
+  splitOversizedFile,
+  validateWikiNarrative,
   appendFilesIndex,
   stripFilesIndex,
   parseFilesIndex,
@@ -59,7 +60,8 @@ export {
   buildWikiSynthesisPrompt,
   WIKI_DOC_PREFIX,
   DEFAULT_CHUNK_CHARS,
-  MAX_FILE_CHARS,
+  MIN_GROUP_FILES,
+  MIN_GROUP_CHARS,
 } from "./wiki-generate.js";
 export type { WikiGenArgs, WikiReport, WikiOutcome, WikiFileSource, RunPromptFn } from "./wiki-generate.js";
 

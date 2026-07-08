@@ -45,38 +45,59 @@ export function wikiDocId(key: string): string {
 
 /** Max characters of source packed into one LLM prompt chunk. */
 export const DEFAULT_CHUNK_CHARS = 120_000;
-/** A single file larger than this is truncated (with a marker) before packing. */
-export const MAX_FILE_CHARS = 60_000;
+/**
+ * A group below BOTH thresholds gets no wiki page: a page about one tiny file
+ * is ceremony (it paraphrases what a 5-second read shows), and pathological
+ * one-file groups (e.g. a lone test file) push the model into refusals.
+ */
+export const MIN_GROUP_FILES = 3;
+export const MIN_GROUP_CHARS = 8_000;
 
 export interface WikiFileSource {
   file: string;
   content: string;
 }
 
-/** Truncate an oversized source with an explicit marker (never silently). */
-export function capFileContent(content: string, maxChars = MAX_FILE_CHARS): string {
-  if (content.length <= maxChars) return content;
-  return content.slice(0, maxChars) + `\n… [truncated: file continues, ${content.length} chars total]\n`;
+/**
+ * Split one oversized source into sequential parts with EXPLICIT part labels.
+ * The audit showed the model fabricates claims about code it never saw — a
+ * tail cut off by a cap is exactly that — so nothing is ever dropped: the
+ * whole file rides across as many labeled parts as it needs.
+ */
+export function splitOversizedFile(s: WikiFileSource, maxChars: number): WikiFileSource[] {
+  if (s.content.length <= maxChars) return [s];
+  const parts: WikiFileSource[] = [];
+  const total = Math.ceil(s.content.length / maxChars);
+  for (let i = 0; i < total; i++) {
+    parts.push({
+      file: `${s.file} [part ${i + 1}/${total}]`,
+      content: s.content.slice(i * maxChars, (i + 1) * maxChars),
+    });
+  }
+  return parts;
 }
 
 /**
  * Pack sources into chunks of at most `chunkChars` characters. A file larger
- * than the budget still lands alone in its own chunk (already capped by
- * `capFileContent`). Order is preserved so chunks stay directory-coherent.
+ * than the budget is split into labeled parts (NEVER truncated) so the model
+ * sees 100% of the source. Order is preserved so chunks stay
+ * directory-coherent and file parts stay sequential.
  */
 export function chunkFiles(sources: WikiFileSource[], chunkChars = DEFAULT_CHUNK_CHARS): WikiFileSource[][] {
   const chunks: WikiFileSource[][] = [];
   let current: WikiFileSource[] = [];
   let size = 0;
-  for (const s of sources) {
-    const len = s.content.length + s.file.length + 32; // block overhead
-    if (current.length > 0 && size + len > chunkChars) {
-      chunks.push(current);
-      current = [];
-      size = 0;
+  for (const raw of sources) {
+    for (const s of splitOversizedFile(raw, chunkChars)) {
+      const len = s.content.length + s.file.length + 32; // block overhead
+      if (current.length > 0 && size + len > chunkChars) {
+        chunks.push(current);
+        current = [];
+        size = 0;
+      }
+      current.push(s);
+      size += len;
     }
-    current.push(s);
-    size += len;
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
@@ -90,9 +111,14 @@ function renderSources(sources: WikiFileSource[]): string {
 
 const PAGE_STYLE = [
   "Write for an engineer new to this subsystem. Cover: what the subsystem is for,",
-  "how its pieces fit together (data flow, who calls whom), the key invariants or",
-  "design decisions visible in the code, and any surprising behavior. Use `## `",
-  "section headings. Be grounded ONLY in the code shown — no speculation.",
+  "how its pieces fit together (data flow, who calls whom), and any surprising",
+  "behavior. Use `## ` section headings.",
+  "EVIDENCE RULE: state ONLY facts you can tie to a specific file and symbol you",
+  "actually saw. Name the file when you attribute behavior to it. If you did not",
+  "see the code for a claim, do not make the claim. Never state general rules or",
+  'invariants ("X is immutable", "Y rejects Z", "almost everything goes through W")',
+  "unless a specific line you saw says exactly that — prefer describing what one",
+  "named function does over generalizing across the subsystem.",
   "Do NOT include a file listing section; one is appended mechanically.",
   "Output ONLY markdown, no preamble, no outer code fence. Keep it under ~4000 characters.",
 ].join("\n");
@@ -115,7 +141,9 @@ export function buildWikiNotesPrompt(key: string, sources: WikiFileSource[], chu
     `You are reading part ${chunkIdx + 1} of ${chunkTotal} of the subsystem \`${key}\`` +
       " to prepare notes for a wiki page.",
     "For each file: 1-3 bullet points on its responsibility and how it connects to the",
-    "rest (imports/exports/calls). Note cross-file flows and invariants you can see.",
+    "rest (imports/exports/calls). Note cross-file flows you can SEE in this code.",
+    "Every bullet must name the file and symbol it comes from — the synthesis step",
+    "can only trust attributed notes. Do not generalize beyond this chunk.",
     "Be terse and factual — these notes feed a synthesis step, not humans.",
     "Output ONLY markdown bullets grouped under `### <file>` headings.",
     "",
@@ -130,12 +158,32 @@ export function buildWikiSynthesisPrompt(key: string, notes: string[]): string {
   return [
     `You are writing an internal wiki page for the subsystem \`${key}\`,`,
     "synthesized from the reading notes below (taken across the whole subsystem).",
+    "The notes are your ONLY source: keep every claim attributed to the file the",
+    "note attributes it to — never move behavior to a different file, and never",
+    "merge two notes into a broader rule neither of them states.",
     PAGE_STYLE,
     "",
     "=== NOTES ===",
     "",
     notes.map((n, i) => `--- notes part ${i + 1} ---\n${n}`).join("\n\n"),
   ].join("\n");
+}
+
+/**
+ * Output validation — a page must be a page. Models occasionally REFUSE
+ * (e.g. handed a lone test file: "I can only see a test file... Could you
+ * provide...") and a refusal is non-empty text, so the empty-content check
+ * alone lets it through and it gets persisted as documentation. Refusal
+ * phrasing or a heading-less body ⇒ invalid.
+ */
+const REFUSAL_RE =
+  /\b(I can only|I cannot|I can't|I'm unable|I am unable|I don't have|I do not have|could you (provide|share)|please (provide|share)|as an AI)\b/i;
+
+export function validateWikiNarrative(narrative: string): { ok: boolean; reason?: string } {
+  if (narrative.trim() === "") return { ok: false, reason: "empty content" };
+  if (REFUSAL_RE.test(narrative)) return { ok: false, reason: "model refused instead of writing the page" };
+  if (!/^##? /m.test(narrative)) return { ok: false, reason: "no markdown section headings — not a page" };
+  return { ok: true };
 }
 
 const FILES_INDEX_HEADER = "## Files";
@@ -211,7 +259,18 @@ export interface WikiGenArgs {
   concurrency?: number;
   maxFilesPerGroup?: number;
   chunkChars?: number;
+  /** Min-value thresholds (see MIN_GROUP_FILES / MIN_GROUP_CHARS). */
+  minGroupFiles?: number;
+  minGroupChars?: number;
+  /** Notes / default runner (cheap model — bulk of the tokens). */
   run: RunPromptFn;
+  /**
+   * FINAL-PAGE authoring runner. The audit showed page-authoring is where
+   * accuracy is won or lost (module-attribution inversions, fabricated
+   * invariants), while note-taking survives a cheap model — so the two steps
+   * take different models. Defaults to `run`.
+   */
+  runPage?: RunPromptFn;
   embed?: DocEmbedder;
   agent?: string;
   pluginVersion?: string;
@@ -265,12 +324,13 @@ export async function generateWikiPages(args: WikiGenArgs): Promise<WikiReport> 
   await runPool(groups, args.concurrency ?? 2, async (group) => {
     const docId = wikiDocId(group.key);
 
-    // Read member sources; unreadable files are dropped from the prompt but
-    // stay in the mechanical index (the doc must still reference them).
+    // Read member sources IN FULL (oversized files are split into labeled
+    // parts by chunkFiles, never truncated); unreadable files are dropped from
+    // the prompt but stay in the mechanical index.
     const sources: WikiFileSource[] = [];
     for (const file of group.files) {
       try {
-        sources.push({ file, content: capFileContent(readFileSync(join(args.repoRoot, file), "utf-8"), MAX_FILE_CHARS) });
+        sources.push({ file, content: readFileSync(join(args.repoRoot, file), "utf-8") });
       } catch {
         // unreadable (deleted between snapshot and now, permissions) — skip source
       }
@@ -280,25 +340,34 @@ export async function generateWikiPages(args: WikiGenArgs): Promise<WikiReport> 
       return;
     }
 
+    // Min-value threshold: tiny one-off groups produce ceremony or refusals.
+    const totalChars = sources.reduce((n, s) => n + s.content.length, 0);
+    if (sources.length < (args.minGroupFiles ?? MIN_GROUP_FILES) && totalChars < (args.minGroupChars ?? MIN_GROUP_CHARS)) {
+      outcomes.push({ doc_id: docId, key: group.key, files: group.files.length, chunks: 0, status: "skipped", reason: `below min size (${sources.length} file(s), ${totalChars} chars)` });
+      return;
+    }
+
     const chunks = chunkFiles(sources, args.chunkChars ?? DEFAULT_CHUNK_CHARS);
+    const runPage = args.runPage ?? args.run;
 
     let narrative: string;
     try {
       if (chunks.length === 1) {
-        narrative = await args.run(buildWikiPagePrompt(group.key, chunks[0]));
+        narrative = await runPage(buildWikiPagePrompt(group.key, chunks[0]));
       } else {
         const notes: string[] = [];
         for (let i = 0; i < chunks.length; i++) {
           notes.push(await args.run(buildWikiNotesPrompt(group.key, chunks[i], i, chunks.length)));
         }
-        narrative = await args.run(buildWikiSynthesisPrompt(group.key, notes));
+        narrative = await runPage(buildWikiSynthesisPrompt(group.key, notes));
       }
     } catch (err) {
       outcomes.push({ doc_id: docId, key: group.key, files: group.files.length, chunks: chunks.length, status: "failed", reason: `generate failed: ${(err as Error).message}` });
       return;
     }
-    if (narrative.trim() === "") {
-      outcomes.push({ doc_id: docId, key: group.key, files: group.files.length, chunks: chunks.length, status: "failed", reason: "empty content" });
+    const valid = validateWikiNarrative(narrative);
+    if (!valid.ok) {
+      outcomes.push({ doc_id: docId, key: group.key, files: group.files.length, chunks: chunks.length, status: "failed", reason: valid.reason });
       return;
     }
 

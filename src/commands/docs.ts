@@ -47,7 +47,7 @@ import {
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
-import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt } from "../docs/refresh-llm.js";
+import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt, makeHostPageRunPrompt } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
@@ -535,7 +535,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
     const report = await runWikiRefreshCycle({
       query, tableName, snap, repoRoot: cwd, project,
-      run: makeHostRunPrompt(), git,
+      run: makeHostRunPrompt(), runPage: makeHostPageRunPrompt(), git,
       owner: `${userInfo().username}@${hostname()}:${process.pid}`,
       force,
       // Snapshots live under the repo-derived key even when --project overrides
@@ -617,6 +617,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       query, tableName, snap, repoRoot: cwd, project,
       include, exclude, existing, force, limit, concurrency,
       run: makeHostRunPrompt(),
+      runPage: makeHostPageRunPrompt(),
       embed: makeDocEmbedder(),
       agent: cfg.userName, pluginVersion,
     });

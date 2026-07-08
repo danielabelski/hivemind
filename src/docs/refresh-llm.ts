@@ -83,6 +83,43 @@ const REGISTRY: Record<string, (env: NodeJS.ProcessEnv) => DocLlmSpec> = {
 };
 
 /**
+ * PAGE-AUTHORING spec: the wiki audit showed final-page writing is where
+ * accuracy is won or lost, while note-taking survives the cheap model. So the
+ * authoring step gets a stronger (still internal, no API key) configuration:
+ *   - claude: sonnet instead of haiku (override: HIVEMIND_DOCS_PAGE_MODEL)
+ *   - codex:  medium reasoning effort instead of low
+ *   - custom bins: same as the default spec (no second knob to turn)
+ */
+export function resolvePageLlmSpec(env: NodeJS.ProcessEnv = process.env): DocLlmSpec {
+  const base = resolveDocLlmSpec(env);
+  if (base.label === "claude") {
+    const model = env.HIVEMIND_DOCS_PAGE_MODEL ?? "sonnet";
+    const flags = ["-p", "--no-session-persistence", "--model", model, "--permission-mode", "bypassPermissions"];
+    return { label: `claude:${model}`, bin: base.bin, build: (b, p) => buildStdinPromptInvocation(b, flags, p) };
+  }
+  if (base.label === "codex") {
+    const model = env.HIVEMIND_DOCS_CODEX_MODEL;
+    const flags = [
+      "exec",
+      "--dangerously-bypass-approvals-and-sandbox",
+      ...(model && model.trim() !== "" ? ["-m", model] : []),
+      "-c",
+      'model_reasoning_effort="medium"',
+      "-",
+    ];
+    return { label: "codex:medium", bin: base.bin, build: (b, p) => buildStdinPromptInvocation(b, flags, p) };
+  }
+  return base;
+}
+
+/** Page-authoring runner (see resolvePageLlmSpec). */
+export function makeHostPageRunPrompt(timeoutMs = 300_000, env: NodeJS.ProcessEnv = process.env): (prompt: string) => Promise<string> {
+  const spec = resolvePageLlmSpec(env);
+  const bin = resolveCliBin(spec.bin);
+  return async (prompt) => runHostPrompt(spec, bin, prompt, timeoutMs);
+}
+
+/**
  * Resolve the doc-LLM spec from the environment:
  *   - `HIVEMIND_DOCS_LLM_BIN` (+ optional `HIVEMIND_DOCS_LLM_FLAGS`, comma-sep)
  *     → a fully custom CLI (prompt appended as the trailing arg). Escape hatch

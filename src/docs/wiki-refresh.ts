@@ -57,6 +57,8 @@ export interface WikiRefreshArgs {
   project: string;
   scope?: string;
   run: RunPromptFn;
+  /** Final-page authoring runner for regens (see WikiGenArgs.runPage). */
+  runPage?: RunPromptFn;
   /** `git -C repoRoot <args>` runner (null on failure). */
   git: GitRunner;
   /** Claim owner id, e.g. `user@host:pid`. */
@@ -108,6 +110,7 @@ function defaultRegenerate(args: WikiRefreshArgs): (group: WikiGroup) => Promise
       existing: new Set<string>(),
       force: true,
       run: args.run,
+      runPage: args.runPage,
       embed: args.embed,
       agent: args.agent,
       pluginVersion: args.pluginVersion,

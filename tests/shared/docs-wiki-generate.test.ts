@@ -13,8 +13,9 @@ import {
   buildWikiPagePrompt,
   buildWikiNotesPrompt,
   buildWikiSynthesisPrompt,
-  capFileContent,
   chunkFiles,
+  splitOversizedFile,
+  validateWikiNarrative,
   generateWikiPages,
   wikiDocId,
   type WikiFileSource,
@@ -52,21 +53,36 @@ describe("chunkFiles", () => {
     expect(chunks.map((c) => c.map((s) => s.file))).toEqual([["a.ts"], ["b.ts"], ["c.ts"]]);
   });
 
-  it("a file bigger than the budget still lands alone in its own chunk", () => {
-    const chunks = chunkFiles([src("huge.ts", "x".repeat(2000)), src("b.ts", "y")], 500);
-    expect(chunks[0].map((s) => s.file)).toEqual(["huge.ts"]);
-    expect(chunks[1].map((s) => s.file)).toEqual(["b.ts"]);
+  it("a file bigger than the budget is SPLIT into labeled parts — never truncated", () => {
+    const chunks = chunkFiles([src("huge.ts", "x".repeat(1100)), src("b.ts", "y")], 500);
+    const all = chunks.flat();
+    const parts = all.filter((s) => s.file.startsWith("huge.ts"));
+    expect(parts.map((s) => s.file)).toEqual(["huge.ts [part 1/3]", "huge.ts [part 2/3]", "huge.ts [part 3/3]"]);
+    // 100% of the source survives — the audit showed the model fabricates
+    // claims about code it never saw, so tails must never be dropped.
+    expect(parts.map((s) => s.content).join("")).toBe("x".repeat(1100));
+    expect(all.some((s) => s.file === "b.ts")).toBe(true);
   });
 });
 
-describe("capFileContent", () => {
-  it("truncates oversized content with an EXPLICIT marker (never silently)", () => {
-    const capped = capFileContent("x".repeat(100), 50);
-    expect(capped).toContain("[truncated: file continues, 100 chars total]");
-    expect(capped.startsWith("x".repeat(50))).toBe(true);
+describe("splitOversizedFile", () => {
+  it("returns the file untouched when it fits", () => {
+    expect(splitOversizedFile(src("a.ts", "short"), 100)).toEqual([src("a.ts", "short")]);
   });
-  it("leaves content under the cap untouched", () => {
-    expect(capFileContent("short", 50)).toBe("short");
+});
+
+describe("validateWikiNarrative (garbage-but-green guard)", () => {
+  it("rejects a model REFUSAL saved as a page (the properties/ bug)", () => {
+    const refusal = "I can only see a test file for CF encoding. Could you provide the implementation files?";
+    expect(validateWikiNarrative(refusal).ok).toBe(false);
+    expect(validateWikiNarrative(refusal).reason).toMatch(/refused/);
+  });
+  it("rejects empty and heading-less bodies", () => {
+    expect(validateWikiNarrative("   ").ok).toBe(false);
+    expect(validateWikiNarrative("just a plain paragraph with no structure").ok).toBe(false);
+  });
+  it("accepts a real page", () => {
+    expect(validateWikiNarrative("## Purpose\nDoes things.").ok).toBe(true);
   });
 });
 
@@ -137,7 +153,7 @@ describe("generateWikiPages", () => {
     const { calls, query } = mockQuery();
     const run = vi.fn(async () => "## Purpose\nCore logic.");
     const report = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir, minGroupFiles: 0,
       project: "proj", existing: new Set(), run,
     });
     expect(report.created).toBe(2);
@@ -156,7 +172,7 @@ describe("generateWikiPages", () => {
     const { query } = mockQuery();
     const run = vi.fn(async () => "x");
     const report = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir, minGroupFiles: 0,
       existing: new Set([wikiDocId("pkg/core"), wikiDocId("pkg/io")]), run,
     });
     expect(report.created).toBe(0);
@@ -166,7 +182,7 @@ describe("generateWikiPages", () => {
   it("a failed generation writes NOTHING (missing beats stale-but-green)", async () => {
     const { calls, query } = mockQuery();
     const report = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir, minGroupFiles: 0,
       existing: new Set(), run: async () => { throw new Error("LLM down"); },
     });
     expect(report.failed).toBe(2);
@@ -177,7 +193,7 @@ describe("generateWikiPages", () => {
   it("empty model output is a failure, not an empty page", async () => {
     const { calls, query } = mockQuery();
     const report = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir, minGroupFiles: 0,
       existing: new Set(), run: async () => "   ",
     });
     expect(report.failed).toBe(2);
@@ -190,10 +206,10 @@ describe("generateWikiPages", () => {
     const { query } = mockQuery();
     // Force multi-chunk with a tiny budget: each file lands in its own chunk.
     const report = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: snap([
+      query, tableName: "hivemind_docs", minGroupFiles: 0, snap: snap([
         node("pkg/core/a.ts:foo:function", "pkg/core/a.ts", "L1-L3"),
       ]), repoRoot: dir,
-      existing: new Set(), run, chunkChars: 10,
+      existing: new Set(), run, chunkChars: 60,
       include: ["pkg/core/*"],
     });
     expect(report.created).toBe(1);
@@ -203,11 +219,11 @@ describe("generateWikiPages", () => {
     prompts.length = 0;
     run.mockClear();
     const report2 = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: snap([
+      query, tableName: "hivemind_docs", minGroupFiles: 0, snap: snap([
         node("pkg/core/a.ts:foo:function", "pkg/core/a.ts", "L1-L3"),
         node("pkg/core/c.ts:baz:function", "pkg/core/c.ts", "L1-L3"),
       ]), repoRoot: dir,
-      existing: new Set(), run, chunkChars: 10, force: true,
+      existing: new Set(), run, chunkChars: 60, force: true,
     });
     expect(report2.created).toBe(1);
     expect(run).toHaveBeenCalledTimes(3); // 2 notes + 1 synthesis
@@ -215,10 +231,54 @@ describe("generateWikiPages", () => {
     expect(prompts[2]).toContain("synthesized from the reading notes");
   });
 
+  it("a group below the min-size thresholds is SKIPPED (ceremony/refusal prevention)", async () => {
+    const { calls, query } = mockQuery();
+    const run = vi.fn(async () => "## X\nok");
+    const report = await generateWikiPages({
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir,
+      existing: new Set(), run, // default thresholds: 1 tiny file per group
+    });
+    expect(report.skipped).toBe(2);
+    expect(report.outcomes[0].reason).toMatch(/below min size/);
+    expect(run).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a refusal from the model is FAILED, never persisted (garbage-but-green guard)", async () => {
+    const { calls, query } = mockQuery();
+    const report = await generateWikiPages({
+      query, tableName: "hivemind_docs", snap: s(), repoRoot: dir, minGroupFiles: 0,
+      existing: new Set(), run: async () => "I can only see a test file. Could you provide the implementation?",
+    });
+    expect(report.failed).toBe(2);
+    expect(report.outcomes[0].reason).toMatch(/refused/);
+    expect(calls.filter((c) => /^INSERT/i.test(c.trim()))).toHaveLength(0);
+  });
+
+  it("runPage authors the FINAL page; run only takes notes (model split)", async () => {
+    writeFileSync(join(dir, "pkg", "core", "c.ts"), "export function baz() {\n  return 3;\n}\n");
+    const notesRun = vi.fn(async () => "## Notes\n- pkg/core/a.ts: foo");
+    const pageRun = vi.fn(async (_p: string) => "## Purpose\nAuthored by the strong model.");
+    const { calls, query } = mockQuery();
+    const report = await generateWikiPages({
+      query, tableName: "hivemind_docs", minGroupFiles: 0, snap: snap([
+        node("pkg/core/a.ts:foo:function", "pkg/core/a.ts", "L1-L3"),
+        node("pkg/core/c.ts:baz:function", "pkg/core/c.ts", "L1-L3"),
+      ]), repoRoot: dir,
+      existing: new Set(), run: notesRun, runPage: pageRun, chunkChars: 60,
+    });
+    expect(report.created).toBe(1);
+    expect(notesRun).toHaveBeenCalledTimes(2);            // 2 chunks -> 2 notes calls (cheap model)
+    expect(pageRun).toHaveBeenCalledTimes(1);             // 1 synthesis call (strong model)
+    expect(pageRun.mock.calls[0][0]).toContain("synthesized from the reading notes");
+    const insert = calls.find((c) => /^INSERT/i.test(c.trim()))!;
+    expect(insert).toContain("Authored by the strong model.");
+  });
+
   it("group with no readable sources is skipped, not written", async () => {
     const { calls, query } = mockQuery();
     const report = await generateWikiPages({
-      query, tableName: "hivemind_docs", snap: snap([
+      query, tableName: "hivemind_docs", minGroupFiles: 0, snap: snap([
         node("gone/x/void.ts:f:function", "gone/x/void.ts", "L1"),
       ]), repoRoot: dir,
       existing: new Set(), run: async () => "x",
