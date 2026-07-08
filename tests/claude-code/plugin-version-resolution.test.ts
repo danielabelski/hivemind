@@ -92,7 +92,9 @@ describe("plugin_version is wired into every agent's session-start placeholder I
 
   it.each(PLACEHOLDER_BUNDLES)("%s placeholder INSERT lists plugin_version column", (_label, path) => {
     const src = readFileSync(path, "utf-8");
-    const placeholderInsert = /INSERT INTO\s+"\$\{table\}"[^`]*?plugin_version[^`]*?VALUES/;
+    // Accept both shapes: the original `INSERT ... VALUES` and the race-safe
+    // `INSERT ... SELECT ... WHERE NOT EXISTS` placeholder write.
+    const placeholderInsert = /INSERT INTO\s+"\$\{table\}"[^`]*?plugin_version[^`]*?(?:VALUES|SELECT)/;
     expect(src).toMatch(placeholderInsert);
   });
 });

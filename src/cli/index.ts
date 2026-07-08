@@ -3,6 +3,7 @@ import { installCodex, uninstallCodex } from "./install-codex.js";
 import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
 import { installCursor, uninstallCursor } from "./install-cursor.js";
 import { installHermes, uninstallHermes } from "./install-hermes.js";
+import { installCowork, uninstallCowork } from "./install-cowork.js";
 import { installPi, uninstallPi } from "./install-pi.js";
 import {
   disableEmbeddings,
@@ -13,7 +14,14 @@ import {
 } from "./embeddings.js";
 import { ensureLoggedIn, isLoggedIn, loginWithProvidedToken, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
-import { runGraphCommand } from "../commands/graph.js";
+// NOTE: ../commands/graph.js is intentionally NOT imported statically. It pulls
+// in the tree-sitter native addon (an optionalDependency), which fails to build
+// on some platforms (e.g. Node 24 / arm64, where tree-sitter@0.21 needs C++20).
+// A static import would hoist `import "tree-sitter"` to the top of the bundle
+// and crash EVERY `hivemind` command — including `install` — with
+// ERR_MODULE_NOT_FOUND when the addon is absent. It is loaded lazily below
+// (with `splitting` enabled in esbuild, the tree-sitter chunk is split out and
+// only loaded when `hivemind graph` actually runs).
 import { runDashboardCommand } from "../commands/dashboard.js";
 import { runSkillifyCommand } from "../commands/skillify.js";
 import { runRulesCommand } from "../commands/rules.js";
@@ -66,6 +74,7 @@ Usage:
   hivemind claw    install | uninstall
   hivemind cursor  install | uninstall
   hivemind hermes  install | uninstall
+  hivemind claude_cowork install | uninstall
   hivemind pi      install | uninstall
       Install or remove hivemind for a specific assistant.
 
@@ -367,7 +376,7 @@ async function runInstallAll(args: string[]): Promise<void> {
 
   if (targets.length === 0) {
     log("No supported assistants detected.");
-    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent.");
+    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, Pi, Claude Cowork.");
     log("Install one and rerun `hivemind install`, or target a specific assistant: `hivemind cursor install`.");
     return;
   }
@@ -411,6 +420,7 @@ function runSingleInstall(id: PlatformId): void {
     else if (id === "cursor") installCursor();
     else if (id === "hermes") installHermes();
     else if (id === "pi") installPi();
+    else if (id === "claude_cowork") installCowork();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -424,6 +434,7 @@ function runSingleUninstall(id: PlatformId): void {
     else if (id === "cursor") uninstallCursor();
     else if (id === "hermes") uninstallHermes();
     else if (id === "pi") uninstallPi();
+    else if (id === "claude_cowork") uninstallCowork();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -498,6 +509,22 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "graph") {
+    let runGraphCommand: (a: string[]) => Promise<void> | void;
+    try {
+      ({ runGraphCommand } = await import("../commands/graph.js"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("tree-sitter") || (err as { code?: string })?.code === "ERR_MODULE_NOT_FOUND") {
+        console.error(
+          "hivemind graph requires the optional 'tree-sitter' native module, which is not installed.\n" +
+            "It can fail to build on some platforms (e.g. Node 24 / arm64). Everything else in Hivemind\n" +
+            "works without it. To enable the codebase graph, reinstall with a toolchain that can build\n" +
+            "native addons, or install tree-sitter manually in the package directory.",
+        );
+        process.exit(1);
+      }
+      throw err;
+    }
     await runGraphCommand(args.slice(1));
     return;
   }
@@ -547,7 +574,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi"];
+  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi", "claude_cowork"];
   if (platformCmds.includes(cmd as PlatformId)) {
     const sub = args[1];
     if (sub === "install") {

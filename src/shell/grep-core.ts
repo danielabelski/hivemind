@@ -492,7 +492,7 @@ export async function searchDocs(
   return dedup(rows);
 }
 
-function serializeFloat4Array(vec: number[]): string {
+export function serializeFloat4Array(vec: number[]): string {
   const parts: string[] = [];
   for (const v of vec) {
     if (!Number.isFinite(v)) return "NULL";

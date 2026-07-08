@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  Auto-learning, cloud-backed shared brain for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi</b> agents.<br>
+  Auto-learning, cloud-backed shared brain for <b>Claude Code • OpenClaw • Codex • Cursor • Hermes • pi • Claude Cowork (Alpha)</b> agents.<br>
 </p>
 
 <p align="center">
@@ -33,6 +33,10 @@
 > Tuesday, every agent on the team can execute the pattern.
 
 On [LoCoMo](https://arxiv.org/abs/2402.17753), the public long-context memory benchmark, Hivemind is **25% cheaper, 1.7× fewer tokens, and 31% fewer turns** than running without shared memory. ([See the numbers below.](#benchmarks))
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/activeloopai/hivemind/main/docs/public/hivemind_cursor_readme_banner_dark.png" alt="Cut Cursor spend by 34% with Hivemind" width="100%">
+</p>
 
 **Beyond memory.** Hivemind doesn't just remember. It mines your team's traces for repeated patterns and codifies them into reusable skills that propagate back into every agent on the team. The agent your junior engineer used this morning is sharper because of what your senior engineer's agent figured out last week.
 
@@ -86,6 +90,7 @@ hivemind claw install
 hivemind cursor install
 hivemind hermes install
 hivemind pi install
+hivemind claude_cowork install   # Alpha
 ```
 
 **Check what's wired up:**
@@ -104,6 +109,9 @@ hivemind status
 | **Cursor**       | Hooks (`hooks.json` 1.7+)                        | ✅           | ✅          |
 | **Hermes Agent** | Shell hooks (`config.yaml`) + skill + MCP server | ✅           | ✅          |
 | **pi**           | Extension API (`pi.on(...)`) + skill + AGENTS.md | ✅           | ✅          |
+| **Claude Cowork** 🅰️ | MCP server (Claude Desktop)                  | 🅰️ Alpha¹    | ✅          |
+
+🅰️ **Claude Cowork is Alpha.** Auto-recall (the `hivemind_search` / `read` / `index` tools) is solid. ¹Auto-capture covers **Local Agent Mode** sessions only — those write a transcript we can tail; plain desktop-chat turns leave no readable local trace and aren't captured ([why](#claude-cowork-alpha)).
 
 ### Alternative install paths
 
@@ -226,6 +234,21 @@ hivemind pi install
 Note: no per-agent SKILL.md is dropped under `~/.pi/agent/skills/`; pi reads skills from both that directory AND the shared `~/.agents/skills/` location. If the codex installer has run on the same machine, pi picks up the hivemind skill from the shared `~/.agents/skills/hivemind-memory` symlink automatically. The AGENTS.md block plus the registered tools cover the action surface in either case.
 </details>
 
+### Claude Cowork (Alpha)
+
+[Claude Cowork](https://support.claude.com/en/articles/11503834) is Anthropic's agentic assistant inside the Claude Desktop app. It has **no hook lifecycle** like the other agents — it only talks to Hivemind through MCP — so the integration works differently and ships as **Alpha**.
+
+```bash
+hivemind claude_cowork install
+```
+
+This registers the shared MCP server (`~/.hivemind/mcp/server.js`) under `mcpServers.hivemind` in Claude Desktop's `claude_desktop_config.json`. **Fully quit and reopen Claude Desktop** to load it.
+
+**Recall (stable).** Cowork gains `hivemind_search`, `hivemind_read`, and `hivemind_index` — the same shared memory every other agent reads. On the first tool use per host, a one-time data-collection notice is prepended to the result.
+
+**Auto-capture (Alpha) — how it works.** With no SessionStart/Stop hooks to capture from, the MCP server runs a background ingester that **tails Cowork's Local Agent Mode transcripts** (`~/Library/Application Support/Claude/local-agent-mode-sessions/**/.claude/projects/<enc>/<sessionId>.jsonl`). For each new line it writes a row to the `sessions` table with `agent="claude_cowork"` (user prompts, assistant messages, tool calls + results), de-duplicated by a per-transcript line watermark. When a transcript has been idle for 5 minutes it is treated as finished, and the same wiki-worker / skillify workers every other agent uses run for it (summary tagged `claude_cowork` → it shows up in `hivemind_index`).
+
+**Known limitation.** <a id="claude-cowork-alpha"></a>Only **Local Agent Mode** sessions (where Cowork opens its sandbox/agent and *works*) write a transcript we can read. Plain **desktop-chat** turns are not captured: by MCP design a server never sees the conversation (only the tool calls the model makes), and the chat itself lives in Anthropic's cloud + a compressed claude.ai IndexedDB cache with no supported read surface. Capturing those would need an official Anthropic export/hook.
 
 ### Uninstall
 
@@ -295,6 +318,9 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_CAPTURE_ONLY_CLI` | _(none)_                | Set to `true` to capture only interactive CLI sessions. Sessions spawned by the Claude Agent SDK (Python/TypeScript) are skipped; their `CLAUDE_CODE_ENTRYPOINT` is `sdk-py` / `sdk-ts`, so they fail the substring check for `cli`. |
 | `HIVEMIND_SKILLIFY_EVERY_N_TURNS` | `20`              | Assistant turns between auto skill-mining attempts. Lower = more frequent mining (cheaper sessions, noisier output); higher = fewer attempts on longer histories. |
 | `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
+| `HIVEMIND_PROACTIVE_RECALL_DISABLED` | _(none)_       | Set to `1` to disable **proactive recall** (auto-searching team memory on each recall-worthy prompt and injecting a relevant snippet into the agent's context). On by default. Does **not** affect capture or the agent's own grep/skill recall. Alt form: `HIVEMIND_PROACTIVE_RECALL=0`. |
+| `HIVEMIND_RECALL_MIN_OVERLAP` | `2`                   | Proactive recall (lexical mode): min distinct prompt keywords a summary must share to be injected. Higher = stricter. |
+| `HIVEMIND_RECALL_TIMEOUT_MS` | `1000`                 | Proactive recall: hard cap on the synchronous search path; on timeout it skips rather than delay the turn. |
 | `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
 
 ## Semantic search (optional)
@@ -302,6 +328,18 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 Hivemind ships with a local embedding daemon (nomic-embed-text-v1.5) for hybrid semantic + lexical search over `~/.deeplake/memory/`. **Off by default** because the dependency footprint is ~600 MB. Enable with `hivemind embeddings install` (or `hivemind install --with-embeddings`). Without it, search degrades silently to BM25/lexical-only.
 
 Full guide: **[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)**.
+
+## Proactive recall
+
+On a recall-worthy prompt (errors, "how did we…", substantive requests — acks and short follow-ups are skipped), Hivemind automatically searches the team's summaries and, if the top hit clears a relevance bar, injects one attributed snippet (`recalled from <teammate> · <date>`) into the agent's context — so prior work shows up *unprompted*, not only when the agent decides to search. Semantic when embeddings are installed, otherwise lexical (ILIKE keyword overlap), so it works without the embedding model. The search is latency-bounded and skips silently on any miss or error.
+
+**On by default.** To turn it off (capture and the agent's own grep/skill recall are unaffected):
+
+```bash
+HIVEMIND_PROACTIVE_RECALL_DISABLED=1 claude   # or HIVEMIND_PROACTIVE_RECALL=0
+```
+
+Tune precision/latency with `HIVEMIND_RECALL_MIN_OVERLAP` and `HIVEMIND_RECALL_TIMEOUT_MS` (see the table above). Every recall-worthy invocation is recorded to `~/.deeplake/recall-events.jsonl` for usage/hit-rate analysis.
 
 ## Summaries
 

@@ -98,6 +98,15 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR #284 — fix(codex): PreToolUse allow-rewrite for memory writes (F3).
+        // Branch suite covers the read fast-path, write-redirect allow/block
+        // arms, and the graph/default-deps branches. Held at 90 to lock the gate.
+        "src/hooks/codex/pre-tool-use.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
         "src/hooks/session-queue.ts": {
           statements: 80,
           branches: 80,
@@ -192,6 +201,43 @@ export default defineConfig({
           lines: 90,
         },
         "src/hooks/memory-path-utils.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // feat/proactive-recall — UserPromptSubmit auto-search-and-inject.
+        "src/hooks/recall.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-gate.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-format.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-query.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-events.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/with-deadline.ts": {
           statements: 90,
           branches: 90,
           functions: 90,
@@ -335,6 +381,7 @@ export default defineConfig({
         // and the uncaught-rethrow branch covers everything else implicitly.
         "src/skillify/legacy-migration.ts":  { statements: 90, branches: 80, functions: 90, lines: 90 },
         "src/skillify/pull.ts":              { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/skillify/push.ts":              { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/skillify/scope-config.ts":      { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/skillify/skill-writer.ts":      { statements: 90, branches: 80, functions: 90, lines: 90 },
         "src/skillify/skills-table.ts":      { statements: 90, branches: 70, functions: 90, lines: 90 },
