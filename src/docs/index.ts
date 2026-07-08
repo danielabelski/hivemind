@@ -60,8 +60,20 @@ export {
 } from "./wiki-generate.js";
 export type { WikiGenArgs, WikiReport, WikiOutcome, WikiFileSource, RunPromptFn } from "./wiki-generate.js";
 
+export {
+  pullDocs,
+  localDocPath,
+  readPullManifest,
+  writePullManifest,
+  ensureGitignoreEntries,
+  GITIGNORE_ENTRIES,
+  PULL_MANIFEST_DIR,
+  PULL_MANIFEST_FILE,
+} from "./pull.js";
+export type { PullArgs, PullReport, PullManifest } from "./pull.js";
+
 export { readRefreshMeta, tryClaimTurn, commitRefresh, META_DOC_ID, CLAIM_TTL_MS } from "./meta.js";
-export type { RefreshMeta, MetaReadResult, ClaimOpts, ClaimResult } from "./meta.js";
+export type { RefreshMeta, MetaReadResult, ClaimOpts, ClaimResult, CommitResult } from "./meta.js";
 
 export { refreshDocs, buildRefreshPrompt } from "./refresh.js";
 export type {

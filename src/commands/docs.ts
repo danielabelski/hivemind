@@ -50,6 +50,7 @@ import {
 import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
+import { pullDocs } from "../docs/pull.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeDocEmbedder } from "../docs/embed.js";
 import { backfillDocEmbeddings } from "../docs/backfill.js";
@@ -82,6 +83,11 @@ Usage:
       doc_id wiki/<subsystem> (tier=slow, scope=main), anchored to every
       documentable symbol in the member files. Skips subsystems that already
       have a page unless --force. --dry-run lists the groups.
+  hivemind docs pull [--cwd <dir>] [--project P] [--scope S] [--force]
+      Materialize the canonical docs locally as gitignored *.hivemind.md
+      files next to the code (wiki/xarray/plot -> xarray/plot.hivemind.md).
+      Incremental: only rows newer than the local cursor
+      (.hivemind/docs-pull.json) are read. --force re-pulls everything.
   hivemind docs reindex
       Backfill semantic-search vectors for docs that lack them (no LLM, embed
       daemon only). Run once after enabling embeddings on an existing corpus.
@@ -473,6 +479,27 @@ export async function runDocsCommand(args: string[]): Promise<void> {
           if (o.status === "created") console.log(`  created ${o.doc_id}`);
         }
       }
+    }
+    return;
+  }
+
+  if (sub === "pull") {
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const force = args.includes("--force");
+    const scope = flagValue(args, "--scope") ?? "main";
+    const project = flagValue(args, "--project") ?? deriveProjectKey(cwd).key;
+    try {
+      const report = await pullDocs({ query, tableName, repoRoot: cwd, project, scope, force });
+      if (report.written.length === 0 && report.removed.length === 0) {
+        console.log(`Docs up to date (${report.unchanged} unchanged).`);
+      } else {
+        console.log(`Pulled ${report.written.length} doc(s), removed ${report.removed.length} (${report.unchanged} unchanged).`);
+        for (const p of report.written) console.log(`  wrote ${p}`);
+        for (const p of report.removed) console.log(`  removed ${p}`);
+      }
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+      console.log("(no docs table yet — nothing to pull)");
     }
     return;
   }
