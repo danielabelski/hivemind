@@ -304,8 +304,12 @@ export async function editDoc(
   query: QueryFn,
   tableName: string,
   input: EditDocInput,
+  opts: { project?: string } = {},
 ): Promise<WriteResult> {
-  const previous = await getDocLatest(query, tableName, input.doc_id);
+  // Optional project SELECTOR (distinct from input.project, the value to
+  // write) — in a shared org table an unscoped read can resolve the same
+  // doc_id to another project's row.
+  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project });
   if (!previous) {
     throw new Error(`Doc not found: ${input.doc_id}`);
   }

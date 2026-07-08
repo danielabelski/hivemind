@@ -51,6 +51,8 @@ export {
   chunkFiles,
   capFileContent,
   appendFilesIndex,
+  stripFilesIndex,
+  collectWikiAnchors,
   buildWikiPagePrompt,
   buildWikiNotesPrompt,
   buildWikiSynthesisPrompt,
@@ -59,6 +61,17 @@ export {
   MAX_FILE_CHARS,
 } from "./wiki-generate.js";
 export type { WikiGenArgs, WikiReport, WikiOutcome, WikiFileSource, RunPromptFn } from "./wiki-generate.js";
+
+export {
+  updateWikiPage,
+  buildUpdatePrompt,
+  shouldEscalate,
+  NO_CHANGE,
+  DEFAULT_MAX_PATCHES,
+  DEFAULT_MAX_SIGNATURE_CHANGES,
+  DEFAULT_WIKI_MAX_CHANGED_LINES,
+} from "./wiki-update.js";
+export type { WikiUpdateArgs, WikiUpdateOutcome, EscalationInput } from "./wiki-update.js";
 
 export {
   pullDocs,

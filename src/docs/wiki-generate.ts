@@ -140,6 +140,11 @@ export function buildWikiSynthesisPrompt(key: string, notes: string[]): string {
 
 const FILES_INDEX_HEADER = "## Files";
 
+/** Remove any `## Files` section (model-emitted or previous mechanical one). */
+export function stripFilesIndex(content: string): string {
+  return content.replace(/^## Files\s*$[\s\S]*?(?=^## |\n*$(?![\s\S]))/gm, "").trimEnd();
+}
+
 /**
  * Append the mechanical `## Files` index. Idempotent: any model-emitted or
  * previous `## Files` section (to end-of-doc or next `## `) is stripped first,
@@ -147,9 +152,26 @@ const FILES_INDEX_HEADER = "## Files";
  * guarantee that every member file is referenced does not depend on the model.
  */
 export function appendFilesIndex(narrative: string, files: string[]): string {
-  const stripped = narrative.replace(/^## Files\s*$[\s\S]*?(?=^## |\n*$(?![\s\S]))/gm, "").trimEnd();
   const index = [FILES_INDEX_HEADER, "", ...files.map((f) => `- \`${f}\``)].join("\n");
-  return `${stripped}\n\n${index}\n`;
+  return `${stripFilesIndex(narrative)}\n\n${index}\n`;
+}
+
+/**
+ * Anchors for every documentable symbol across `files` (drift detection for a
+ * wiki page reuses the per-file doc machinery unchanged). Unreadable symbols
+ * are skipped — an anchor is only as good as the source it hashes.
+ */
+export function collectWikiAnchors(snap: GraphSnapshot, files: string[], repoRoot: string): DocAnchor[] {
+  const wanted = new Set(files);
+  const anchors: DocAnchor[] = [];
+  for (const t of selectTargets(snap, { scope: "file", include: [...wanted] })) {
+    if (!wanted.has(t.file)) continue;
+    for (const node of t.symbols) {
+      const a = buildAnchor(node, repoRoot);
+      if (a) anchors.push(a);
+    }
+  }
+  return anchors;
 }
 
 /** Run-a-prompt seam (production: runHostPrompt via the resolved host agent). */
@@ -221,13 +243,6 @@ export async function generateWikiPages(args: WikiGenArgs): Promise<WikiReport> 
   if (!args.force) groups = groups.filter((g) => !args.existing.has(wikiDocId(g.key)));
   if (args.limit !== undefined) groups = groups.slice(0, args.limit);
 
-  // Symbols per file, for anchor building (drift detection reuses the
-  // per-file doc machinery unchanged).
-  const symbolsByFile = new Map<string, typeof args.snap.nodes>();
-  for (const t of selectTargets(args.snap, { scope: "file", include: args.include, exclude: args.exclude })) {
-    symbolsByFile.set(t.file, t.symbols);
-  }
-
   const outcomes: WikiOutcome[] = [];
 
   await runPool(groups, args.concurrency ?? 2, async (group) => {
@@ -271,15 +286,7 @@ export async function generateWikiPages(args: WikiGenArgs): Promise<WikiReport> 
     }
 
     const content = appendFilesIndex(narrative, group.files);
-
-    // Anchors: every documentable symbol across the member files.
-    const anchors: DocAnchor[] = [];
-    for (const file of group.files) {
-      for (const node of symbolsByFile.get(file) ?? []) {
-        const a = buildAnchor(node, args.repoRoot);
-        if (a) anchors.push(a);
-      }
-    }
+    const anchors = collectWikiAnchors(args.snap, group.files, args.repoRoot);
 
     try {
       const content_embedding = args.embed ? (await args.embed(content)) ?? undefined : undefined;

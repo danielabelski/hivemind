@@ -96,6 +96,10 @@ describe("gateDocEdit", () => {
     expect(r.ok).toBe(false);
     expect(r.reasons.join()).toMatch(/slow-tier/);
   });
+  it("allowSlow opts a slow-tier edit in (the wiki update-worker's own pipeline)", () => {
+    const r = gateDocEdit({ tier: "slow", allowSlow: true, prevContent: "x", newContent: "y", newAnchors: [anchor], snap: s });
+    expect(r.ok).toBe(true);
+  });
   it("rejects an anchor pointing at a symbol absent from the graph", () => {
     const r = gateDocEdit({ tier: "fast", prevContent: "x", newContent: "y", newAnchors: [{ symbol_id: "a.ts:gone:function", content_hash: "h" }], snap: s });
     expect(r.ok).toBe(false);

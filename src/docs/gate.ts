@@ -36,6 +36,12 @@ export interface GateInput {
   snap: GraphSnapshot;
   /** Override the changed-line budget. */
   maxChangedLines?: number;
+  /**
+   * Permit slow-tier edits. Default false (slow = human-curated, protected).
+   * The ONLY legitimate caller is the wiki update-worker: wiki pages are
+   * slow-tier but machine-authored, so their own pipeline may patch them.
+   */
+  allowSlow?: boolean;
 }
 
 export interface GateResult {
@@ -85,7 +91,7 @@ export function gateDocEdit(input: GateInput): GateResult {
   if (tooLong) {
     reasons.push(`proposed content exceeds ${GATE_MAX_CONTENT_LENGTH} chars (got ${input.newContent.length})`);
   }
-  if (input.tier === "slow") {
+  if (input.tier === "slow" && !input.allowSlow) {
     reasons.push("slow-tier docs are human-curated; automatic refresh is not allowed");
   }
 
