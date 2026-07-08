@@ -33,6 +33,17 @@ describe("maybeSpawnDocsRefresh (registry-gated — no env var)", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it("full: true widens the per-file refresh to --full (SessionStart catch-up)", () => {
+    const spawn = vi.fn();
+    const fired = maybeSpawnDocsRefresh("/repo", { ...CTX, full: true }, { cliEntry: "/cli.js", spawn, isAutoEnabledFn: () => true });
+    expect(fired).toBe(true);
+    // Per-file refresh gets --full (multi-commit gaps are invisible to the
+    // one-commit git window); wiki-refresh keeps its own sha window, no flag.
+    expect(spawn).toHaveBeenCalledWith("/cli.js", ["docs", "refresh", "--full", "--cwd", "/repo"]);
+    expect(spawn).toHaveBeenCalledWith("/cli.js", ["docs", "wiki-refresh", "--cwd", "/repo"]);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
   it("returns false when there is no CLI entry to re-invoke", () => {
     const spawn = vi.fn();
     const fired = maybeSpawnDocsRefresh("/repo", CTX, { cliEntry: "", spawn, isAutoEnabledFn: () => true });

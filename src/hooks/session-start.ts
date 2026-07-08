@@ -218,24 +218,26 @@ async function main(): Promise<void> {
           await api.ensureSessionsTable(sessionsTable);
           await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
-          // Docs auto sync check — the "every so often" the summary worker has.
-          // Post-commit alone misses pulled commits and long-idle repos; a
-          // session start is the natural cheap tick: registry-gated (explicit
-          // per-(org, repo) consent) and the cycle's own guards (sha match,
-          // 6h quiet period, lease) make the spawn a no-op most of the time.
-          try {
-            const cwd = input.cwd ?? process.cwd();
-            if (maybeSpawnDocsRefresh(cwd, { orgId: config.orgId, project: deriveProjectKey(cwd).key })) {
-              log("docs auto sync spawned (session-start tick)");
-            }
-          } catch {
-            // best-effort: a docs tick must never break SessionStart
-          }
         } else {
           const reason = process.env.HIVEMIND_CAPTURE === "false"
             ? "HIVEMIND_CAPTURE=false"
             : "HIVEMIND_CAPTURE_ONLY_CLI gate";
           log(`placeholder + schema ensure skipped (${reason})`);
+        }
+        // Docs auto sync check — the "every so often" the summary worker has.
+        // Post-commit alone misses pulled commits and long-idle repos; a
+        // session start is the natural cheap tick. `full` widens the per-file
+        // scan past the one-commit git window, exactly to cover those gaps.
+        // Independent of captureEnabled: docs consent lives in its own
+        // registry (explicit per-(org, repo) opt-in), and the cycle's guards
+        // (sha match, 6h quiet period, lease) make most spawns a no-op.
+        try {
+          const cwd = input.cwd ?? process.cwd();
+          if (maybeSpawnDocsRefresh(cwd, { orgId: config.orgId, project: deriveProjectKey(cwd).key, full: true })) {
+            log("docs auto sync spawned (session-start tick)");
+          }
+        } catch {
+          // best-effort: a docs tick must never break SessionStart
         }
         // Renderer is read-only and runs regardless of captureEnabled.
         // It absorbs its own errors (missing table, network, etc.)
