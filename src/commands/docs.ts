@@ -180,9 +180,9 @@ function parseLimit(args: string[]): number {
   return n;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local", "--repos"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local", "--repos", "--full"]);
 /** Flags that take NO value — they must not consume the following token. */
-const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local", "--repos"]);
+const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local", "--repos", "--full"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -451,7 +451,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     // the candidate docs (changed files + their transitive callers) instead of
     // the whole corpus. Per-commit work becomes O(diff), not O(all docs). No
     // git signal → full scan, logged (never a silent narrowing).
-    const changed = changedFilesFromGit(cwd);
+    // --full: ignore the git window (which only covers the LAST commit) and
+    // hash-verify every doc — the catch-up mode after a long idle period.
+    const changed = args.includes("--full") ? null : changedFilesFromGit(cwd);
     let docs: DocRow[] = [];
     try {
       if (changed !== null) {
@@ -644,7 +646,10 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       return;
     }
     await runDocsCommand(["wiki-refresh", "--cwd", cwd, ...(force ? ["--force"] : [])]);
-    await runDocsCommand(["refresh", "--cwd", cwd]);
+    // Per-file docs: full hash-scan (reads + hash compares only; the LLM runs
+    // exclusively on drifted docs). The git window alone covers just the last
+    // commit, which under-covers a sync after days of accumulated commits.
+    await runDocsCommand(["refresh", "--cwd", cwd, "--full"]);
     return;
   }
 
