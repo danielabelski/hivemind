@@ -424,9 +424,16 @@ async function updateInPlace(
     `tier = '${sqlStr(tier)}', ` +
     `status = '${sqlStr(status)}', ` +
     `project = '${sqlStr(project)}', ` +
-    // Only rewrite the search vector when a fresh one is supplied — a
-    // status-only edit must NOT null out the existing embedding.
-    `${next.content_embedding !== undefined ? `content_embedding = ${embeddingSqlLiteral(next.content_embedding)}, ` : ""}` +
+    // Search-vector policy: a fresh vector always wins; a STATUS-ONLY edit
+    // must not touch the existing one; but a CONTENT change without a fresh
+    // vector (embed daemon down) must NULL it — keeping the old vector would
+    // rank the doc by its previous meaning forever, and `docs reindex` only
+    // heals MISSING vectors, never stale ones. Missing beats lying.
+    `${next.content_embedding !== undefined
+      ? `content_embedding = ${embeddingSqlLiteral(next.content_embedding)}, `
+      : next.content !== undefined && next.content !== previous.content
+        ? `content_embedding = NULL, `
+        : ""}` +
     `version = ${nextVersion}, ` +
     `updated_at = '${sqlStr(now)}', ` +
     `agent = '${sqlStr(next.agent ?? "manual")}', ` +

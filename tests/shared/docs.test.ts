@@ -355,6 +355,31 @@ describe("editDoc", () => {
 
 // ── setDoc (idempotent upsert — the fork-history fix) ─────────────────────────
 
+describe("editDoc embedding policy (stale vectors)", () => {
+  const prevRow = () => [{ id: "r1", doc_id: "a.ts", version: 1, content: "old body", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }];
+
+  it("CONTENT change without a fresh vector NULLs the embedding (reindex heals missing, never stale)", async () => {
+    const { calls, query } = mockQuery([prevRow, () => []]);
+    await editDoc(query, TBL, { doc_id: "a.ts", content: "new body" });
+    const update = calls.find((c) => /^UPDATE/i.test(c))!;
+    expect(update).toContain("content_embedding = NULL");
+  });
+
+  it("STATUS-ONLY edit leaves the existing embedding untouched", async () => {
+    const { calls, query } = mockQuery([prevRow, () => []]);
+    await editDoc(query, TBL, { doc_id: "a.ts", status: "archived" });
+    const update = calls.find((c) => /^UPDATE/i.test(c))!;
+    expect(update).not.toContain("content_embedding");
+  });
+
+  it("a fresh vector always wins", async () => {
+    const { calls, query } = mockQuery([prevRow, () => []]);
+    await editDoc(query, TBL, { doc_id: "a.ts", content: "new body", content_embedding: [0.5] });
+    const update = calls.find((c) => /^UPDATE/i.test(c))!;
+    expect(update).toContain("content_embedding = ARRAY[0.5]");
+  });
+});
+
 describe("setDoc", () => {
   it("INSERTs v1 when the doc_id does not exist yet", async () => {
     const { calls, query } = mockQuery([
