@@ -55,7 +55,6 @@ import { setAuto, findEntry, listEntries } from "../docs/auto-registry.js";
 import { defaultIo, runDocsOnboarding } from "../docs/onboarding.js";
 import { isAutoEnabled } from "../docs/auto-registry.js";
 import { readRefreshMeta } from "../docs/meta.js";
-import { runBuildCommand } from "./graph.js";
 import { tryGitTopLevel } from "../graph/git-hook-install.js";
 import { runWikiRefreshCycle, runLocalWikiRefresh } from "../docs/wiki-refresh.js";
 import { loadSnapshotByCommit } from "../graph/diff.js";
@@ -608,6 +607,10 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     // Graph is plumbing: build it under the hood when missing.
     if (!loadCurrentSnapshot(cwd)) {
       console.log("Building code graph first (no LLM)...");
+      // Lazy import: commands/graph.ts pulls tree-sitter (native). A static
+      // import here would load it at CLI startup and crash every non-graph
+      // command where the native module is absent (the PR #295 regression).
+      const { runBuildCommand } = await import("./graph.js");
       await runBuildCommand(["--cwd", cwd, "--trigger", "manual"]);
     }
 
