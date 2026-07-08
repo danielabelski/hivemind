@@ -200,6 +200,10 @@ export const DOCS_COLUMNS: readonly ColumnDef[] = Object.freeze([
   { name: "tier",           sql: "TEXT NOT NULL DEFAULT 'fast'" },
   { name: "status",         sql: "TEXT NOT NULL DEFAULT 'active'" },
   { name: "project",        sql: "TEXT NOT NULL DEFAULT ''" },
+  // Which shared view a row belongs to: `main` = the canonical truth
+  // (written only by the elected refresh turn); `u:<user>|b:<branch>` =
+  // a personal branch overlay (v2, opt-in). Reads default to `main`.
+  { name: "scope",          sql: "TEXT NOT NULL DEFAULT 'main'" },
   { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
   { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },

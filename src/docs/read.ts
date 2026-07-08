@@ -39,6 +39,10 @@ export interface DocRow {
   tier: DocTier;
   status: string;
   project: string;
+  /** Shared view (`main` = canonical). Defaults to `main` when the column is
+   *  absent — generic reads do NOT select it so un-healed tables keep working;
+   *  only post-ensure paths (meta/pull/wiki) read or filter by it. */
+  scope?: string;
   version: number;
   created_at: string;
   updated_at: string;
@@ -86,6 +90,7 @@ export async function listDocs(
   for (const r of rows) {
     const row = normalize(r);
     if (!row) continue;
+    if (row.doc_id === "_meta") continue; // reserved refresh-bookkeeping row, not a doc
     if (!latest.has(row.doc_id)) latest.set(row.doc_id, row);
   }
 
@@ -140,6 +145,7 @@ export async function listDocMeta(
   for (const r of rows) {
     const doc_id = String(r.doc_id ?? "");
     if (doc_id === "") continue;
+    if (doc_id === "_meta") continue; // reserved refresh-bookkeeping row, not a doc
     const vRaw = r.version;
     const version = typeof vRaw === "number" ? vRaw : Number(vRaw);
     if (!Number.isFinite(version)) continue;
@@ -275,6 +281,7 @@ function normalize(row: Record<string, unknown>): DocRow | null {
     tier: tier === "slow" ? "slow" : "fast",
     status: String(row.status ?? ""),
     project: String(row.project ?? ""),
+    scope: String(row.scope ?? "main"),
     version,
     created_at: String(row.created_at ?? ""),
     updated_at: String(row.updated_at ?? ""),

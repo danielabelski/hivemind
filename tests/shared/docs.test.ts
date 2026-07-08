@@ -244,16 +244,20 @@ describe("upsertDoc", () => {
   const noSleep = async () => {};
   const timeout = () => { throw new Error("Query timeout after 10000ms"); };
 
-  it("DELETEs by deterministic id=doc_id then INSERTs exactly one row", async () => {
+  it("DELETEs by deterministic id=project|scope|doc_id then INSERTs exactly one row", async () => {
     const { calls, query } = mockQuery([() => [], () => []]);
     const res = await upsertDoc(query, TBL, { doc_id: "src/a.ts", path: "/docs/p/a.ts.md", content: "x", project: "p" });
     expect(res).toEqual({ doc_id: "src/a.ts", version: 1 });
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toBe(`DELETE FROM "hivemind_docs" WHERE id = 'src/a.ts'`);
+    // The DELETE clears the namespaced id AND the legacy bare-doc_id row, so
+    // pre-scope tables converge instead of accumulating a duplicate doc_id.
+    expect(calls[0]).toBe(
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR id = 'src/a.ts'`,
+    );
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
-    // id column is the doc_id, NOT a random uuid
-    expect(calls[1]).toContain(`'src/a.ts', 'src/a.ts',`);
-    expect(calls[1]).toContain(", 1, "); // always version 1
+    // id column is the deterministic composite, NOT a random uuid
+    expect(calls[1]).toContain(`'p|main|src/a.ts', 'src/a.ts',`);
+    expect(calls[1]).toContain(`'p', 'main', 1, `); // project, scope, always version 1
   });
 
   it("retry after a timeout re-runs DELETE+INSERT — never forks a second row", async () => {
