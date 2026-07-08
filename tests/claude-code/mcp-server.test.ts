@@ -14,6 +14,7 @@ const loadCredentialsMock = vi.fn();
 const loadConfigMock = vi.fn();
 const queryMock = vi.fn();
 const searchDeeplakeTablesMock = vi.fn();
+const searchDocsMock = vi.fn();
 const buildGrepSearchOptionsMock = vi.fn();
 const normalizeContentMock = vi.fn();
 const getVersionMock = vi.fn();
@@ -38,6 +39,7 @@ vi.mock("../../src/utils/sql.js", async (importOriginal) => {
 });
 vi.mock("../../src/shell/grep-core.js", () => ({
   searchDeeplakeTables: (...a: unknown[]) => searchDeeplakeTablesMock(...a),
+  searchDocs: (...a: unknown[]) => searchDocsMock(...a),
   buildGrepSearchOptions: (...a: unknown[]) => buildGrepSearchOptionsMock(...a),
   normalizeContent: (...a: unknown[]) => normalizeContentMock(...a),
   TRUNCATION_NOTICE: "[hivemind: results incomplete — a per-source row cap was hit, so more matches likely exist. Narrow the path or use a more specific pattern to see them.]",
@@ -77,6 +79,7 @@ beforeEach(() => {
   loadConfigMock.mockReset().mockReturnValue(validConfig);
   queryMock.mockReset().mockResolvedValue([]);
   searchDeeplakeTablesMock.mockReset().mockResolvedValue([]);
+  searchDocsMock.mockReset().mockResolvedValue([]);
   buildGrepSearchOptionsMock.mockReset().mockReturnValue({ limit: 10 });
   normalizeContentMock.mockReset().mockImplementation((_p: string, c: string) => c);
   getVersionMock.mockReset().mockReturnValue("9.9.9");
@@ -96,6 +99,25 @@ describe("MCP server — registration shape", () => {
       expect(typeof tool.config.description).toBe("string");
       expect(tool.config.description.length).toBeGreaterThan(20);
     }
+  });
+});
+
+describe("hivemind_docs_search", () => {
+  it("scopes the docs search to the repo-derived project key (shared-table safety)", async () => {
+    searchDocsMock.mockResolvedValue([{ path: "src/a.ts", content: "# a" }]);
+    await importServer();
+    const out = await registeredTools.get("hivemind_docs_search")!.handler({ query: "auth" }) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("src/a.ts");
+    const opts = searchDocsMock.mock.calls[0][2] as { project?: string };
+    expect(typeof opts.project).toBe("string");
+    expect(opts.project!.length).toBeGreaterThan(0);
+  });
+
+  it("zero hits → error text naming the query", async () => {
+    searchDocsMock.mockResolvedValue([]);
+    await importServer();
+    const out = await registeredTools.get("hivemind_docs_search")!.handler({ query: "nope" });
+    expect(JSON.stringify(out)).toContain('No docs match');
   });
 });
 

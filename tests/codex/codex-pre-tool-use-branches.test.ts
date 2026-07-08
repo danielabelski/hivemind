@@ -613,6 +613,20 @@ describe("processCodexPreToolUse: ls / find variants + fallback branches", () =>
     expect(executeCompiledBashCommandFn).not.toHaveBeenCalled(); // graph short-circuits before SQL
   });
 
+  it("a cat of /docs/find is answered from the docs table, PROJECT-SCOPED to the cwd repo", async () => {
+    const calls: string[] = [];
+    const api = { query: vi.fn(async (sql: string) => { calls.push(sql); return [{ path: "src/a.ts", content: "# a" }]; }) } as any;
+    const d = await processCodexPreToolUse(
+      toolInput("cat ~/.deeplake/memory/docs/find/auth") as any,
+      baseDeps({ createApi: vi.fn(() => api), config: { ...BASE_CONFIG, docsTableName: "hivemind_docs" } as any }),
+    );
+    expect(d.action).toBe("block");
+    expect(d.output).toContain("src/a.ts");
+    // Shared-table safety: the search filters to this repo's project key,
+    // keeping legacy unstamped rows ('') visible.
+    expect(calls.some((c) => /\(project = '[0-9a-f]{16}' OR project = ''\)/.test(c))).toBe(true);
+  });
+
   it("resolves a read using the DEFAULT createApi + log deps (no injection)", async () => {
     // Omit createApi / logFn / cache deps so their default values run: the default
     // createApi constructs a DeeplakeApi (no network at construction) and the

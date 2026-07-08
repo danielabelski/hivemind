@@ -27,6 +27,10 @@ vi.mock("../../src/utils/debug.js", () => ({ log: (_tag: string, msg: string) =>
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class { constructor(..._: unknown[]) {} },
 }));
+const tryDocsReadMock = vi.fn();
+vi.mock("../../src/docs/docs-command.js", () => ({
+  tryDocsRead: (...a: unknown[]) => tryDocsReadMock(...a),
+}));
 vi.mock("../../src/hooks/grep-direct.js", () => ({
   parseBashGrep: (...a: unknown[]) => parseBashGrepMock(...a),
   handleGrepDirect: (...a: unknown[]) => handleGrepDirectMock(...a),
@@ -56,6 +60,7 @@ beforeEach(() => {
   rewritePathsMock.mockReset().mockImplementation((s: string) => s);
   parseBashGrepMock.mockReset().mockReturnValue({ pattern: "needle" });
   handleGrepDirectMock.mockReset().mockResolvedValue("ranked hits here");
+  tryDocsReadMock.mockReset().mockResolvedValue(null);
   stdoutWriteMock.mockReset();
   vi.spyOn(process.stdout, "write").mockImplementation(((s: string) => { stdoutWriteMock(s); return true; }) as any);
 });
@@ -71,6 +76,19 @@ describe("cursor pre-tool-use hook — guard branches", () => {
     expect(parseBashGrepMock).not.toHaveBeenCalled();
     expect(handleGrepDirectMock).not.toHaveBeenCalled();
     expect(stdoutText()).toBe("");
+  });
+
+  it("a /docs read is served by tryDocsRead, PROJECT-SCOPED to the session cwd repo", async () => {
+    stdinMock.mockResolvedValue({ tool_name: "Shell", tool_input: { command: "cat ~/.deeplake/memory/docs/index.md" }, cwd: "/tmp" });
+    parseBashGrepMock.mockReturnValue(null); // not a grep → falls through to docs dispatch
+    tryDocsReadMock.mockResolvedValue("DOCS INDEX BODY");
+    await runHook();
+    const out = stdoutWriteMock.mock.calls.map((c: unknown[]) => String(c[0])).join("");
+    expect(out).toContain("DOCS INDEX BODY");
+    // Shared-table safety: the call site derives a project key from cwd.
+    const opts = tryDocsReadMock.mock.calls[0][3] as { project?: string };
+    expect(typeof opts.project).toBe("string");
+    expect(opts.project!.length).toBeGreaterThan(0);
   });
 
   it("missing command → no-op", async () => {

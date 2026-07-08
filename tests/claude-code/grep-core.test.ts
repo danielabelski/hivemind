@@ -32,6 +32,19 @@ describe("searchDocs", () => {
     expect(rows).toEqual([{ path: "a.ts", content: "# A" }]);
   });
 
+  it("project scoping: filters to (project OR legacy '') when set, none when unset", async () => {
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => { calls.push(sql); return []; });
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: null, project: "abc123" });
+    expect(calls[0]).toContain(`(project = 'abc123' OR project = '')`);
+    // Unset → no project clause at all (single-project tables unchanged).
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: null });
+    expect(calls[1]).not.toContain("project =");
+    // Hybrid path carries the filter into BOTH union arms.
+    await searchDocs(query, "hivemind_docs", { ...baseOpts, queryEmbedding: [0.1], project: "abc123" });
+    expect(calls[2].split("(project = 'abc123' OR project = '')").length - 1).toBe(2);
+  });
+
   it("lexical-only when no query embedding: content ILIKE, no cosine operator", async () => {
     const calls: string[] = [];
     const query = vi.fn(async (sql: string) => { calls.push(sql); return []; });
