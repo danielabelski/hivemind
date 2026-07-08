@@ -271,10 +271,12 @@ describe("upsertDoc", () => {
     const res = await upsertDoc(query, TBL, { doc_id: "src/a.ts", path: "/p", content: "x" }, { sleep: noSleep });
     expect(res).toEqual({ doc_id: "src/a.ts", version: 1 });
     // exactly one INSERT succeeds; the DELETE on retry guarantees single-row.
+    // Deterministic script: DELETE ok, INSERT timeout, DELETE ok, INSERT ok —
+    // exact counts, so an extra retry loop or forked write fails the test.
     const inserts = calls.filter(c => c.startsWith("INSERT INTO"));
     const deletes = calls.filter(c => c.startsWith("DELETE FROM"));
-    expect(inserts.length).toBeGreaterThanOrEqual(1);
-    expect(deletes.length).toBe(inserts.length); // every INSERT preceded by a DELETE
+    expect(inserts).toHaveLength(2);
+    expect(deletes).toHaveLength(2); // every INSERT preceded by a DELETE
   });
 
   it("surfaces a non-timeout error immediately (no retry)", async () => {
@@ -576,14 +578,16 @@ describe("getDocLatest", () => {
     // and picks the max version in JS.
     const { calls, query } = mockQuery([
       () => [
-        fakeRow({ id: "r1", doc_id: "X", version: 3, content: "old" }),
-        fakeRow({ id: "r2", doc_id: "X", version: 5, content: "current" }),
+        fakeRow({ id: "r1", doc_id: "X'Y", version: 3, content: "old" }),
+        fakeRow({ id: "r2", doc_id: "X'Y", version: 5, content: "current" }),
       ],
     ]);
-    const row = await getDocLatest(query, TBL, "X");
+    // A doc_id with an embedded quote proves sqlStr escaping end-to-end —
+    // a plain-substring assertion on 'X' would survive a broken sqlStr.
+    const row = await getDocLatest(query, TBL, "X'Y");
     expect(row?.version).toBe(5);
     expect(row?.content).toBe("current");
-    expect(calls[0]).toContain(`doc_id = 'X'`);
+    expect(calls[0]).toContain(`doc_id = 'X''Y'`);
     expect(calls[0]).not.toMatch(/LIMIT 1/);
   });
 

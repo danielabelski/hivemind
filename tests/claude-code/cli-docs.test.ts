@@ -237,8 +237,10 @@ describe("hivemind docs — anchored authoring + refresh over real files", () =>
     queryMock.mockResolvedValue([docRow({ doc_id: "f.ts", content: "old body", anchors: stale, tier: "slow" })]);
     await run(["refresh", "--cwd", dir]);
     expect(logged.join("\n")).toMatch(/rejected f\.ts:.*slow-tier/);
-    // no write happened — slow docs are not auto-refreshed
-    const inserts = queryMock.mock.calls.map((c) => c[0] as string).filter((s) => /INSERT/.test(s));
-    expect(inserts).toHaveLength(0);
+    // no write happened — slow docs are not auto-refreshed. The refresh path
+    // writes via UPDATE-in-place, so asserting only "no INSERT" would pass
+    // even if the gate leaked a write; check both statement kinds.
+    const writes = queryMock.mock.calls.map((c) => c[0] as string).filter((s) => /INSERT|UPDATE/.test(s));
+    expect(writes).toHaveLength(0);
   });
 });
