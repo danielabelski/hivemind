@@ -16,7 +16,6 @@ import { parseReadTargetPath, stripQuotes, hasTraversal } from "../graph/graph-c
 
 const DOCS_ROOT = "/docs";
 const DOCS_PREFIX = "/docs/";
-const DOCS_LISTING = "index.md\nfind/\n";
 
 /**
  * If `rewrittenCommand` is a read (cat/head/tail/ls) targeting `/docs/*`, return
