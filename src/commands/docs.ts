@@ -52,7 +52,11 @@ import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js"
 import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
 import { setAuto, findEntry, listEntries } from "../docs/auto-registry.js";
-import { defaultIo } from "../docs/onboarding.js";
+import { defaultIo, runDocsOnboarding } from "../docs/onboarding.js";
+import { isAutoEnabled } from "../docs/auto-registry.js";
+import { readRefreshMeta } from "../docs/meta.js";
+import { runBuildCommand } from "./graph.js";
+import { tryGitTopLevel } from "../graph/git-hook-install.js";
 import { runWikiRefreshCycle, runLocalWikiRefresh } from "../docs/wiki-refresh.js";
 import { loadSnapshotByCommit } from "../graph/diff.js";
 import { repoDir } from "../graph/snapshot.js";
@@ -66,54 +70,50 @@ import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 
 const USAGE = `
-hivemind docs — per-file documentation kept fresh on code deltas
+hivemind docs — documentation that stays in sync with the code
 
-Usage:
-  hivemind docs set <doc-id> ["<markdown>"] [--file <path>] [--project P] [--tier fast|slow] [--path <vfs-path>]
-  hivemind docs show <doc-id>
-  hivemind docs index [<dir>]
-      Browsable per-directory index of the docs (metadata only). With no
-      argument shows the top level; pass a directory to drill in.
-  hivemind docs list [--project P] [--status active|archived|all] [--limit N]
-  hivemind docs archive <doc-id>
-  hivemind docs refresh [--cwd <dir>] [--dry-run]
-      Detect docs whose anchored code drifted (vs the current graph) and
-      regenerate them via the host LLM, gated. --dry-run only reports the
-      impacted docs without calling the LLM or writing anything.
-  hivemind docs generate [--cwd <dir>] [--scope file|symbol] [--include <glob>]
-                         [--exclude <glob>] [--limit N] [--concurrency N]
-                         [--batch N] [--force] [--dry-run]
-      Auto-author docs for the codebase from the AST graph (which already skips
-      .gitignored / non-code files). Default scope=file (one doc per file,
-      anchored to its symbols). Skips files that already have a doc unless
-      --force. --dry-run lists the targets without calling the LLM.
-      Batches 5 files per LLM call by default (~2.5x faster); --batch 1 to opt out.
-  hivemind docs wiki [--cwd <dir>] [--include <glob>] [--exclude <glob>]
-                     [--limit N] [--concurrency N] [--force] [--dry-run]
-      Author ONE narrative wiki page per subsystem (directory group) from the
-      chunked source, plus a mechanical file index. Pages are stored as
-      doc_id wiki/<subsystem> (tier=slow, scope=main), anchored to every
-      documentable symbol in the member files. Skips subsystems that already
-      have a page unless --force. --dry-run lists the groups.
+Everyday:
+  hivemind docs list [--repos]
+      Status header for this repo (root, org, auto ON/off, sync freshness,
+      graph) + the pages. --repos lists every repo registered for auto sync.
+  hivemind docs sync [--cwd <dir>] [--force] [--local]
+      Bring the docs up to date with the code (wiki pages + per-file docs).
+      Builds the code graph under the hood if missing. First interactive run
+      on an empty corpus walks the same consent flow as graph init. --local
+      previews patches on the working tree only (never writes the table).
   hivemind docs pull [--cwd <dir>] [--project P] [--scope S] [--force]
-      Materialize the canonical docs locally as gitignored *.hivemind.md
-      files next to the code (wiki/xarray/plot -> xarray/plot.hivemind.md).
-      Incremental: only rows newer than the local cursor
-      (.hivemind/docs-pull.json) are read. --force re-pulls everything.
-  hivemind docs wiki-refresh [--cwd <dir>] [--force] [--local]
-      --local: preview mode — the diff is the WORKING TREE and the patches
-      land only on the local gitignored *.hivemind.md files, never the table.
-      One lease-guarded refresh cycle for the wiki pages: diff since the last
-      refreshed sha -> patch each touched page in place (escalating to a full
-      regen when patching is the wrong tool) -> advance the sha only when the
-      whole cycle succeeded. Safe to fire from any machine at any time: the
-      claim lease (30 min TTL) and the quiet period (6h) make it a no-op when
-      there is nothing to do or someone else is already on it. --force skips
-      the quiet-period guard.
+      Materialize the docs locally as gitignored *.hivemind.md files next to
+      the code. Incremental (local cursor); --force re-pulls everything.
+  hivemind docs auto on|off [--cwd <dir>]
+      Turn automatic per-commit sync on/off for THIS repo on THIS org.
+      Enabling with no corpus asks for explicit confirmation (LLM cost).
+  hivemind docs show <doc-id>
+
+Advanced / plumbing:
+  hivemind docs wiki [--cwd] [--include] [--exclude] [--limit] [--concurrency] [--force] [--dry-run]
+      Generate the narrative wiki pages (one per subsystem) explicitly.
+  hivemind docs wiki-refresh [--cwd] [--force] [--local]
+      One lease-guarded wiki refresh cycle (what sync/auto run for you).
+  hivemind docs refresh [--cwd <dir>] [--dry-run]
+      Per-file docs drift refresh (what sync runs for you).
+  hivemind docs generate [--cwd] [--scope file|symbol] [--include] [--exclude]
+                         [--limit] [--concurrency] [--batch] [--force] [--dry-run]
+      Auto-author per-file docs from the AST graph. Batches 5 files/call.
+  hivemind docs set <doc-id> ["<markdown>"] [--file <path>] [--project P] [--tier fast|slow] [--path <vfs-path>]
+  hivemind docs index [<dir>]
+  hivemind docs archive <doc-id>
   hivemind docs reindex
-      Backfill semantic-search vectors for docs that lack them (no LLM, embed
-      daemon only). Run once after enabling embeddings on an existing corpus.
+      Backfill semantic-search vectors for docs that lack them (no LLM).
 `.trim();
+
+/** Current HEAD sha of `cwd`, or null when not a git repo. */
+function gitHeadOf(cwd: string): string | null {
+  try {
+    return execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
   const cfg = loadConfig();
@@ -180,9 +180,9 @@ function parseLimit(args: string[]): number {
   return n;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local", "--repos"]);
 /** Flags that take NO value — they must not consume the following token. */
-const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local"]);
+const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local", "--repos"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -366,6 +366,40 @@ export async function runDocsCommand(args: string[]): Promise<void> {
   }
 
   if (sub === "list") {
+    // --repos: the global view — every repo registered for auto sync.
+    if (args.includes("--repos")) {
+      const entries = listEntries();
+      if (entries.length === 0) {
+        console.log("(no repos registered — enable one with `hivemind docs auto on` or via `hivemind graph init`)");
+        return;
+      }
+      for (const e of entries) {
+        console.log(`${e.auto ? "AUTO " : "  off"}  ${e.path}  (org: ${e.orgName ?? e.orgId}, project: ${e.project})`);
+      }
+      return;
+    }
+
+    // Status header for the CURRENT repo: root, org, auto, sync freshness.
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const headerProject = deriveProjectKey(cwd).key;
+    const root = tryGitTopLevel(cwd) ?? cwd;
+    const entry = findEntry(cfg.orgId, headerProject);
+    const snapOk = loadCurrentSnapshot(cwd) !== null;
+    let freshness = "never synced";
+    try {
+      const meta = await readRefreshMeta(query, tableName, headerProject, "main");
+      if (meta?.meta.last_refresh_sha) {
+        const head = gitHeadOf(cwd);
+        if (head === null) freshness = "no git";
+        else if (head === meta.meta.last_refresh_sha) freshness = "in sync (HEAD)";
+        else freshness = `behind HEAD (last: ${meta.meta.last_refresh_sha.slice(0, 8)})`;
+      }
+    } catch (err) {
+      if (!isMissingTableError((err as Error).message)) throw err;
+    }
+    console.log(`repo: ${root}  org: ${cfg.orgName ?? cfg.orgId}  auto: ${entry?.auto ? "ON" : "off"}  sync: ${freshness}  graph: ${snapOk ? "ok" : "missing"}`);
+    console.log("─".repeat(60));
+
     const project = flagValue(args, "--project");
     const status = parseStatus(args.slice(1));
     const limit = parseLimit(args.slice(1));
@@ -552,6 +586,61 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     for (const o of report.outcomes) {
       console.log(`  ${o.action} ${o.doc_id}${o.reasons ? ` (${o.reasons.join("; ")})` : ""}`);
     }
+    return;
+  }
+
+  if (sub === "sync") {
+    const cwd = flagValue(args, "--cwd") ?? process.cwd();
+    const force = args.includes("--force");
+    const local = args.includes("--local");
+    const project = deriveProjectKey(cwd).key;
+    const io = defaultIo();
+
+    // Defense layer 2 (anti false-positive): a NON-interactive sync trusts
+    // nobody — not even its own spawner. It re-checks the registry itself and
+    // exits at zero LLM calls unless this exact (org, project) opted in.
+    // An interactive sync IS the consent for this one run.
+    if (!io.interactive && !isAutoEnabled(cfg.orgId, project)) {
+      console.log("docs sync: auto not enabled for this repo on this org — nothing to do (enable with `hivemind docs auto on`).");
+      return;
+    }
+
+    // Graph is plumbing: build it under the hood when missing.
+    if (!loadCurrentSnapshot(cwd)) {
+      console.log("Building code graph first (no LLM)...");
+      await runBuildCommand(["--cwd", cwd, "--trigger", "manual"]);
+    }
+
+    // First interactive run on an empty corpus → the same onboarding as
+    // graph init (consent to generation, optionally to auto).
+    if (io.interactive) {
+      let pages = 0;
+      try {
+        const rows = await listDocs(query, tableName, { project, status: "active", limit: 100000 });
+        pages = rows.filter((r) => r.doc_id.startsWith(WIKI_DOC_PREFIX)).length;
+      } catch (err) {
+        if (!isMissingTableError((err as Error).message)) throw err;
+      }
+      if (pages === 0) {
+        const result = await runDocsOnboarding({
+          root: tryGitTopLevel(cwd) ?? cwd,
+          isGitRepo: tryGitTopLevel(cwd) !== null,
+          orgId: cfg.orgId,
+          orgName: cfg.orgName,
+          project,
+          snap: loadCurrentSnapshot(cwd),
+          io,
+        });
+        if (!result.generate) return; // no consent → no spend
+      }
+    }
+
+    if (local) {
+      await runDocsCommand(["wiki-refresh", "--cwd", cwd, "--local"]);
+      return;
+    }
+    await runDocsCommand(["wiki-refresh", "--cwd", cwd, ...(force ? ["--force"] : [])]);
+    await runDocsCommand(["refresh", "--cwd", cwd]);
     return;
   }
 
