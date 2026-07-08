@@ -90,6 +90,9 @@ export async function listDocs(
   // legitimately exists once per project, and a doc_id-only dedup would let
   // one project's row shadow another's (the project filter below would then
   // silently drop the requested project's doc).
+  // Latest is picked by EXPLICIT comparison (version, updated_at, id) — the
+  // SQL ORDER BY does not survive stableUnionRows (union order is first-seen
+  // across re-reads), so "first row wins" could keep a stale version.
   const latest = new Map<string, DocRow>();
   for (const r of rows) {
     const row = normalize(r);
@@ -97,7 +100,16 @@ export async function listDocs(
     if (row.doc_id === "_meta") continue; // reserved refresh-bookkeeping row, not a doc
     if (opts.project !== undefined && row.project !== opts.project) continue;
     const key = `${row.project}\u0000${row.doc_id}`;
-    if (!latest.has(key)) latest.set(key, row);
+    const prev = latest.get(key);
+    if (
+      !prev ||
+      row.version > prev.version ||
+      (row.version === prev.version &&
+        (row.updated_at.localeCompare(prev.updated_at) > 0 ||
+          (row.updated_at === prev.updated_at && row.id.localeCompare(prev.id) > 0)))
+    ) {
+      latest.set(key, row);
+    }
   }
 
   const statusFilter = opts.status ?? "active";

@@ -39,14 +39,18 @@ export interface PullManifest {
 }
 
 /**
- * Repo-relative path a doc materializes to. Returns null for doc_ids that
+ * Repo-relative path a doc materializes to. Wiki pages get a distinct
+ * `.wiki.hivemind.md` suffix: a root-level file can produce a wiki key equal
+ * to its own path (`wiki/main.ts` vs file doc `main.ts`), and a shared
+ * suffix would let one overwrite the other. Returns null for doc_ids that
  * would escape the repo (absolute, `..` segments) — those are never written.
  */
 export function localDocPath(docId: string): string | null {
-  const rel = docId.startsWith(WIKI_DOC_PREFIX) ? docId.slice(WIKI_DOC_PREFIX.length) : docId;
+  const isWiki = docId.startsWith(WIKI_DOC_PREFIX);
+  const rel = isWiki ? docId.slice(WIKI_DOC_PREFIX.length) : docId;
   if (rel === "" || rel.startsWith("/") || /^[a-zA-Z]:/.test(rel)) return null;
   if (rel.split("/").some((seg) => seg === ".." || seg === "")) return null;
-  return `${rel}.hivemind.md`;
+  return isWiki ? `${rel}.wiki.hivemind.md` : `${rel}.hivemind.md`;
 }
 
 export function readPullManifest(repoRoot: string): PullManifest {
@@ -115,7 +119,11 @@ export async function pullDocs(args: PullArgs): Promise<PullReport> {
 
   const safe = sqlIdent(args.tableName);
   const idPrefix = docRowId(args.project, scope, "");
-  const cursorFilter = cursor === "" ? "" : ` AND updated_at > '${sqlStr(cursor)}'`;
+  // INCLUSIVE cursor (>=): a concurrent write can land with exactly the max
+  // timestamp this pull records, AFTER our SELECT — a strict `>` would skip
+  // it forever. Re-reading the boundary rows every pull is free: unchanged
+  // content is detected on disk and never rewritten.
+  const cursorFilter = cursor === "" ? "" : ` AND updated_at >= '${sqlStr(cursor)}'`;
   // id-prefix LIKE targets (project, scope) without selecting the scope column
   // (backward compat: reads must work on tables that predate the column).
   const rows = await stableUnionRows(

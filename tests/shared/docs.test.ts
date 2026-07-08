@@ -466,6 +466,21 @@ describe("listDocs", () => {
     expect(rows.map(r => r.doc_id).sort()).toEqual(["A", "B"]);
   });
 
+  it("union order cannot resurrect a stale version: v1 seen FIRST, v2 still wins", async () => {
+    // stableUnionRows returns first-seen order across re-reads — the SQL
+    // ORDER BY does not survive it. The latest pick must be by comparison.
+    const { query } = mockQuery([
+      () => [
+        fakeRow({ id: "x1", doc_id: "X", version: 1, content: "stale", updated_at: "2026-05-20T10:00:00Z" }),
+        fakeRow({ id: "x2", doc_id: "X", version: 2, content: "current", updated_at: "2026-05-20T10:05:00Z" }),
+      ],
+    ]);
+    const rows = await listDocs(query, TBL);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].version).toBe(2);
+    expect(rows[0].content).toBe("current");
+  });
+
   it("same doc_id in two projects: neither row shadows the other", async () => {
     const bothRows = () => [
       fakeRow({ id: "p1|main|X", doc_id: "X", version: 1, project: "p1", content: "p1 doc", updated_at: "2026-05-20T10:02:00Z" }),

@@ -154,7 +154,7 @@ export async function runLocalWikiRefresh(args: LocalWikiRefreshArgs): Promise<{
   for (const group of selectWikiGroups(args.snap)) {
     const touched = group.files.filter((f) => changed.has(f));
     if (touched.length === 0) continue;
-    const localFile = `${group.key}.hivemind.md`;
+    const localFile = `${group.key}.wiki.hivemind.md`; // matches localDocPath's wiki namespace
     const abs = join(args.repoRoot, localFile);
     if (!existsSync(abs)) {
       outcomes.push({ file: localFile, action: "not-materialized", reasons: ["run `hivemind docs pull` first"] });
@@ -223,6 +223,16 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     sleep: args.sleep,
   });
   if (!claim.won) return { status: "not-claimed", head, outcomes: [] };
+
+  // Someone may have committed HEAD between the guard read and our claim
+  // (the claim carries their fresh sha — see tryClaimTurn). Release and go.
+  if (claim.meta.last_refresh_sha === head) {
+    await commitRefresh(args.query, args.tableName, args.project, scope, head, claim.meta.patch_counts, {
+      owner: args.owner,
+      now: args.now,
+    });
+    return { status: "up-to-date", head, outcomes: [] };
+  }
 
   const lastSha = claim.meta.last_refresh_sha;
   const patchCounts = { ...claim.meta.patch_counts };

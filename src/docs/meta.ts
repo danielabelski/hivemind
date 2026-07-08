@@ -146,8 +146,14 @@ export async function tryClaimTurn(
     if (age < ttl) return { won: false, reason: "held" };
   }
 
+  // Re-read IMMEDIATELY before writing: the claim row carries the whole meta
+  // (sha, counters), and a concurrent commit between the held-check read and
+  // this write would otherwise be overwritten with its pre-commit values —
+  // regressing last_refresh_sha. The fresh read shrinks that window to the
+  // write itself; the backend offers no CAS to close it entirely.
+  const fresh = await readRefreshMeta(query, tableName, project, scope);
   const claimed: RefreshMeta = {
-    ...(current?.meta ?? EMPTY_META),
+    ...(fresh?.meta ?? current?.meta ?? EMPTY_META),
     claimed_by: opts.owner,
     claimed_at: nowIso,
   };

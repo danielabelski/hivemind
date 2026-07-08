@@ -100,11 +100,25 @@ describe("tryClaimTurn", () => {
   it("preserves last_refresh_sha and patch_counts through a claim", async () => {
     const prior = metaRow({ last_refresh_sha: "abc", patch_counts: { "wiki/x": 3 } });
     const mine = metaRow({ claimed_by: "me", claimed_at: now().toISOString() });
-    const { query, calls } = makeQuery([prior, mine]);
+    // Three reads: held-check, pre-write fresh read, post-write read-back.
+    const { query, calls } = makeQuery([prior, prior, mine]);
     await tryClaimTurn(query, T, P, "main", { owner: "me", now, sleep: noSleep });
     const insert = calls.find((c) => /^INSERT/i.test(c))!;
     expect(insert).toContain('"last_refresh_sha":"abc"');
     expect(insert).toContain('"wiki/x":3');
+  });
+
+  it("the claim write carries a sha COMMITTED between the held-check and the write (no regression)", async () => {
+    const stale = metaRow({ last_refresh_sha: "old", patch_counts: {} });
+    // A rival commits "newer" after our held-check read — the pre-write fresh
+    // read must pick it up so our claim does not restore the old sha.
+    const committed = metaRow({ last_refresh_sha: "newer", claimed_by: null, patch_counts: {} });
+    const mine = metaRow({ claimed_by: "me", claimed_at: now().toISOString() });
+    const { query, calls } = makeQuery([stale, committed, mine]);
+    await tryClaimTurn(query, T, P, "main", { owner: "me", now, sleep: noSleep });
+    const insert = calls.find((c) => /^INSERT/i.test(c))!;
+    expect(insert).toContain('"last_refresh_sha":"newer"');
+    expect(insert).not.toContain('"last_refresh_sha":"old"');
   });
 
   it("default TTL matches the design (30 min lease)", () => {
