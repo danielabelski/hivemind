@@ -613,6 +613,18 @@ describe("processCodexPreToolUse: ls / find variants + fallback branches", () =>
     expect(executeCompiledBashCommandFn).not.toHaveBeenCalled(); // graph short-circuits before SQL
   });
 
+  it("ls /docs renders the docs root index (not the memory listing), project-scoped", async () => {
+    const calls: string[] = [];
+    const api = { query: vi.fn(async (sql: string) => { calls.push(sql); return []; }) } as any;
+    const d = await processCodexPreToolUse(
+      toolInput("ls ~/.deeplake/memory/docs") as any,
+      baseDeps({ createApi: vi.fn(() => api), config: { ...BASE_CONFIG, docsTableName: "hivemind_docs" } as any }),
+    );
+    expect(d.action).toBe("block");
+    expect(d.output).toContain("Docs Index");
+    expect(calls.some((c) => /hivemind_docs/.test(c))).toBe(true); // docs table, not memory
+  });
+
   it("a cat of /docs/find is answered from the docs table, PROJECT-SCOPED to the cwd repo", async () => {
     const calls: string[] = [];
     const api = { query: vi.fn(async (sql: string) => { calls.push(sql); return [{ path: "src/a.ts", content: "# a" }]; }) } as any;

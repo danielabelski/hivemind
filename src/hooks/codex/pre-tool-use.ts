@@ -213,6 +213,17 @@ export async function processCodexPreToolUse(
     };
 
     try {
+      // `ls /docs` belongs to the docs VFS — intercept BEFORE the compiled
+      // bash executor (which owns generic ls) so the root index renders the
+      // same view the cat branch and the Claude hook serve.
+      const lsDocs = rewritten.match(/^ls\s+(?:-[a-zA-Z]+\s+)*\/docs\/?\s*$/);
+      if (lsDocs) {
+        logFn("docs vfs intercept: ls /docs");
+        const r = await handleDocsVfs("", (sql) => api.query(sql), process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+        const body = r.kind === "ok" ? r.body : "(docs unavailable)";
+        return { action: "block", output: body, rewrittenCommand: rewritten };
+      }
+
       const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten, {
         readVirtualPathContentsFn: async (_api, _memoryTable, _sessionsTable, cachePaths) => readVirtualPathContentsWithCache(cachePaths),
       });
@@ -324,13 +335,6 @@ export async function processCodexPreToolUse(
         const dir = (lsMatch[1] ?? "/").replace(/\/+$/, "") || "/";
         const isLong = /\s-[a-zA-Z]*l/.test(rewritten);
         logFn(`direct ls: ${dir}`);
-        // `ls /docs` belongs to the docs VFS, not the memory listing — render
-        // the same root index the cat branch serves (parity with the Claude hook).
-        if (dir === "/docs") {
-          const r = await handleDocsVfs("", (sql) => api.query(sql), process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
-          const body = r.kind === "ok" ? r.body : "(docs unavailable)";
-          return { action: "block", output: body, rewrittenCommand: rewritten };
-        }
         const rows = await listVirtualPathRowsFn(api, table, sessionsTable, dir);
         const entries = new Map<string, { isDir: boolean; size: number }>();
         const prefix = dir === "/" ? "/" : `${dir}/`;

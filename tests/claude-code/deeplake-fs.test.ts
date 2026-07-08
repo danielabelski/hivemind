@@ -1170,6 +1170,22 @@ describe("docs VFS routing in the shell", () => {
     expect(calls.some((s) => /FROM "hivemind_docs"/.test(s))).toBe(true);  // queried docs table
   });
 
+  it("readdir/readdirWithFileTypes synthesize /docs with correct dirent types", async () => {
+    const client = makeDocsClient(() => []);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", { docsTable: "hivemind_docs" });
+    expect(await fs.readdir("/docs")).toEqual(["index.md", "find"]);
+    expect(await fs.readdir("/docs/find")).toEqual([]);
+    const root = await fs.readdir("/");
+    expect(root).toContain("docs");
+    const dirents = await fs.readdirWithFileTypes("/docs");
+    expect(dirents.find((d) => d.name === "find")?.isDirectory).toBe(true);
+    expect(dirents.find((d) => d.name === "index.md")?.isFile).toBe(true);
+    // Feature off (no docsTable): /docs is not synthesized anywhere.
+    const off = await DeeplakeFs.create(client as never, "memory", "/");
+    expect(await off.readdir("/")).not.toContain("docs");
+    await expect(off.readdir("/docs")).rejects.toMatchObject({ code: "ENOTDIR" });
+  });
+
   it("a bare /docs directory read throws EISDIR; a missing leaf throws ENOENT", async () => {
     const client = makeDocsClient(() => []);
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", { docsTable: "hivemind_docs" });
