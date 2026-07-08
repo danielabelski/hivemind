@@ -33,12 +33,25 @@ describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
     expect(inv.options.input).toBe("PROMPT");
   });
 
-  it("HIVEMIND_DOCS_LLM_AGENT=codex → `codex exec … -` with the prompt on STDIN", () => {
+  it("HIVEMIND_DOCS_LLM_AGENT=codex → `codex exec … -` with the prompt on STDIN, LOW reasoning effort", () => {
     const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "codex" });
     expect(spec.bin).toBe("codex");
     const inv = spec.build("/usr/bin/codex", "PROMPT");
-    expect(inv.args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "-"]);
+    // Cost pinning: reasoning effort is the account-safe knob (ChatGPT
+    // accounts reject cheap model slugs with a 400).
+    expect(inv.args).toEqual([
+      "exec", "--dangerously-bypass-approvals-and-sandbox",
+      "-c", 'model_reasoning_effort="low"', "-",
+    ]);
     expect(inv.options.input).toBe("PROMPT");
+  });
+
+  it("HIVEMIND_DOCS_CODEX_MODEL adds an explicit -m for API-key accounts", () => {
+    const spec = resolveDocLlmSpec({ HIVEMIND_DOCS_LLM_AGENT: "codex", HIVEMIND_DOCS_CODEX_MODEL: "gpt-cheap" });
+    const inv = spec.build("/usr/bin/codex", "PROMPT");
+    expect(inv.args).toContain("-m");
+    expect(inv.args[inv.args.indexOf("-m") + 1]).toBe("gpt-cheap");
+    expect(inv.args[inv.args.length - 1]).toBe("-"); // stdin marker stays last
   });
 
   it("HIVEMIND_DOCS_LLM_BIN (+FLAGS) → a fully custom CLI, prompt as the last arg", () => {

@@ -57,13 +57,29 @@ export interface DocLlmSpec {
 // Known agents read the prompt from STDIN (claude: `-p` with piped input;
 // codex: `exec … -`). Doc prompts embed whole source files and can exceed the
 // OS argv limit — E2BIG — so they must never ride the command line.
-const REGISTRY: Record<string, DocLlmSpec> = {
-  claude: { label: "claude", bin: "claude", build: (b, p) => buildClaudeStdinInvocation(b, p) },
-  codex: {
-    label: "codex",
-    bin: "codex",
-    build: (b, p) => buildStdinPromptInvocation(b, ["exec", "--dangerously-bypass-approvals-and-sandbox", "-"], p),
-  },
+//
+// Cost pinning (no API keys — each host agent bills its own account):
+//   - claude is pinned to haiku inside CLAUDE_FLAGS (wiki-worker-spawn).
+//   - codex model SLUGS are account-dependent (ChatGPT accounts reject the
+//     mini variants with a 400), so the safe default knob is reasoning
+//     effort; HIVEMIND_DOCS_CODEX_MODEL adds an explicit `-m` for API-key
+//     accounts that do have a cheap model available.
+function codexSpec(env: NodeJS.ProcessEnv): DocLlmSpec {
+  const model = env.HIVEMIND_DOCS_CODEX_MODEL;
+  const flags = [
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
+    ...(model && model.trim() !== "" ? ["-m", model] : []),
+    "-c",
+    'model_reasoning_effort="low"',
+    "-",
+  ];
+  return { label: "codex", bin: "codex", build: (b, p) => buildStdinPromptInvocation(b, flags, p) };
+}
+
+const REGISTRY: Record<string, (env: NodeJS.ProcessEnv) => DocLlmSpec> = {
+  claude: () => ({ label: "claude", bin: "claude", build: (b, p) => buildClaudeStdinInvocation(b, p) }),
+  codex: codexSpec,
 };
 
 /**
@@ -89,7 +105,7 @@ export function resolveDocLlmSpec(env: NodeJS.ProcessEnv = process.env): DocLlmS
     };
   }
   const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? "claude").toLowerCase();
-  const spec = REGISTRY[agent];
+  const spec = REGISTRY[agent]?.(env);
   if (!spec) {
     throw new Error(
       `Unknown HIVEMIND_DOCS_LLM_AGENT="${agent}". Known: ${Object.keys(REGISTRY).join(", ")}. ` +
@@ -153,7 +169,7 @@ export function makeHostRunPrompt(timeoutMs = 300_000, env: NodeJS.ProcessEnv = 
 
 /** Run a single prompt through the host `claude` CLI and return the unwrapped output. */
 export function runClaudePrompt(bin: string, prompt: string, timeoutMs = 120_000): string {
-  return runHostPrompt(REGISTRY.claude, bin, prompt, timeoutMs);
+  return runHostPrompt(REGISTRY.claude(process.env), bin, prompt, timeoutMs);
 }
 
 /** Resolve the claude binary once (PATH lookup), with the usual fallback. */
