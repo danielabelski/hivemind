@@ -101,6 +101,14 @@ export function hivemindReferrerHeader(ref?: string): Record<string, string> {
   return { "X-Hivemind-Referrer": code };
 }
 
+// Tags the signup with the product entry point. The backend reads
+// X-Deeplake-Signup-Flow at user creation (first-write-wins) and persists it on
+// users.signup_flow, driving per-flow onboarding (the CLI signup plan step) and
+// attribution. Always "hivemind" for this CLI.
+export function signupFlowHeader(): Record<string, string> {
+  return { "X-Deeplake-Signup-Flow": "hivemind" };
+}
+
 export async function requestDeviceCode(apiUrl = DEFAULT_API_URL, ref?: string): Promise<DeviceCodeResponse> {
   const resp = await fetch(`${apiUrl}/auth/device/code`, {
     method: "POST",
@@ -109,6 +117,7 @@ export async function requestDeviceCode(apiUrl = DEFAULT_API_URL, ref?: string):
       ...deeplakeClientHeader(),
       ...hivemindInstallIDHeader(),
       ...hivemindReferrerHeader(ref),
+      ...signupFlowHeader(),
     },
   });
   if (!resp.ok) throw new Error(`Device flow unavailable: HTTP ${resp.status}`);
@@ -122,6 +131,10 @@ export async function pollForToken(deviceCode: string, apiUrl = DEFAULT_API_URL)
       "Content-Type": "application/json",
       ...deeplakeClientHeader(),
       ...hivemindInstallIDHeader(),
+      // The backend resolves/creates the user on this poll (trackDeviceFlowAuth),
+      // so the flow header must ride along here too — the /auth/device/code
+      // request alone no longer parks it (signup_flow_pending was dropped).
+      ...signupFlowHeader(),
     },
     body: JSON.stringify({ device_code: deviceCode }),
   });
