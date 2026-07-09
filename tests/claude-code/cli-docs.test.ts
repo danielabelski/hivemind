@@ -167,6 +167,23 @@ describe("hivemind docs list", () => {
   it("rejects a bad --status", async () => {
     expect(await run(["list", "--status", "bogus"])).toBe(1);
   });
+  it("default view hides other repos' pages; --all shows the whole table", async () => {
+    // Shared org table: another repo's page must NOT appear under this
+    // repo's header by default (caught live during manual e2e).
+    const foreign = docRow({ doc_id: "wiki/other", project: "other-project" });
+    queryMock.mockResolvedValueOnce([]); // header meta read
+    queryMock.mockResolvedValueOnce([foreign, docRow({ doc_id: "mine.ts" })]);
+    await run(["list", "--status", "all"]);
+    let out = logged.join("\n");
+    expect(out).toMatch(/mine\.ts/); // legacy '' row: always visible
+    expect(out).not.toMatch(/wiki\/other/);
+    logged.length = 0;
+    queryMock.mockResolvedValueOnce([]); // header meta read
+    queryMock.mockResolvedValueOnce([foreign, docRow({ doc_id: "mine.ts" })]);
+    await run(["list", "--status", "all", "--all"]);
+    out = logged.join("\n");
+    expect(out).toMatch(/wiki\/other/); // global view opts back in
+  });
 });
 
 describe("hivemind docs archive", () => {

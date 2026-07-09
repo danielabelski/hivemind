@@ -72,9 +72,11 @@ const USAGE = `
 hivemind docs — documentation that stays in sync with the code
 
 Everyday:
-  hivemind docs list [--repos]
+  hivemind docs list [--repos] [--all] [--project P]
       Status header for this repo (root, org, auto ON/off, sync freshness,
-      graph) + the pages. --repos lists every repo registered for auto sync.
+      graph) + THIS repo's pages. --project P shows another repo's pages;
+      --all shows the whole org table. --repos lists every repo registered
+      for auto sync.
   hivemind docs sync [--cwd <dir>] [--force] [--local]
       Bring the docs up to date with the code (wiki pages + per-file docs).
       Builds the code graph under the hood if missing. First interactive run
@@ -185,9 +187,9 @@ function parseLimit(args: string[]): number {
   return parseOptionalLimit(args) ?? 200;
 }
 
-const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local", "--repos", "--full"]);
+const KNOWN_FLAGS = new Set(["--file", "--project", "--tier", "--path", "--status", "--limit", "--cwd", "--dry-run", "--anchor", "--scope", "--include", "--exclude", "--concurrency", "--force", "--batch", "--local", "--repos", "--full", "--all"]);
 /** Flags that take NO value — they must not consume the following token. */
-const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local", "--repos", "--full"]);
+const BOOLEAN_FLAGS = new Set(["--dry-run", "--force", "--local", "--repos", "--full", "--all"]);
 
 /** Drop flag tokens (and their values) so positional scan sees only doc-id / content. */
 function stripKnownFlags(args: string[]): string[] {
@@ -405,12 +407,19 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     console.log(`repo: ${root}  org: ${cfg.orgName ?? cfg.orgId}  auto: ${entry?.auto ? "ON" : "off"}  sync: ${freshness}  graph: ${snapOk ? "ok" : "missing"}`);
     console.log("─".repeat(60));
 
-    const project = flagValue(args, "--project");
+    // Rows are scoped to the CURRENT repo's project by default, matching the
+    // header above — the shared org table holds every repo's docs, and mixing
+    // them under a per-repo header reads as this repo's corpus (caught live
+    // during manual e2e). `--project P` inspects another repo; `--all` is the
+    // whole-table view. Legacy '' rows are always included (projectOrLegacy).
     const status = parseStatus(args.slice(1));
     const limit = parseLimit(args.slice(1));
+    const explicitProject = flagValue(args, "--project");
     let rows: DocRow[] = [];
     try {
-      rows = await listDocs(query, tableName, { status, project, limit });
+      rows = args.includes("--all")
+        ? await listDocs(query, tableName, { status, limit })
+        : await listDocs(query, tableName, { status, projectOrLegacy: explicitProject ?? headerProject, limit });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
