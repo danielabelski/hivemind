@@ -138,10 +138,54 @@ describe("updateWikiPage", () => {
     expect(calls.filter((c) => /^UPDATE/i.test(c))).toHaveLength(1);
   });
 
+  it("strips a chatty preamble before the first heading — caught live in the tick e2e", async () => {
+    const p = freshPage("## Purpose\nfoo returns 0.");
+    const { calls, query } = mockQuery([[rowFor(p)]]);
+    const out = await updateWikiPage({
+      query, tableName: "hivemind_docs", page: p, pageKey: "pkg/core",
+      files: FILES, snap: SNAP(), repoRoot: dir, diff: "- return 0\n+ return 1",
+      run: async () => "Looking at the diff, the page is contradicted.\n\nHere's the corrected page:\n\n## Purpose\nfoo returns 1.",
+      escalation: noEscalation,
+    });
+    expect(out.action).toBe("patched");
+    const update = calls.find((c) => /^UPDATE/i.test(c))!;
+    expect(update).toContain("foo returns 1.");
+    expect(update).not.toContain("Looking at the diff");
+    expect(update).not.toContain("corrected page");
+  });
+
+  it("unwraps an outer code fence around the patched page", async () => {
+    const p = freshPage("## Purpose\nfoo returns 0.");
+    const { calls, query } = mockQuery([[rowFor(p)]]);
+    const out = await updateWikiPage({
+      query, tableName: "hivemind_docs", page: p, pageKey: "pkg/core",
+      files: FILES, snap: SNAP(), repoRoot: dir, diff: "- return 0\n+ return 1",
+      run: async () => "```markdown\n## Purpose\nfoo returns 1.\n```",
+      escalation: noEscalation,
+    });
+    expect(out.action).toBe("patched");
+    const update = calls.find((c) => /^UPDATE/i.test(c))!;
+    expect(update).toContain("foo returns 1.");
+    expect(update).not.toContain("```markdown");
+  });
+
+  it("a heading-less reply is a failed patch, never stored as documentation", async () => {
+    const p = freshPage("## Purpose\nfoo returns 0.");
+    const { calls, query } = mockQuery([]);
+    const out = await updateWikiPage({
+      query, tableName: "hivemind_docs", page: p, pageKey: "pkg/core",
+      files: FILES, snap: SNAP(), repoRoot: dir, diff: "d",
+      run: async () => "I checked the diff and the page seems mostly fine to me.",
+      escalation: noEscalation,
+    });
+    expect(out).toEqual({ action: "failed", reason: "patch response has no markdown heading — not a page" });
+    expect(calls).toHaveLength(0); // nothing written
+  });
+
   it("a patch that rewrites the whole page escalates instead of writing", async () => {
     const p = freshPage("## Purpose\nA.\nB.\nC.");
     const { calls, query } = mockQuery([]);
-    const huge = Array.from({ length: DEFAULT_WIKI_MAX_CHANGED_LINES + 20 }, (_, i) => `rewritten line ${i}`).join("\n");
+    const huge = "## Purpose\n" + Array.from({ length: DEFAULT_WIKI_MAX_CHANGED_LINES + 20 }, (_, i) => `rewritten line ${i}`).join("\n");
     const out = await updateWikiPage({
       query, tableName: "hivemind_docs", page: p, pageKey: "pkg/core",
       files: FILES, snap: SNAP(), repoRoot: dir, diff: "d",

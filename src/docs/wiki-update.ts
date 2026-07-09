@@ -23,6 +23,7 @@
  */
 
 import { gateDocEdit } from "./gate.js";
+import { unwrapModelOutput } from "./refresh-llm.js";
 import { editDoc } from "./write.js";
 import { appendFilesIndex, collectWikiAnchors, stripFilesIndex, type RunPromptFn } from "./wiki-generate.js";
 import type { DocEmbedder } from "./embed.js";
@@ -139,7 +140,19 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
   const noChange = response === NO_CHANGE;
   if (!noChange && response === "") return { action: "failed", reason: "empty patch response" };
 
-  const newNarrative = noChange ? narrative : response;
+  // Models sometimes narrate before the page ("Here's the corrected page:")
+  // despite the no-preamble instruction — caught live in the tick e2e, where
+  // the chat prose was stored as documentation. The page shape is code-owned:
+  // a narrative always starts at a markdown heading, so anything before the
+  // first heading is preamble by construction. No heading at all means the
+  // reply is not a page — fail rather than store chat prose.
+  let newNarrative = narrative;
+  if (!noChange) {
+    const unwrapped = unwrapModelOutput(response);
+    const firstHeading = unwrapped.search(/^#{1,6} /m);
+    if (firstHeading < 0) return { action: "failed", reason: "patch response has no markdown heading — not a page" };
+    newNarrative = unwrapped.slice(firstHeading).trimEnd();
+  }
   const newContent = appendFilesIndex(newNarrative, args.files);
   const newAnchors = collectWikiAnchors(args.snap, args.files, args.repoRoot);
 
