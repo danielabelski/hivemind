@@ -598,7 +598,7 @@ describe("hivemind docs — subcommand surface coverage", () => {
     const project = deriveProjectKey(dir).key;
     queryMock.mockResolvedValue([docRow({ doc_id: "wiki/x", project, content: "# x\nbody" })]);
     await run(["pull", "--cwd", dir]);
-    expect(logged.join()).toMatch(/Pulled|up to date/);
+    expect(logged.join()).toMatch(/Pulled \d+ doc\(s\)/); // a row was mocked → a write, not a no-op
   });
 
   // --- reindex backfills embeddings ---
@@ -887,7 +887,7 @@ describe("hivemind docs — subcommand surface coverage", () => {
     const project = deriveProjectKey(dir).key;
     queryMock.mockResolvedValue([docRow({ doc_id: "wiki/x", project, content: "# x\nbody" })]);
     await run(["pull", "--force", "--cwd", dir]);
-    expect(logged.join()).toMatch(/Pulled|up to date/);
+    expect(logged.join()).toMatch(/Pulled \d+ doc\(s\)/); // a row was mocked → a write, not a no-op
   });
   it("sync --force passes force through to the wiki cycle", async () => {
     setAuto({ orgId: "org", orgName: "OrgName", project: deriveProjectKey(dir).key, path: dir, auto: true });
