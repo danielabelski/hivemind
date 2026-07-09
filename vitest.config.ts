@@ -300,6 +300,22 @@ export default defineConfig({
           functions: 80,
           lines: 90,
         },
+        // fix/docs-scope-existence-checks — the `docs` CLI dispatcher gained a
+        // full subcommand-surface suite in tests/claude-code/cli-docs.test.ts
+        // (set/index/show/list/archive/refresh/wiki-refresh/sync/auto/pull/
+        // reindex/wiki/generate), driven through the real store against the
+        // query spy. Actuals: statements 95, branches 87, functions 91, lines 98.
+        // Branches + functions pinned at 85 (not 90): the residual gaps are the
+        // interactive graph-build recursion (dynamic-imports native tree-sitter)
+        // and the closures handed to runWikiRefreshCycle (git runner /
+        // snapshot loader), which are dead once that cycle is stubbed — neither
+        // is deterministically reachable from a unit test.
+        "src/commands/docs.ts": {
+          statements: 90,
+          branches: 85,
+          functions: 85,
+          lines: 90,
+        },
         "src/deeplake-api.ts": {
           // ensureCodebaseTable (create + heal + ensureLookupIndex branches)
           // covered directly in tests/shared/deeplake-api-codebase-table.test.ts.
