@@ -41,6 +41,7 @@ import { extractJsonBlock } from "../skillify/gate-parser.js";
 import { resolveSkillsRoot, writeNewSkill, listSkills, parseFrontmatter } from "../skillify/skill-writer.js";
 import { detectAgentSkillsRoots } from "../skillify/agent-roots.js";
 import { fanOutSymlinks } from "../skillify/pull.js";
+import { runAdvisor } from "../skillify/advisor.js";
 import {
   LOCAL_MANIFEST_PATH,
   LOCAL_MINE_LOCK_PATH,
@@ -479,6 +480,13 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
   const dryRun = takeBoolFlag(work, "--dry-run");
   const nRaw = takeFlagValue(work, "--n");
   const onlyAgent = takeFlagValue(work, "--only");
+  // --advise: after writing the manifest, run the sonnet advisor to rank the
+  // insight-bearing candidates and mark the strongest as primary, so
+  // getLatestInsightEntry (and the SessionStart banner) surface the best
+  // finding rather than the most-recent one. Off by default so the plain
+  // SessionStart auto-mine stays haiku-only; the install-time background scan
+  // opts in.
+  const advise = takeBoolFlag(work, "--advise");
 
   if (loadManifest() && !force) {
     console.error(`Local skills have already been mined on this machine.`);
@@ -710,6 +718,14 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
       created_at: existing?.created_at ?? new Date().toISOString(),
       entries: [...(existing?.entries ?? []), ...newEntries],
     });
+
+    // Rank the freshly-written insight candidates with the sonnet advisor
+    // and mark the best as primary. Best-effort: on any failure we keep the
+    // recency-ordered pick. Only worth a sonnet call when >1 candidate
+    // carries an insight — runAdvisor itself fast-paths the trivial case.
+    if (advise) {
+      try { await runAdvisor(); } catch { /* keep recency pick */ }
+    }
   }
 
   console.log("");

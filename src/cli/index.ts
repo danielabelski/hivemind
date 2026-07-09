@@ -34,7 +34,7 @@ import { confirm, detectPlatforms, allPlatformIds, log, promptLine, warn, type P
 import { getVersion } from "./version.js";
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
-import { canOfferInstallScan, runInstallScan, formatScanResult } from "./install-scan.js";
+import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -54,7 +54,7 @@ hivemind — one brain for every agent on your team
 
 Usage:
   hivemind install   [--only <platforms>] [--skip-auth] [--token <value>]
-                     [--ref <code>]
+                     [--ref <code>] [--no-scan]
       Auto-detect assistants on this machine and install hivemind into each.
       --only takes a comma-separated list: ${allPlatformIds().join(",")}
       --token, or env HIVEMIND_TOKEN, signs in non-interactively (useful
@@ -63,6 +63,9 @@ Usage:
       for 'hivemind login'.
       --ref <code> attributes a NEW signup to an affiliate/referrer code
       (e.g. --ref mario). Ignored for already-registered users.
+      By default install kicks off a background scan of your recent Claude
+      Code sessions for repeatable mistakes (surfaced next session). Pass
+      --no-scan, or set HIVEMIND_INSTALL_SCAN=0, to skip it.
 
   hivemind uninstall [--only <platforms>]
       Auto-detect installed assistants and remove hivemind from each.
@@ -233,6 +236,18 @@ function hasEnvToken(): boolean {
 // In every path, a failure (or "No") continues the install — hooks land and
 // the user can `hivemind login` later. This is the deliberate inversion
 // behind the consent rollout: install ≠ auth.
+/**
+ * The background install-time session scan is on by default. Users who don't
+ * want their recent sessions mined (or their Claude subscription spent on it)
+ * opt out with `--no-scan` on the install command or HIVEMIND_INSTALL_SCAN set
+ * to a falsy value ("0", "false", "no", "off").
+ */
+function installScanOptedOut(args: string[]): boolean {
+  if (args.includes("--no-scan")) return true;
+  const env = (process.env.HIVEMIND_INSTALL_SCAN ?? "").trim().toLowerCase();
+  return env === "0" || env === "false" || env === "no" || env === "off";
+}
+
 async function runAuthGate(args: string[]): Promise<void> {
   const flagToken = parseToken(args);
   const isTTY = Boolean(process.stdin.isTTY);
@@ -256,68 +271,40 @@ async function runAuthGate(args: string[]): Promise<void> {
     return;
   }
 
-  // Install-time value-show: when the guards pass (claude CLI present,
-  // prior sessions on disk, no manifest yet, TTY attached), offer to
-  // scan the user's recent sessions for repeatable mistakes BEFORE
-  // showing the abstract sign-in pitch. A real insight from their own
-  // work converts on "keep this skill across machines" better than the
-  // generic "shared memory" copy.
+  // Install-time value-show: kick off a scan of the user's recent Claude
+  // Code sessions for repeatable mistakes in the BACKGROUND — never block the
+  // install on it. A detached `mine-local` worker mines + ranks while install
+  // continues; the resulting insight surfaces at the next SessionStart via the
+  // local-mined notification rule (src/notifications/rules/local-mined.ts).
   //
-  // Every failure path (declined, timed out, no insight emitted)
-  // returns null and we fall through to the existing unlock copy — the
-  // install never dead-ends on a scan failure.
-  let foundInsight: { skill_name: string } | null = null;
-  if (canOfferInstallScan()) {
-    // Don't claim "Hivemind installed" here — runAuthGate runs BEFORE
-    // the per-platform installers, so the assistant install hasn't
-    // actually happened yet. Codex PR #198 P3 flagged the earlier
-    // wording as misleading status output.
-    log("");
-    log("🐝 Want me to scan your recent Claude Code sessions for repeatable mistakes?");
-    log("Takes 2-4 minutes. Scans 10 sessions in parallel using your Claude Code subscription.");
-    log("");
-    const scanOk = await confirm("Scan now?", true);
-    if (scanOk) {
+  // We don't ask first: the scan reads only local session files (nothing
+  // leaves the machine until sign-in) and the sole real cost — a few Claude
+  // subscription calls — is disclosed inline, not gated behind a prompt.
+  // Gating lost every user who said "no" (or "not now") before seeing any
+  // value; the earlier synchronous version also blocked the terminal for up
+  // to 5 minutes. Opt out with `--no-scan` or HIVEMIND_INSTALL_SCAN=0.
+  if (!installScanOptedOut(args)) {
+    const auto = maybeAutoMineLocal({
+      sessionCount: 10,
+      onlyAgent: "claude_code",
+      advise: true,
+    });
+    if (auto.triggered) {
       log("");
-      log("Scanning your 10 most-recent sessions (up to 5 min). Be patient — haiku is running in the background.");
-      const { insight, skillsCount } = await runInstallScan();
-      log("");
-      if (insight && insight.insight && insight.insight.trim().length > 0) {
-        log(formatScanResult(insight));
-        foundInsight = { skill_name: insight.skill_name };
-      } else if (skillsCount > 0) {
-        // Codex PR #198 P3: don't lie about "no patterns found" when
-        // mine-local actually wrote skills to disk. They just lacked
-        // a banner-quality one-liner. The skills are real and the
-        // user benefits from them on next SessionStart even without
-        // the install-time banner.
-        log(`Mined ${skillsCount} skill${skillsCount === 1 ? "" : "s"} locally — they'll be available in your next claude session.`);
-        log("(No banner-quality insight to surface here — the gate is conservative on what gets the top-line.)");
-      } else {
-        log("No repeatable patterns found in this scan. (That's OK — the gate is conservative.)");
-      }
+      log("🐝 Scanning your recent Claude Code sessions for repeatable mistakes in the");
+      log("   background (using your Claude Code subscription). Your first insight will");
+      log("   appear the next time you start Claude Code.");
     }
   }
 
   log("");
-  if (foundInsight) {
-    // Insight-aware sign-in pitch: lead with the concrete value the
-    // user just saw rather than the generic "shared memory" framing.
-    // Skill name is kebab-case-validated upstream by mine-local's
-    // assertValidSkillName, so it's safe to interpolate inline.
-    log("🐝 Sign in to keep this skill across machines and share it with your team.");
-    log("");
-    log(`Without sign-in, \`${foundInsight.skill_name}\` lives only on this machine and`);
-    log("won't follow you to a new laptop or be shared with teammates who'd benefit.");
-  } else {
-    log("🐝 One more step to unlock Hivemind");
-    log("");
-    log("To enable shared memory and auto-learning across your agents,");
-    log("we need to sign you in. Your traces will be securely stored in");
-    log("your private Hivemind, so all your agents can recall them.");
-    log("");
-    log("You can later connect your own cloud storage like S3/GCS/Azure Blob.");
-  }
+  log("🐝 One more step to unlock Hivemind");
+  log("");
+  log("To enable shared memory and auto-learning across your agents,");
+  log("we need to sign you in. Your traces will be securely stored in");
+  log("your private Hivemind, so all your agents can recall them.");
+  log("");
+  log("You can later connect your own cloud storage like S3/GCS/Azure Blob.");
   log("");
   const yes = await confirm("Sign in now?", true);
 

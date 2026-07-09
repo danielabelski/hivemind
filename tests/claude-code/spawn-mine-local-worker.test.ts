@@ -256,6 +256,42 @@ describe("maybeAutoMineLocal — guard branches", () => {
     expect(args.slice(1)).toEqual(["skillify", "mine-local"]);
   });
 
+  it("appends --n/--only/--advise flags when scan options are passed (install path)", async () => {
+    stageExists({
+      "local-mined.json": false,
+      "local-mined.lock": false,
+      "/projects": true,
+      "bundle/cli.js": true,
+    });
+    readdirSyncMock.mockReturnValueOnce(["sub"]).mockReturnValueOnce(["a.jsonl"]);
+    openSyncMock.mockReturnValue(42);
+    const { maybeAutoMineLocal } = await loadModule();
+    const r = maybeAutoMineLocal({ sessionCount: 10, onlyAgent: "claude_code", advise: true });
+    expect(r).toEqual({ triggered: true });
+    const [, args] = spawnMock.mock.calls[0];
+    expect(args.slice(1)).toEqual([
+      "skillify", "mine-local",
+      "--n", "10",
+      "--only", "claude_code",
+      "--advise",
+    ]);
+  });
+
+  it("omits scan-option flags when called with no options (SessionStart path)", async () => {
+    stageExists({
+      "local-mined.json": false,
+      "local-mined.lock": false,
+      "/projects": true,
+      "bundle/cli.js": true,
+    });
+    readdirSyncMock.mockReturnValueOnce(["sub"]).mockReturnValueOnce(["a.jsonl"]);
+    openSyncMock.mockReturnValue(42);
+    const { maybeAutoMineLocal } = await loadModule();
+    expect(maybeAutoMineLocal().triggered).toBe(true);
+    const [, args] = spawnMock.mock.calls[0];
+    expect(args.slice(1)).toEqual(["skillify", "mine-local"]);
+  });
+
   it("falls back to the bin launcher when bundled cli.js is missing", async () => {
     stageExists({
       "local-mined.json": false,
