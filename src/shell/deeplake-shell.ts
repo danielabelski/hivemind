@@ -22,6 +22,7 @@
  */
 
 import { createInterface } from "node:readline";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { Bash } from "just-bash";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const goalsTable = process.env["HIVEMIND_GOALS_TABLE"] ?? config.goalsTableName;
   const kpisTable = process.env["HIVEMIND_KPIS_TABLE"] ?? config.kpisTableName;
+  const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
 
   const client = new DeeplakeApi(
@@ -64,7 +66,7 @@ async function main(): Promise<void> {
     process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...\n`);
   }
 
-  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, kpisTable });
+  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, kpisTable, docsTable, docsProject: deriveProjectKey(process.cwd()).key });
 
   if (!isOneShot) {
     const fileCount = fs.getAllPaths().filter(p => !!p).length;

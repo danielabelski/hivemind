@@ -26,6 +26,7 @@ import { runDashboardCommand } from "../commands/dashboard.js";
 import { runSkillifyCommand } from "../commands/skillify.js";
 import { runRulesCommand } from "../commands/rules.js";
 import { runGoalCommand, runKpiCommand } from "../commands/goal.js";
+import { runDocsCommand } from "../commands/docs.js";
 import { runContextCommand } from "../commands/context.js";
 import { runBackfillMemory } from "../commands/backfill-memory.js";
 import { runFlushMemory } from "../commands/flush-memory.js";
@@ -481,6 +482,11 @@ async function main(): Promise<void> {
 
   if (cmd === "kpi" || cmd === "kpis") {
     await runKpiCommand(args.slice(1));
+    return;
+  }
+
+  if (cmd === "docs" || cmd === "doc") {
+    await runDocsCommand(args.slice(1));
     return;
   }
 

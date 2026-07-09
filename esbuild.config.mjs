@@ -385,6 +385,7 @@ await build({
     "process.env.HIVEMIND_DEBUG": "globalThis.__hivemind_tuning__.HIVEMIND_DEBUG",
     "process.env.HIVEMIND_TRACE_SQL": "globalThis.__hivemind_tuning__.HIVEMIND_TRACE_SQL",
     "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_QUERY_TIMEOUT_MS",
+    "process.env.HIVEMIND_DOCS_MIN_PERIOD_MS": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_MIN_PERIOD_MS",
     "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_TTL_MS",
     "process.env.HIVEMIND_INDEX_MARKER_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_DIR",
     "process.env.HIVEMIND_SEMANTIC_LIMIT": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_LIMIT",
@@ -393,6 +394,8 @@ await build({
     "process.env.HIVEMIND_SEMANTIC_SEARCH": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_SEARCH",
     "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS",
     "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMIT_ALL",
+    "process.env.HIVEMIND_DOCS_AUTO_FILE": "undefined",
+    "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
     // `HIVEMIND_STATE_DIR` is the test-isolation override that points
     // `~/.deeplake/state/skillify` at a `mkdtempSync()` dir. OpenClaw has
     // no testing surface and no reason to redirect state, so it always
@@ -484,10 +487,12 @@ await build({
     "process.env.HIVEMIND_DEBUG": "globalThis.__hivemind_tuning__.HIVEMIND_DEBUG",
     "process.env.HIVEMIND_TRACE_SQL": "globalThis.__hivemind_tuning__.HIVEMIND_TRACE_SQL",
     "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_QUERY_TIMEOUT_MS",
+    "process.env.HIVEMIND_DOCS_MIN_PERIOD_MS": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_MIN_PERIOD_MS",
     "process.env.HIVEMIND_SEMANTIC_LIMIT": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_LIMIT",
     "process.env.HIVEMIND_SEMANTIC_SEARCH": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_SEARCH",
     "process.env.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS",
     "process.env.HIVEMIND_SEMANTIC_EMIT_ALL": "globalThis.__hivemind_tuning__.HIVEMIND_SEMANTIC_EMIT_ALL",
+    "process.env.HIVEMIND_DOCS_AUTO_FILE": "undefined",
     "process.env.HIVEMIND_INDEX_MARKER_TTL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_TTL_MS",
     "process.env.HIVEMIND_INDEX_MARKER_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_INDEX_MARKER_DIR",
     "process.env.HIVEMIND_CURSOR_MODEL": "globalThis.__hivemind_tuning__.HIVEMIND_CURSOR_MODEL",
@@ -496,6 +501,8 @@ await build({
     "process.env.HIVEMIND_PI_PROVIDER": "globalThis.__hivemind_tuning__.HIVEMIND_PI_PROVIDER",
     "process.env.HIVEMIND_PI_MODEL": "globalThis.__hivemind_tuning__.HIVEMIND_PI_MODEL",
     "process.env.HIVEMIND_SKILLIFY_WORKER": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_WORKER",
+    "process.env.HIVEMIND_DOCS_AUTO_FILE": "undefined",
+    "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
     "process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_EVERY_N_TURNS",
     "process.env.HIVEMIND_AUTOPULL_DISABLED": "globalThis.__hivemind_tuning__.HIVEMIND_AUTOPULL_DISABLED",
     // Skillify state-dir test-isolation override. OpenClaw never needs
@@ -538,10 +545,13 @@ const openclawGraphWorkerDefine = {
     "process.env.HIVEMIND_DEBUG": "globalThis.__hivemind_tuning__.HIVEMIND_DEBUG",
     "process.env.HIVEMIND_TRACE_SQL": "globalThis.__hivemind_tuning__.HIVEMIND_TRACE_SQL",
     "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_QUERY_TIMEOUT_MS",
+    "process.env.HIVEMIND_DOCS_MIN_PERIOD_MS": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_MIN_PERIOD_MS",
     "process.env.HIVEMIND_GRAPH_ON_STOP": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_ON_STOP",
     "process.env.HIVEMIND_GRAPH_TICK_INTERVAL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_TICK_INTERVAL_MS",
     "process.env.HIVEMIND_GRAPH_PULL": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL",
     "process.env.HIVEMIND_GRAPH_PULL_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL_TIMEOUT_MS",
+    "process.env.HIVEMIND_DOCS_AUTO_FILE": "undefined",
+    "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
     // Transitively imported via DeeplakeApi -> index-marker-store.ts. Without
     // these two rewrites the bundle keeps literal `process.env.HIVEMIND_INDEX_MARKER_*`
     // reads alongside fetch() and trips ClawHub's env-harvesting critical rule.

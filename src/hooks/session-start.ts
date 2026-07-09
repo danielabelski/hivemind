@@ -7,6 +7,9 @@
  */
 
 import { fileURLToPath } from "node:url";
+import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
+import { docsWikiContextNote } from "../docs/docs-context.js";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
@@ -222,6 +225,21 @@ async function main(): Promise<void> {
             : "HIVEMIND_CAPTURE_ONLY_CLI gate";
           log(`placeholder + schema ensure skipped (${reason})`);
         }
+        // Docs auto sync check — the "every so often" the summary worker has.
+        // Post-commit alone misses pulled commits and long-idle repos; a
+        // session start is the natural cheap tick. `full` widens the per-file
+        // scan past the one-commit git window, exactly to cover those gaps.
+        // Independent of captureEnabled: docs consent lives in its own
+        // registry (explicit per-(org, repo) opt-in), and the cycle's guards
+        // (sha match, 6h quiet period, lease) make most spawns a no-op.
+        try {
+          const cwd = input.cwd ?? process.cwd();
+          if (maybeSpawnDocsRefresh(cwd, { orgId: config.orgId, project: deriveProjectKey(cwd).key, full: true })) {
+            log("docs auto sync spawned (session-start tick)");
+          }
+        } catch {
+          // best-effort: a docs tick must never break SessionStart
+        }
         // Renderer is read-only and runs regardless of captureEnabled.
         // It absorbs its own errors (missing table, network, etc.)
         // and returns "" on any failure — SessionStart MUST NOT fail
@@ -293,6 +311,13 @@ async function main(): Promise<void> {
   const graphLine = graphContextLine(input.cwd ?? process.cwd());
   const graphNote = graphLine ?? "";
 
+  // Docs wiki note — the agent has no other way to learn the wiki exists.
+  // Gated on the same local consent registry as auto sync (no network),
+  // and worded on-demand, never wiki-first (see docs-context.ts).
+  const docsNote = creds?.token
+    ? docsWikiContextNote(creds.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
+    : "";
+
   const baseContext = creds?.token
     ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;
@@ -302,7 +327,7 @@ async function main(): Promise<void> {
   const withRules = rulesBlock
     ? `${baseContext}\n\n${rulesBlock}`
     : baseContext;
-  const additionalContext = `${withRules}${graphNote}`;
+  const additionalContext = `${withRules}${graphNote}${docsNote}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

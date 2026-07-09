@@ -11,6 +11,7 @@ import {
   RULES_COLUMNS,
   GOALS_COLUMNS,
   KPIS_COLUMNS,
+  DOCS_COLUMNS,
   buildCreateTableSql,
   healMissingColumns,
 } from "./deeplake-schema.js";
@@ -689,6 +690,28 @@ export class DeeplakeApi {
     }
     await this.healSchema(safe, KPIS_COLUMNS);
     await this.ensureLookupIndex(safe, "goal_id_kpi_id", `("goal_id", "kpi_id")`);
+  }
+
+  /**
+   * Create the docs table — per-file documentation kept fresh on code deltas.
+   *
+   * INSERT-only version-bumped (same write pattern as rules/skills): every
+   * edit appends a fresh row with version+1, reads pick the latest per
+   * doc_id via `ORDER BY version DESC LIMIT 1` (see src/docs/read.ts).
+   * Sidesteps the Deeplake UPDATE-coalescing quirk by never UPDATEing.
+   * The (doc_id, version) index is what the latest-row read scans.
+   */
+  async ensureDocsTable(name: string): Promise<void> {
+    const safe = sqlIdent(name);
+    const tables = await this.listTables();
+    if (!tables.includes(safe)) {
+      log(`table "${safe}" not found, creating`);
+      await this.createTableWithRetry(buildCreateTableSql(safe, DOCS_COLUMNS), safe);
+      log(`table "${safe}" created`);
+      if (!tables.includes(safe)) this._tablesCache = [...tables, safe];
+    }
+    await this.healSchema(safe, DOCS_COLUMNS);
+    await this.ensureLookupIndex(safe, "doc_id_version", `("doc_id", "version")`);
   }
 }
 
