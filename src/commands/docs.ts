@@ -264,7 +264,7 @@ function printGroupedByRepo(rows: DocRow[]): void {
   }
   for (const [proj, group] of groups) {
     const label = proj === "" ? "(legacy rows — no project stamp)" : (nameOf.get(proj) ?? `project ${proj}`);
-    console.log(`\n${label}${proj && nameOf.has(proj) ? `  (project: ${proj.slice(0, 8)})` : ""}  —  ${group.length} page(s)`);
+    console.log(`\n${label}${proj && nameOf.has(proj) ? `  (project: ${proj})` : ""}  —  ${group.length} page(s)`);
     console.log("─".repeat(60));
     for (const r of group.slice(0, ALL_VIEW_PER_REPO_CAP)) console.log(formatListRow(r));
     if (group.length > ALL_VIEW_PER_REPO_CAP) {
@@ -442,20 +442,33 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const entry = findEntry(cfg.orgId, headerProject);
     const headerSnap = loadCurrentSnapshot(cwd);
     const snapOk = headerSnap !== null;
-    let freshness = "never synced";
-    try {
-      const meta = await readRefreshMeta(query, tableName, headerProject, "main");
-      if (meta?.meta.last_refresh_sha) {
-        const head = gitHeadOf(cwd);
-        if (head === null) freshness = "no git";
-        else if (head === meta.meta.last_refresh_sha) freshness = "in sync (HEAD)";
-        else freshness = `behind HEAD (last: ${meta.meta.last_refresh_sha.slice(0, 8)})`;
+    const status = parseStatus(args.slice(1));
+    const limit = parseLimit(args.slice(1));
+    const explicitProject = flagValue(args, "--project");
+    // Not a docs-enabled repo (no graph, not registered) and no explicit
+    // target: a per-repo header + empty listing is useless — fall back to
+    // the grouped org view so the command always shows something actionable
+    // (caught during manual e2e from the home directory).
+    const notARepo = !snapOk && entry === undefined && explicitProject === undefined;
+    const allView = args.includes("--all") || notARepo;
+    if (notARepo) {
+      console.log(`${root} is not a docs-enabled repo — showing every repo in org ${cfg.orgName ?? cfg.orgId}. Register one with \`hivemind graph init\` (or \`hivemind docs auto on\` inside a repo).`);
+    } else {
+      let freshness = "never synced";
+      try {
+        const meta = await readRefreshMeta(query, tableName, headerProject, "main");
+        if (meta?.meta.last_refresh_sha) {
+          const head = gitHeadOf(cwd);
+          if (head === null) freshness = "no git";
+          else if (head === meta.meta.last_refresh_sha) freshness = "in sync (HEAD)";
+          else freshness = `behind HEAD (last: ${meta.meta.last_refresh_sha.slice(0, 8)})`;
+        }
+      } catch (err) {
+        if (!isMissingTableError((err as Error).message)) throw err;
       }
-    } catch (err) {
-      if (!isMissingTableError((err as Error).message)) throw err;
+      console.log(`repo: ${root}  org: ${cfg.orgName ?? cfg.orgId}  auto: ${entry?.auto ? "ON" : "off"}  sync: ${freshness}  graph: ${snapOk ? "ok" : "missing"}`);
+      console.log("─".repeat(60));
     }
-    console.log(`repo: ${root}  org: ${cfg.orgName ?? cfg.orgId}  auto: ${entry?.auto ? "ON" : "off"}  sync: ${freshness}  graph: ${snapOk ? "ok" : "missing"}`);
-    console.log("─".repeat(60));
 
     // Rows are scoped to the CURRENT repo's project by default, matching the
     // header above — the shared org table holds every repo's docs, and mixing
@@ -463,10 +476,6 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     // during manual e2e). `--project P` inspects another repo (accepts a repo
     // name, path, or key prefix — humans never decode hashes); `--all` is the
     // whole-table view. Legacy '' rows are always included (projectOrLegacy).
-    const status = parseStatus(args.slice(1));
-    const limit = parseLimit(args.slice(1));
-    const explicitProject = flagValue(args, "--project");
-    const allView = args.includes("--all");
     let rows: DocRow[] = [];
     try {
       rows = allView

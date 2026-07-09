@@ -219,6 +219,24 @@ describe("hivemind docs list", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("falls back to the grouped org view when the cwd is not a docs-enabled repo", async () => {
+    // No graph + not in the consent registry (home dir case from manual e2e):
+    // a per-repo header would be useless, so the org view shows instead.
+    const prevReg = process.env.HIVEMIND_DOCS_AUTO_FILE;
+    process.env.HIVEMIND_DOCS_AUTO_FILE = join(tmpdir(), "nonexistent-registry.json");
+    loadCurrentSnapshotMock.mockReturnValue(null);
+    try {
+      queryMock.mockResolvedValueOnce([docRow({ doc_id: "wiki/other", project: "other-project" })]);
+      await run(["list", "--status", "all"]);
+      const out = logged.join("\n");
+      expect(out).toMatch(/is not a docs-enabled repo — showing every repo in org/);
+      expect(out).toMatch(/wiki\/other/); // grouped org view, not an empty per-repo listing
+      expect(out).not.toMatch(/repo: .*  org: .*  auto:/); // no misleading per-repo header
+    } finally {
+      if (prevReg === undefined) delete process.env.HIVEMIND_DOCS_AUTO_FILE;
+      else process.env.HIVEMIND_DOCS_AUTO_FILE = prevReg;
+    }
+  });
   it("--all caps each repo section and points at --project for the rest", async () => {
     const many = Array.from({ length: 25 }, (_, i) => docRow({ doc_id: `wiki/p${i}`, project: "big-project" }));
     queryMock.mockResolvedValueOnce([]); // header meta read
