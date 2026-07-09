@@ -8,6 +8,7 @@
 
 import { fileURLToPath } from "node:url";
 import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
+import { docsWikiContextNote } from "../docs/docs-context.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -310,6 +311,13 @@ async function main(): Promise<void> {
   const graphLine = graphContextLine(input.cwd ?? process.cwd());
   const graphNote = graphLine ?? "";
 
+  // Docs wiki note — the agent has no other way to learn the wiki exists.
+  // Gated on the same local consent registry as auto sync (no network),
+  // and worded on-demand, never wiki-first (see docs-context.ts).
+  const docsNote = creds?.token
+    ? docsWikiContextNote(creds.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
+    : "";
+
   const baseContext = creds?.token
     ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;
@@ -319,7 +327,7 @@ async function main(): Promise<void> {
   const withRules = rulesBlock
     ? `${baseContext}\n\n${rulesBlock}`
     : baseContext;
-  const additionalContext = `${withRules}${graphNote}`;
+  const additionalContext = `${withRules}${graphNote}${docsNote}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
