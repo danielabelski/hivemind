@@ -74,8 +74,9 @@ hivemind docs — documentation that stays in sync with the code
 Everyday:
   hivemind docs list [--repos] [--all] [--project P]
       Status header for this repo (root, org, auto ON/off, sync freshness,
-      graph) + THIS repo's pages. --project P shows another repo's pages;
-      --all shows the whole org table. --repos lists every repo registered
+      graph) + THIS repo's pages. --project P shows another repo's pages
+      (accepts a repo name, path, or key prefix). --all shows every repo,
+      grouped one section per repo. --repos lists every repo registered
       for auto sync.
   hivemind docs sync [--cwd <dir>] [--force] [--local]
       Bring the docs up to date with the code (wiki pages + per-file docs).
@@ -224,6 +225,54 @@ function formatListRow(r: DocRow): string {
   const tag = r.status === "archived" ? "[archived]" : "[active]";
   const anchors = r.anchors.length === 1 ? "1 anchor" : `${r.anchors.length} anchors`;
   return `${tag} ${r.doc_id}  v${r.version}  (${r.tier}, ${anchors})  ${r.path}`;
+}
+
+/**
+ * Resolve a human `--project` argument to a project key. Accepts, in order:
+ * a registered repo path or its basename ("openrepl"), a unique prefix of a
+ * project key ("07b0"), or a literal key (returned as-is). Humans never
+ * decode hashes; the hash stays the STORED identity (rename-stable,
+ * collision-free across machines) — this is lookup sugar only.
+ */
+function resolveProjectArg(arg: string): string {
+  const entries = listEntries();
+  const byPath = entries.find((e) => e.path === arg || e.path.split("/").pop() === arg || e.path.endsWith(`/${arg}`));
+  if (byPath) return byPath.project;
+  const byPrefix = entries.filter((e) => e.project.startsWith(arg));
+  if (byPrefix.length === 1) return byPrefix[0].project;
+  return arg;
+}
+
+/** Max pages printed per repo in the `--all` view before eliding. */
+const ALL_VIEW_PER_REPO_CAP = 20;
+
+/**
+ * `--all` view: group pages by repo, one titled section each — the raw table
+ * order interleaves repos and forces the reader to decode project hashes
+ * (caught during manual e2e). Repo names resolve from the local consent
+ * registry; unregistered projects (e.g. a teammate's repo) fall back to the
+ * key. Each section is capped so an org with many large repos stays readable.
+ */
+function printGroupedByRepo(rows: DocRow[]): void {
+  const entries = listEntries();
+  const nameOf = new Map(entries.map((e) => [e.project, e.path]));
+  const groups = new Map<string, DocRow[]>();
+  for (const r of rows) {
+    const k = r.project ?? "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(r);
+  }
+  for (const [proj, group] of groups) {
+    const label = proj === "" ? "(legacy rows — no project stamp)" : (nameOf.get(proj) ?? `project ${proj}`);
+    console.log(`\n${label}${proj && nameOf.has(proj) ? `  (project: ${proj.slice(0, 8)})` : ""}  —  ${group.length} page(s)`);
+    console.log("─".repeat(60));
+    for (const r of group.slice(0, ALL_VIEW_PER_REPO_CAP)) console.log(formatListRow(r));
+    if (group.length > ALL_VIEW_PER_REPO_CAP) {
+      const more = group.length - ALL_VIEW_PER_REPO_CAP;
+      const ref = proj ? (nameOf.get(proj)?.split("/").pop() ?? proj.slice(0, 8)) : "";
+      console.log(`  (+${more} more — hivemind docs list --project ${ref})`);
+    }
+  }
 }
 
 export async function runDocsCommand(args: string[]): Promise<void> {
@@ -410,21 +459,27 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     // Rows are scoped to the CURRENT repo's project by default, matching the
     // header above — the shared org table holds every repo's docs, and mixing
     // them under a per-repo header reads as this repo's corpus (caught live
-    // during manual e2e). `--project P` inspects another repo; `--all` is the
+    // during manual e2e). `--project P` inspects another repo (accepts a repo
+    // name, path, or key prefix — humans never decode hashes); `--all` is the
     // whole-table view. Legacy '' rows are always included (projectOrLegacy).
     const status = parseStatus(args.slice(1));
     const limit = parseLimit(args.slice(1));
     const explicitProject = flagValue(args, "--project");
+    const allView = args.includes("--all");
     let rows: DocRow[] = [];
     try {
-      rows = args.includes("--all")
+      rows = allView
         ? await listDocs(query, tableName, { status, limit })
-        : await listDocs(query, tableName, { status, projectOrLegacy: explicitProject ?? headerProject, limit });
+        : await listDocs(query, tableName, { status, projectOrLegacy: explicitProject !== undefined ? resolveProjectArg(explicitProject) : headerProject, limit });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
     if (rows.length === 0) {
       console.log(`(no docs with status=${status})`);
+      return;
+    }
+    if (allView) {
+      printGroupedByRepo(rows);
       return;
     }
     for (const r of rows) console.log(formatListRow(r));

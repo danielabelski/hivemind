@@ -183,6 +183,20 @@ describe("hivemind docs list", () => {
     await run(["list", "--status", "all", "--all"]);
     out = logged.join("\n");
     expect(out).toMatch(/wiki\/other/); // global view opts back in
+    // ...grouped by repo, one titled section per project — a human must
+    // never have to decode project hashes to tell repos apart.
+    expect(out).toMatch(/project other-project\s+—\s+1 page\(s\)/);
+    expect(out).toMatch(/legacy rows — no project stamp/); // the '' row's section
+  });
+  it("--all caps each repo section and points at --project for the rest", async () => {
+    const many = Array.from({ length: 25 }, (_, i) => docRow({ doc_id: `wiki/p${i}`, project: "big-project" }));
+    queryMock.mockResolvedValueOnce([]); // header meta read
+    queryMock.mockResolvedValueOnce(many);
+    await run(["list", "--status", "all", "--all"]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/big-project\s+—\s+25 page\(s\)/);
+    expect(out).toMatch(/\(\+5 more — hivemind docs list --project /);
+    expect((out.match(/\[active\]/g) ?? []).length).toBe(20); // cap enforced
   });
 });
 
