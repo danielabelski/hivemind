@@ -835,7 +835,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
 
     let existingDocs: DocRow[] = [];
     try {
-      existingDocs = await listDocs(query, tableName, { status: "all", limit: 1000000 });
+      existingDocs = await listDocs(query, tableName, { status: "all", projectOrLegacy: project, limit: 1000000 });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
@@ -913,7 +913,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     }
     let existingDocs: DocRow[] = [];
     try {
-      existingDocs = await listDocs(query, tableName, { status: "all", limit: 1000000 });
+      existingDocs = await listDocs(query, tableName, { status: "all", projectOrLegacy: project, limit: 1000000 });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }

@@ -44,6 +44,7 @@ vi.mock("../../src/docs/embed.js", () => ({
 }));
 
 import { runDocsCommand } from "../../src/commands/docs.js";
+import { deriveProjectKey } from "../../src/utils/repo-identity.js";
 import { loadConfig } from "../../src/config.js";
 const loadConfigMock = loadConfig as unknown as ReturnType<typeof vi.fn>;
 
@@ -322,5 +323,89 @@ describe("hivemind docs — anchored authoring + refresh over real files", () =>
     // even if the gate leaked a write; check both statement kinds.
     const writes = queryMock.mock.calls.map((c) => c[0] as string).filter((s) => /INSERT|UPDATE/.test(s));
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe("hivemind docs — cross-project existence scoping", () => {
+  // Regression (bugs/fix-cross-project-existence-suppression.md): the wiki and
+  // generate existence reads were GLOBAL (`listDocs` with no project filter),
+  // so a same-named doc_id owned by ANOTHER repo in the shared org table
+  // silently suppressed generation for THIS repo. The reads are now scoped
+  // `projectOrLegacy: project`, so only this project's rows — plus legacy ''
+  // rows written before project stamping — count as "already exists".
+  //
+  // Note: `listDocs` applies the project filter CLIENT-side (it reads the full
+  // union then drops non-matching rows in JS — see src/docs/read.ts), so these
+  // tests assert the observable skip decision rather than a WHERE clause in the
+  // captured SQL. The behavioral discrimination in the last test is the real
+  // guarantee: a global read could never suppress exactly the same-project row.
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "cli-docs-scope-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  // One documentable file under tests/ → wiki group key "tests" → doc_id wiki/tests.
+  const wikiSnap = {
+    nodes: [{
+      id: "tests/foo.ts:foo:function", label: "foo", kind: "function",
+      source_file: "tests/foo.ts", source_location: "L1-L2",
+      language: "typescript", exported: true,
+    }],
+    links: [],
+  };
+  // One documentable file → per-file generate target with doc_id src/reader.ts.
+  const genSnap = {
+    nodes: [{
+      id: "src/reader.ts:read:function", label: "read", kind: "function",
+      source_file: "src/reader.ts", source_location: "L1-L2",
+      language: "typescript", exported: true,
+    }],
+    links: [],
+  };
+
+  it("wiki --dry-run: another project's wiki/tests does NOT suppress this repo's", async () => {
+    loadCurrentSnapshotMock.mockReturnValue(wikiSnap);
+    // The single existence read returns only a FOREIGN-project collision.
+    queryMock.mockResolvedValueOnce([docRow({ doc_id: "wiki/tests", project: "other-project" })]);
+    await run(["wiki", "--dry-run", "--cwd", dir]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/1 wiki page\(s\) would be generated/);
+    expect(out).toMatch(/wiki\/tests/);
+  });
+
+  it("generate --dry-run: another project's colliding per-file doc_id does NOT suppress", async () => {
+    loadCurrentSnapshotMock.mockReturnValue(genSnap);
+    queryMock.mockResolvedValueOnce([docRow({ doc_id: "src/reader.ts", project: "other-project" })]);
+    await run(["generate", "--dry-run", "--cwd", dir]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/1 target\(s\) would be documented/);
+    expect(out).toMatch(/src\/reader\.ts/);
+  });
+
+  it("legacy '' rows still suppress (pre-scoping corpora keep working)", async () => {
+    loadCurrentSnapshotMock.mockReturnValue(wikiSnap);
+    // A legacy unstamped row with the same doc_id must STILL count as existing.
+    queryMock.mockResolvedValueOnce([docRow({ doc_id: "wiki/tests", project: "" })]);
+    await run(["wiki", "--dry-run", "--cwd", dir]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/0 wiki page\(s\) would be generated/);
+    expect(out).not.toMatch(/wiki\/tests/);
+  });
+
+  it("existence read is project-scoped, not global: same-project row suppresses, foreign is ignored", async () => {
+    loadCurrentSnapshotMock.mockReturnValue(wikiSnap);
+    const project = deriveProjectKey(dir).key;
+    // Table holds BOTH a foreign collision (must be ignored) and this repo's own
+    // row (must suppress). A global read would count both or neither — only a
+    // project-scoped read suppresses exactly the same-project doc.
+    queryMock.mockResolvedValueOnce([
+      docRow({ doc_id: "wiki/tests", project: "other-project" }),
+      docRow({ doc_id: "wiki/tests", project }),
+    ]);
+    await run(["wiki", "--dry-run", "--cwd", dir]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/0 wiki page\(s\) would be generated/);
+    expect(out).not.toMatch(/wiki\/tests/);
   });
 });
