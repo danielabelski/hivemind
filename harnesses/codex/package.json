@@ -1,6 +1,6 @@
 {
   "name": "hivemind-codex",
-  "version": "0.7.118",
+  "version": "0.7.119",
   "description": "Cloud-backed persistent shared memory for OpenAI Codex CLI powered by Deeplake",
   "type": "module"
 }
