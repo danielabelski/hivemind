@@ -14,6 +14,10 @@ describe("docsWikiContextNote (SessionStart wiki hint)", () => {
     // The benchmark-mandated framing: on-demand orientation, never wiki-first.
     expect(note).toContain("Confirm every claim about code behavior against the source files");
     expect(note).not.toMatch(/wiki (page )?first/i);
+    // Edge-case honesty: the corpus can lag (first generation running,
+    // refresh pending) — the agent must be told source beats wiki.
+    expect(note).toContain("incomplete or lag behind the code");
+    expect(note).toContain("trust the source");
     expect(note.startsWith("\n\n")).toBe(true); // appends cleanly after graphNote
   });
 

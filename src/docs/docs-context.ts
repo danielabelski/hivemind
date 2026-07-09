@@ -22,7 +22,8 @@ const NOTE = `
 DOCS WIKI (auto-synced for this repo): narrative wiki pages (one per subsystem) and per-file docs live under ~/.deeplake/memory/docs/, kept in sync with the code on every commit.
 - Browse: \`ls ~/.deeplake/memory/docs/\` — wiki pages under \`docs/wiki/\`, per-file docs mirror source paths.
 - Search: \`cat ~/.deeplake/memory/docs/find/<query words>\` (hybrid keyword+semantic).
-Use them to ORIENT — which subsystem or files own a behavior. Confirm every claim about code behavior against the source files before citing it; do not answer from the wiki alone.`;
+Use them to ORIENT — which subsystem or files own a behavior. Confirm every claim about code behavior against the source files before citing it; do not answer from the wiki alone.
+Note: the wiki may occasionally be incomplete or lag behind the code (first generation still running, or a refresh cycle pending). If a page is missing or contradicts the source, trust the source.`;
 
 /**
  * Returns the wiki context note ("" when the repo has not opted in, or on
