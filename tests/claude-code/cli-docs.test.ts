@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -187,6 +187,37 @@ describe("hivemind docs list", () => {
     // never have to decode project hashes to tell repos apart.
     expect(out).toMatch(/project other-project\s+—\s+1 page\(s\)/);
     expect(out).toMatch(/legacy rows — no project stamp/); // the '' row's section
+  });
+  it("shows wiki generation progress: done count + pending page names", async () => {
+    // A real dir with 3 sizeable files -> one eligible group ("pkg").
+    const dir = mkdtempSync(join(tmpdir(), "cli-list-prog-"));
+    mkdirSync(join(dir, "pkg"));
+    for (const f of ["a.ts", "b.ts", "c.ts"]) writeFileSync(join(dir, "pkg", f), "export const x = 1;\n".repeat(200));
+    loadCurrentSnapshotMock.mockReturnValue({
+      nodes: ["a", "b", "c"].map((n) => ({
+        id: `pkg/${n}.ts:${n}:function`, label: n, kind: "function",
+        source_file: `pkg/${n}.ts`, source_location: "L1-L2", language: "typescript", exported: true,
+      })),
+      links: [],
+    });
+    try {
+      // No wiki page in the table yet -> 0/1 with the pending name.
+      queryMock.mockResolvedValueOnce([]); // header meta read
+      queryMock.mockResolvedValueOnce([]); // rows
+      await run(["list", "--cwd", dir]);
+      let out = logged.join("\n");
+      expect(out).toMatch(/wiki: 0\/1 pages generated — pending: wiki\/pkg/);
+      logged.length = 0;
+      // Page landed -> complete.
+      queryMock.mockResolvedValueOnce([]); // header meta read
+      queryMock.mockResolvedValueOnce([docRow({ doc_id: "wiki/pkg" })]);
+      await run(["list", "--cwd", dir]);
+      out = logged.join("\n");
+      expect(out).toMatch(/wiki: 1\/1 pages generated/);
+      expect(out).not.toMatch(/pending/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it("--all caps each repo section and points at --project for the rest", async () => {
     const many = Array.from({ length: 25 }, (_, i) => docRow({ doc_id: `wiki/p${i}`, project: "big-project" }));

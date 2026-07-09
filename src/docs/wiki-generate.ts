@@ -25,7 +25,7 @@
  * a missing page beats a stale-but-green one.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { buildAnchor } from "./anchors.js";
 import { selectTargets } from "./generate.js";
@@ -308,6 +308,27 @@ export function selectWikiGroups(
 
 function defaultWikiVfsPath(project: string, key: string): string {
   return `/docs/${project || "default"}/wiki/${key}.md`;
+}
+
+/**
+ * Disk-side mirror of the generation min-size gate, for status displays
+ * (`docs list` progress line). Same semantics as the in-run gate: a group is
+ * skipped only when BOTH file count and total size are below threshold.
+ * Uses stat sizes instead of loaded content — cheap enough to run on every
+ * list, and byte-vs-char drift cannot flip the gate in any realistic repo.
+ */
+export function wikiGroupEligible(files: string[], repoRoot: string, minFiles = MIN_GROUP_FILES, minChars = MIN_GROUP_CHARS): boolean {
+  let total = 0;
+  let present = 0;
+  for (const f of files) {
+    try {
+      total += statSync(join(repoRoot, f)).size;
+      present++;
+    } catch {
+      // unreadable/missing file: contributes nothing, same as the in-run gate
+    }
+  }
+  return !(present < minFiles && total < minChars);
 }
 
 /** Generate wiki pages for every subsystem group. */

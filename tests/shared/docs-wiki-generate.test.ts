@@ -18,6 +18,7 @@ import {
   validateWikiNarrative,
   generateWikiPages,
   wikiDocId,
+  wikiGroupEligible,
   type WikiFileSource,
 } from "../../src/docs/wiki-generate.js";
 import type { GraphNode, GraphSnapshot } from "../../src/graph/types.js";
@@ -285,5 +286,30 @@ describe("generateWikiPages", () => {
     });
     expect(report.skipped).toBe(1);
     expect(calls.filter((c) => /^INSERT/i.test(c.trim()))).toHaveLength(0);
+  });
+});
+
+describe("wikiGroupEligible (disk-side min-size gate for status displays)", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "wiki-elig-")); mkdirSync(join(dir, "pkg")); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("mirrors the in-run gate: skipped only when BOTH count and size are below", () => {
+    // 2 tiny files: below both -> not eligible
+    writeFileSync(join(dir, "pkg", "a.ts"), "x");
+    writeFileSync(join(dir, "pkg", "b.ts"), "y");
+    expect(wikiGroupEligible(["pkg/a.ts", "pkg/b.ts"], dir)).toBe(false);
+    // 2 files but big: file count below, size above -> eligible (AND semantics)
+    writeFileSync(join(dir, "pkg", "a.ts"), "z".repeat(9000));
+    expect(wikiGroupEligible(["pkg/a.ts", "pkg/b.ts"], dir)).toBe(true);
+    // 3 tiny files: count at threshold -> eligible even though size is below
+    writeFileSync(join(dir, "pkg", "a.ts"), "x");
+    writeFileSync(join(dir, "pkg", "c.ts"), "w");
+    expect(wikiGroupEligible(["pkg/a.ts", "pkg/b.ts", "pkg/c.ts"], dir)).toBe(true);
+  });
+
+  it("missing files contribute nothing, same as the in-run gate", () => {
+    writeFileSync(join(dir, "pkg", "a.ts"), "x");
+    expect(wikiGroupEligible(["pkg/a.ts", "pkg/gone1.ts", "pkg/gone2.ts"], dir)).toBe(false);
   });
 });

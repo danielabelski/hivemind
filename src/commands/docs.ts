@@ -49,7 +49,7 @@ import {
 } from "../docs/index.js";
 import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt, makeHostPageRunPrompt } from "../docs/refresh-llm.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
-import { generateWikiPages, selectWikiGroups, wikiDocId, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
+import { generateWikiPages, selectWikiGroups, wikiDocId, wikiGroupEligible, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
 import { setAuto, findEntry, listEntries } from "../docs/auto-registry.js";
 import { defaultIo, runDocsOnboarding } from "../docs/onboarding.js";
@@ -440,7 +440,8 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     const headerProject = deriveProjectKey(cwd).key;
     const root = tryGitTopLevel(cwd) ?? cwd;
     const entry = findEntry(cfg.orgId, headerProject);
-    const snapOk = loadCurrentSnapshot(cwd) !== null;
+    const headerSnap = loadCurrentSnapshot(cwd);
+    const snapOk = headerSnap !== null;
     let freshness = "never synced";
     try {
       const meta = await readRefreshMeta(query, tableName, headerProject, "main");
@@ -474,15 +475,30 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
-    if (rows.length === 0) {
-      console.log(`(no docs with status=${status})`);
-      return;
-    }
     if (allView) {
-      printGroupedByRepo(rows);
+      if (rows.length === 0) console.log(`(no docs with status=${status})`);
+      else printGroupedByRepo(rows);
       return;
     }
-    for (const r of rows) console.log(formatListRow(r));
+    if (rows.length === 0) console.log(`(no docs with status=${status})`);
+    else for (const r of rows) console.log(formatListRow(r));
+    // Wiki generation progress — derived locally, no worker state needed:
+    // the plan is the snapshot's subsystem groups minus the min-size gate;
+    // whatever plan entry has no page yet is still generating (detached
+    // worker) or was never generated. Lets the user see how much is left.
+    if (explicitProject === undefined && headerSnap) {
+      const planned = selectWikiGroups(headerSnap).filter((g) => wikiGroupEligible(g.files, root));
+      if (planned.length > 0) {
+        const have = new Set(rows.filter((r) => r.doc_id.startsWith(WIKI_DOC_PREFIX)).map((r) => r.doc_id));
+        const pending = planned.filter((g) => !have.has(wikiDocId(g.key)));
+        if (pending.length === 0) {
+          console.log(`\nwiki: ${planned.length}/${planned.length} pages generated`);
+        } else {
+          console.log(`\nwiki: ${planned.length - pending.length}/${planned.length} pages generated — pending: ${pending.map((g) => wikiDocId(g.key)).join(", ")}`);
+          console.log("  (a background generation may still be running; kick one explicitly with `hivemind docs wiki`)");
+        }
+      }
+    }
     return;
   }
 
