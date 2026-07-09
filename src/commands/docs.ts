@@ -582,6 +582,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       run: makeHostRunPrompt(), runPage: makeHostPageRunPrompt(), git,
       owner: `${userInfo().username}@${hostname()}:${process.pid}`,
       force,
+      // Tuning knob (NOT a consent switch — that is the registry): shortens
+      // the 6h quiet period for e2e tests and impatient operators.
+      minPeriodMs: Number(process.env.HIVEMIND_DOCS_MIN_PERIOD_MS ?? "") || undefined,
       // Snapshots live under the repo-derived key even when --project overrides
       // the table stamp.
       loadSnapshotAt: (sha) => loadSnapshotByCommit(repoDir(deriveProjectKey(cwd).key), sha),
