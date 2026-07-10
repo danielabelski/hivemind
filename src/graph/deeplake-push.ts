@@ -60,6 +60,8 @@ export interface PushDeps {
   loadConfig?: () => Config | null;
   /** Override for tests; defaults to constructing a real DeeplakeApi. */
   makeApi?: (config: Config) => DeeplakeApi;
+  /** Working directory for `.hivemind` resolution; defaults to process.cwd(). */
+  cwd?: string;
 }
 
 /**
@@ -79,9 +81,10 @@ export async function pushSnapshot(
     return { kind: "skipped-no-auth" };
   }
   // Per-directory `.hivemind`: skip the graph push where the repo opts out,
-  // and route to the configured org/workspace otherwise. `hivemind graph`
-  // runs in the repo, so the cwd is the tree the `.hivemind` governs.
-  const dirRes = resolveDirConfig(base, process.cwd());
+  // and route to the configured org/workspace otherwise. Use the resolved
+  // build cwd (threaded from `runBuildCommand`), NOT process.cwd(), so
+  // `hivemind graph build --cwd ../repo` resolves the right tree's `.hivemind`.
+  const dirRes = resolveDirConfig(base, deps.cwd ?? process.cwd());
   if (!dirRes.collect) {
     return { kind: "skipped-collect-disabled" };
   }

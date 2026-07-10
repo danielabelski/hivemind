@@ -177,6 +177,7 @@ describe("hermes session-start hook — context payload", () => {
 
   it("falls back to orgId in the org line when orgName is missing", async () => {
     loadCredentialsMock.mockReturnValue({ token: "t", orgId: "o-99" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "o-99", orgName: undefined });
     await runHook();
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
     expect(payload.context).toContain("org: o-99");

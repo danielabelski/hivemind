@@ -537,7 +537,9 @@ export async function runBuildCommand(args: string[]): Promise<void> {
   // logs and returns; the local snapshot is the source of truth. Skips
   // silently when not authenticated (loadConfig returns null).
   // worktreeId already computed above for the writeSnapshot call.
-  const pushOutcome = await pushSnapshot(snapshot, worktreeId);
+  // Pass the resolved build cwd so `.hivemind` resolves against the target
+  // tree (honors `--cwd`), not the process's invocation directory.
+  const pushOutcome = await pushSnapshot(snapshot, worktreeId, { cwd });
   switch (pushOutcome.kind) {
     case "inserted":
       console.log(`Cloud:         pushed to codebase table (commit ${pushOutcome.commitSha.slice(0, 7)})`);

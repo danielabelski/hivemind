@@ -197,9 +197,12 @@ describe("session-start hook — guards", () => {
   });
 
   it("falls back to orgId when orgName is missing", async () => {
+    // The banner reflects the effective (resolved) config; real loadConfig
+    // sets orgName = orgId when creds lack an orgName, so drive that here.
     loadCredsMock.mockReturnValue({
       token: "t", orgId: "org-uuid", userName: "u", workspaceId: "default",
     });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "org-uuid", orgName: undefined });
     const out = await runHook();
     const parsed = JSON.parse(out!);
     expect(parsed.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake as org: org-uuid");

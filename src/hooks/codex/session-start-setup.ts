@@ -75,16 +75,16 @@ async function main(): Promise<void> {
       if (base) {
         const dirRes = resolveDirConfig(base, input.cwd ?? process.cwd());
         const config = dirRes.config;
-        if (dirRes.collect) {
+        if (captureEnabled && dirRes.collect) {
           const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
           await api.ensureTable();
           await api.ensureSessionsTable(config.sessionsTableName);
-          if (captureEnabled) {
-            await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
-          }
+          await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
           log("setup complete");
         } else {
-          log(`setup skipped — .hivemind collect:false (${dirRes.found?.path})`);
+          log(!dirRes.collect
+            ? `setup skipped — .hivemind collect:false (${dirRes.found?.path})`
+            : "setup skipped — HIVEMIND_CAPTURE=false");
         }
       }
     } catch (e: any) {

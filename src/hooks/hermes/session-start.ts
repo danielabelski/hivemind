@@ -188,10 +188,11 @@ async function main(): Promise<void> {
   if (creds?.token) spawnGraphPullWorker(cwd, __bundleDir);
 
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay).
+  const effConfig = dirRes?.config ?? baseConfig;
   const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
     (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
-  const effOrg = routed ? (dirRes!.config.orgName ?? dirRes!.config.orgId) : (creds?.orgName ?? creds?.orgId);
-  const effWs = routed ? dirRes!.config.workspaceId : (creds?.workspaceId ?? "default");
+  const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
+  const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
   const identityLine = dirRes && !dirRes.collect
     ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
     : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
