@@ -75,6 +75,21 @@ export default defineConfig({
       // on the new code without having to first bring the whole
       // (~500-file) codebase up to 80%.
       thresholds: {
+        // PR #302 — feat: per-directory .hivemind config. The resolver is
+        // fully unit-tested; the hook gate is exercised via the capture/
+        // session-start wiring tests. Lock both at 90.
+        "src/dir-config.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/dir-gate.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
         // PR #60 — fix/grep-dual-table-and-normalize.
         // Raised to 90 to surface the red path in the PR coverage comment
         // for metrics that sit between 80 and 90 (e.g. grep-core branches

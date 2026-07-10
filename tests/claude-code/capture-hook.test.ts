@@ -166,6 +166,18 @@ describe("capture hook — per-directory .hivemind", () => {
     expect(args[2]).toBe("env-org"); // env wins for org
     expect(args[3]).toBe("routed-ws"); // workspace still routes
   });
+
+  it("resolves against process.cwd() when the hook passes an empty cwd", async () => {
+    // Exercises resolveCaptureConfig's `cwd || process.cwd()` fallback. The
+    // repo root has no `.hivemind`, so capture proceeds against the global org.
+    stdinMock.mockResolvedValue({
+      session_id: "sid-1", cwd: "", hook_event_name: "UserPromptSubmit", prompt: "hello",
+    });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    // The skip log (if it fired) prints the resolved cwd, never a bare "?".
+    expect(debugLogMock).not.toHaveBeenCalledWith(expect.stringContaining("cwd=? "));
+  });
 });
 
 describe("capture hook — event-type branches", () => {
