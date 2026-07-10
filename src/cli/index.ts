@@ -33,6 +33,7 @@ import { runFlushMemory } from "../commands/flush-memory.js";
 import { maybeAutoBackfillMemory } from "../skillify/spawn-backfill-memory-worker.js";
 import { confirm, detectPlatforms, allPlatformIds, log, promptLine, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
+import { docsInstallLines } from "../docs/install-hint.js";
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
@@ -394,6 +395,9 @@ async function runInstallAll(args: string[]): Promise<void> {
     log("");
     log("Mining your past sessions for team memory in the background — sign in, then run `hivemind memory flush` to push.");
   }
+
+  log("");
+  for (const line of docsInstallLines()) log(line);
 
   log("");
   log("Done. Restart each assistant to activate hooks.");
