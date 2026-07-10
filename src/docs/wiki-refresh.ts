@@ -29,6 +29,7 @@ import { commitRefresh, readRefreshMeta, releaseClaim, tryClaimTurn } from "./me
 import { gateDocEdit } from "./gate.js";
 import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
 import { parseScope, trunkBranch } from "./branch-scope.js";
+import { sourcePushed } from "./fingerprint.js";
 import {
   appendFilesIndex,
   generateWikiPages,
@@ -88,7 +89,7 @@ export interface WikiRefreshArgs {
 
 export interface WikiRefreshOutcome {
   doc_id: string;
-  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped";
+  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped" | "held";
   reasons?: string[];
 }
 
@@ -306,12 +307,28 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   const outcomes: WikiRefreshOutcome[] = [];
   let failures = 0;
 
+  // Publish gate: on a branch, only pages whose source is already on
+  // origin/<branch> may be written to the SHARED cloud table. A page built from
+  // an unpushed local commit is HELD — never leaked as a doc describing code the
+  // team can't see. (Readers on the branch fall back to main + the staleness
+  // banner until the code is pushed and the next cycle publishes the overlay.)
+  const parsedScope = parseScope(scope);
+  const branchName = parsedScope.kind === "branch" ? parsedScope.branch : null;
+  // A page is publishable to the shared cloud only when its source is already on
+  // origin/<branch>. Checked at the write sites (not for skipped pages) so an
+  // unpushed branch holds exactly the pages it would otherwise publish.
+  const held = (files: string[]): boolean => branchName !== null && !sourcePushed(args.git, files, branchName);
+
   for (const group of groups) {
     const docId = wikiDocId(group.key);
     const page = pages.get(docId);
 
     // New subsystem → fresh page.
     if (!page) {
+      if (held(group.files)) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["source not pushed to origin"] });
+        continue;
+      }
       const res = await regenerate(group);
       if (res === "skipped") {
         outcomes.push({ doc_id: docId, action: "skipped", reasons: ["below min size — no page wanted"] });
@@ -332,6 +349,11 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     // unknown), or its membership drifted. Everything else is skipped free.
     const touched = changed === null || group.files.some((f) => changed.has(f));
     if (!touched && !membershipChanged) continue;
+
+    if (held(group.files)) {
+      outcomes.push({ doc_id: docId, action: "held", reasons: ["source not pushed to origin"] });
+      continue;
+    }
 
     const diff = baseSha === "" ? null : args.git(["diff", `${baseSha}..HEAD`, "--", ...group.files]);
     if (diff === null && !membershipChanged) {

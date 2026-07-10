@@ -23,15 +23,16 @@ import type { GitRunner } from "./branch-scope.js";
 export type SourceFingerprint = Record<string, string>;
 
 /**
- * Blob-sha per file at HEAD via a single `git ls-tree`. Files git can't resolve
- * (deleted, untracked, or no git) are simply absent from the map — so a page
- * whose file was deleted reads as "changed". Returns `{}` when git is
- * unavailable, which downstream treats as "unknown → always stale".
+ * Blob-sha per file at a git `ref` (a commit / branch / `origin/<branch>`) via a
+ * single `git ls-tree`. Files git can't resolve (deleted, untracked, absent at
+ * that ref, or no git) are simply absent from the map — so a page whose file was
+ * deleted or isn't on the ref reads as "changed". Returns `{}` when git or the
+ * ref is unavailable, which downstream treats as "unknown → stale / not there".
  */
-export function computeFingerprint(git: GitRunner, files: readonly string[]): SourceFingerprint {
+export function computeFingerprintAt(git: GitRunner, ref: string, files: readonly string[]): SourceFingerprint {
   const fp: SourceFingerprint = {};
   if (files.length === 0) return fp;
-  const out = git(["ls-tree", "HEAD", "--", ...files]);
+  const out = git(["ls-tree", ref, "--", ...files]);
   if (out === null) return fp;
   for (const line of out.split("\n")) {
     const tab = line.indexOf("\t");
@@ -42,6 +43,25 @@ export function computeFingerprint(git: GitRunner, files: readonly string[]): So
     if (meta.length >= 3 && meta[1] === "blob" && path) fp[path] = meta[2];
   }
   return fp;
+}
+
+/** Blob-sha per file at the committed tree (HEAD) — the freshness baseline. */
+export function computeFingerprint(git: GitRunner, files: readonly string[]): SourceFingerprint {
+  return computeFingerprintAt(git, "HEAD", files);
+}
+
+/**
+ * Is a page's source PUBLISHED — i.e. does every member file have, on
+ * `origin/<branch>`, the exact same blob it has at HEAD? True → the doc can be
+ * shared to the cloud (teammates on the branch have this code). False → the code
+ * is only local (unpushed): the doc must stay private, never published early.
+ * A repo with no `origin/<branch>` yields false (nothing is shared yet).
+ */
+export function sourcePushed(git: GitRunner, files: readonly string[], branch: string): boolean {
+  if (files.length === 0) return true;
+  const head = computeFingerprint(git, files);
+  const origin = computeFingerprintAt(git, `origin/${branch}`, files);
+  return isFresh(head, origin);
 }
 
 /** Serialize a fingerprint for the `source_fp` TEXT column (stable key order). */

@@ -140,6 +140,30 @@ describe("runWikiRefreshCycle", () => {
     expect(acted).not.toContain("wiki/pkg/io");
   });
 
+  it("publish gate: on a branch, a page whose source is NOT on origin is held (no cloud write, no LLM)", async () => {
+    const backend = makeBackend({
+      scope: "b:feat",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    let ran = false;
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "ls-tree" && args[1] === "HEAD") return "100644 blob NEW\tpkg/core/a.ts\n"; // local
+      if (args[0] === "ls-tree" && args[1] === "origin/feat") return null; // never pushed
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    const oneGroup = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts")]);
+    const report = await runWikiRefreshCycle(
+      baseArgs(backend, git, { scope: "b:feat", snap: oneGroup, run: async () => { ran = true; return "## Purpose\nfoo v2."; } }),
+    );
+    expect(report.outcomes).toEqual([{ doc_id: "wiki/pkg/core", action: "held", reasons: ["source not pushed to origin"] }]);
+    expect(ran).toBe(false); // held before any LLM call
+  });
+
   it("HEAD == last_refresh_sha → up-to-date, no lease taken, no LLM", async () => {
     const backend = makeBackend({ meta: { last_refresh_sha: HEAD, claimed_by: null, claimed_at: null, patch_counts: {} } });
     const run = vi.fn(async () => "NO_CHANGE");

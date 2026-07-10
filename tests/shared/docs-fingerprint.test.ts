@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   computeFingerprint,
+  computeFingerprintAt,
+  sourcePushed,
   serializeFingerprint,
   parseFingerprint,
   changedFiles,
@@ -10,6 +12,10 @@ import type { GitRunner } from "../../src/docs/branch-scope.js";
 
 const gitLsTree = (lines: string | null): GitRunner => (args) =>
   args[0] === "ls-tree" ? lines : null;
+
+/** ls-tree runner keyed by ref (args[1]) → its output. */
+const gitByRef = (byRef: Record<string, string | null>): GitRunner => (args) =>
+  args[0] === "ls-tree" ? (byRef[args[1]] ?? null) : null;
 
 describe("computeFingerprint", () => {
   it("parses `<mode> blob <sha>\\t<path>` lines into a file->sha map", () => {
@@ -79,5 +85,37 @@ describe("changedFiles / isFresh", () => {
   it("identical fingerprints are fresh (edit-then-revert / rebase to same bytes)", () => {
     expect(isFresh({ "a.ts": "1", "b.ts": "2" }, { "b.ts": "2", "a.ts": "1" })).toBe(true);
     expect(changedFiles({ "a.ts": "1" }, { "a.ts": "1" })).toEqual([]);
+  });
+});
+
+describe("computeFingerprintAt / sourcePushed (publish gate)", () => {
+  it("reads a fingerprint at an explicit ref (origin/<branch>)", () => {
+    const git = gitByRef({ "origin/feat": "100644 blob abc\ta.ts\n" });
+    expect(computeFingerprintAt(git, "origin/feat", ["a.ts"])).toEqual({ "a.ts": "abc" });
+  });
+
+  it("pushed: HEAD blobs all match origin/<branch>", () => {
+    const git = gitByRef({
+      HEAD: "100644 blob abc\ta.ts\n100644 blob def\tb.ts\n",
+      "origin/feat": "100644 blob abc\ta.ts\n100644 blob def\tb.ts\n",
+    });
+    expect(sourcePushed(git, ["a.ts", "b.ts"], "feat")).toBe(true);
+  });
+
+  it("NOT pushed: a file's blob differs on origin (local-only commit)", () => {
+    const git = gitByRef({
+      HEAD: "100644 blob NEW\ta.ts\n",
+      "origin/feat": "100644 blob OLD\ta.ts\n",
+    });
+    expect(sourcePushed(git, ["a.ts"], "feat")).toBe(false);
+  });
+
+  it("NOT pushed: origin/<branch> doesn't have the file at all (branch never pushed)", () => {
+    const git = gitByRef({ HEAD: "100644 blob abc\ta.ts\n", "origin/feat": null });
+    expect(sourcePushed(git, ["a.ts"], "feat")).toBe(false);
+  });
+
+  it("empty file set is trivially pushed", () => {
+    expect(sourcePushed(gitByRef({}), [], "feat")).toBe(true);
   });
 });
