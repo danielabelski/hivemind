@@ -9,6 +9,8 @@
 import { fileURLToPath } from "node:url";
 import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
 import { docsWikiContextNote } from "../docs/docs-context.js";
+import { docsSuggestNote, markSuggested } from "../docs/docs-suggest.js";
+import { isAutoEnabled } from "../docs/auto-registry.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -326,9 +328,26 @@ async function main(): Promise<void> {
   // Docs wiki note — the agent has no other way to learn the wiki exists.
   // Gated on the same local consent registry as auto sync (no network),
   // and worded on-demand, never wiki-first (see docs-context.ts).
+  const docsProject = deriveProjectKey(input.cwd ?? process.cwd()).key;
   const docsNote = creds?.token
-    ? docsWikiContextNote(creds.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
+    ? docsWikiContextNote(creds.orgId ?? "", docsProject)
     : "";
+
+  // Docs "not set up" suggestion — inverse gate of docsNote. Fires once per
+  // (org, project) for a real indexed repo (graph present) that hasn't opted
+  // into docs, so the agent can surface the feature IF the user asks. Wording
+  // is descriptive, not imperative (anti prompt-injection); see docs-suggest.ts.
+  let suggestNote = "";
+  if (creds?.token && !docsNote && graphLine) {
+    const docsOrg = creds.orgId ?? "";
+    suggestNote = docsSuggestNote({ orgId: docsOrg, project: docsProject, graphPresent: true, isAutoEnabledFn: isAutoEnabled });
+    if (suggestNote) {
+      // Best-effort: a suggestion write must never break SessionStart.
+      try {
+        markSuggested(docsOrg, docsProject, input.cwd ?? process.cwd(), new Date().toISOString());
+      } catch { /* ignore — worst case the note shows again next session */ }
+    }
+  }
 
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay), so a
   // directory that routes elsewhere (or opts out) is never silent.
@@ -349,7 +368,7 @@ async function main(): Promise<void> {
   const withRules = rulesBlock
     ? `${baseContext}\n\n${rulesBlock}`
     : baseContext;
-  const additionalContext = `${withRules}${graphNote}${docsNote}`;
+  const additionalContext = `${withRules}${graphNote}${docsNote}${suggestNote}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
