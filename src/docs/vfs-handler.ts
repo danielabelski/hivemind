@@ -34,6 +34,13 @@ export interface DocsVfsOptions {
   embedQuery?: DocEmbedder;
   /** Project scope for shared org tables (legacy '' rows always included). */
   project?: string;
+  /**
+   * The reader's branch view (`main` or `b:<branch>`), from their git checkout.
+   * When set, a leaf doc resolves with branch precedence: the reader's own
+   * overlay if present, else main, never another branch's overlay. Absent →
+   * legacy behavior (latest version, scope-agnostic).
+   */
+  readerScope?: string;
 }
 
 /** Resolve a `<memory>/docs/` subpath to rendered text from the docs table. */
@@ -101,7 +108,7 @@ export async function handleDocsVfs(
 
   // Leaf: "<source-file>.md" → doc for that file.
   const docId = path.slice(0, -".md".length);
-  const row = await getDocLatest(query, tableName, docId, { projectOrLegacy: opts.project });
+  const row = await getDocLatest(query, tableName, docId, { projectOrLegacy: opts.project, readerScope: opts.readerScope });
   if (!row) return { kind: "not-found", message: `${subpath}: No such file or directory` };
   const header =
     `# ${row.doc_id}\n` +

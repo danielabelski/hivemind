@@ -628,11 +628,50 @@ describe("getDocLatest", () => {
 
   it("optional scope selector confines resolution to one identity (branch overlay safety)", async () => {
     // With branch overlays, the same (project, doc_id) exists at scope 'main'
-    // AND at 'u:<user>|b:<branch>'. A write-resolution read must pin the scope
-    // so editing an overlay never resolves (and then version-bumps) the main row.
+    // AND at 'b:<branch>'. A write-resolution read must pin the scope so editing
+    // an overlay never resolves (and then version-bumps) the main row.
     const { calls, query } = mockQuery([() => []]);
-    await getDocLatest(query, TBL, "X", { project: "p2", scope: "u:alice|b:feat" });
-    expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2' AND scope = 'u:alice|b:feat'`);
+    await getDocLatest(query, TBL, "X", { project: "p2", scope: "b:feat" });
+    expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2' AND scope = 'b:feat'`);
+  });
+
+  it("readerScope selects the scope column and returns the reader's overlay over main", async () => {
+    // Read-side precedence: the SELECT must include `scope` (not filter by it —
+    // all candidates are fetched), and the reader on b:feat gets the overlay
+    // even though main has a higher version.
+    const { calls, query } = mockQuery([() => [
+      fakeRow({ id: "m", doc_id: "X", version: 7, content: "MAIN", scope: "main" }),
+      fakeRow({ id: "o", doc_id: "X", version: 1, content: "OVERLAY", scope: "b:feat" }),
+    ]]);
+    const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
+    expect(calls[0]).toContain(", scope FROM");   // scope column is selected
+    expect(calls[0]).not.toContain("AND scope =");  // NOT filtered — all scopes fetched
+    expect(row?.content).toBe("OVERLAY");
+  });
+
+  it("readerScope falls back to main when the reader's branch has no overlay", async () => {
+    const { query } = mockQuery([() => [
+      fakeRow({ id: "m", doc_id: "X", version: 3, content: "MAIN", scope: "main" }),
+      fakeRow({ id: "o", doc_id: "X", version: 9, content: "OTHER", scope: "b:other" }),
+    ]]);
+    const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
+    expect(row?.content).toBe("MAIN"); // never another branch's overlay
+  });
+
+  it("readerScope degrades to a scope-less read when the column is missing", async () => {
+    // First SELECT (with scope) throws 'column does not exist'; the catch retries
+    // the scope-less SELECT, and every row reads as main.
+    let call = 0;
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      calls.push(sql);
+      if (call++ === 0 && sql.includes(", scope FROM")) throw new Error(`column "scope" does not exist`);
+      return [fakeRow({ doc_id: "X", version: 2, content: "LEGACY" })];
+    });
+    const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
+    expect(row?.content).toBe("LEGACY");
+    expect(calls[0]).toContain(", scope FROM");
+    expect(calls[1]).not.toContain(", scope FROM");
   });
 });
 

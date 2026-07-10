@@ -15,6 +15,7 @@
 
 import { sqlIdent, sqlLike, sqlStr } from "../utils/sql.js";
 import { stableUnionRows } from "./stable-read.js";
+import { pickByScopePrecedence } from "./branch-scope.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -258,7 +259,7 @@ export async function getDocLatest(
   query: QueryFn,
   tableName: string,
   docId: string,
-  opts: { project?: string; projectOrLegacy?: string; scope?: string } = {},
+  opts: { project?: string; projectOrLegacy?: string; scope?: string; readerScope?: string } = {},
 ): Promise<DocRow | null> {
   const safe = sqlIdent(tableName);
   // Read ALL version rows for this doc through the stability gate, then pick
@@ -268,6 +269,28 @@ export async function getDocLatest(
   // the max guarantees we never resolve to a stale version or miss the doc.
   // Optional project selector — see listDocsByIds.
   const projFilter = buildProjectFilter(opts);
+
+  // Read-side branch resolution: when a `readerScope` is given, DON'T filter by
+  // scope in SQL — fetch every scope's rows for this doc_id and let
+  // pickByScopePrecedence choose (reader's overlay > main > foreign: hidden).
+  // The `scope` column is selected only in this mode (generic reads stay
+  // schema-heal-safe); a table missing the column degrades gracefully — the
+  // catch retries without it, so every row reads as `main`.
+  if (opts.readerScope !== undefined) {
+    const base = `SELECT ${SELECT_COLS}, scope FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'${projFilter}`;
+    let raw: Array<Record<string, unknown>>;
+    try {
+      raw = await stableUnionRows(query, base);
+    } catch {
+      raw = await stableUnionRows(
+        query,
+        `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'${projFilter}`,
+      );
+    }
+    const rows = raw.map(normalize).filter((r): r is DocRow => r !== null);
+    return pickByScopePrecedence(rows, opts.readerScope);
+  }
+
   const raw = await stableUnionRows(
     query,
     `SELECT ${SELECT_COLS} FROM "${safe}" WHERE doc_id = '${sqlStr(docId)}'${projFilter}`,
