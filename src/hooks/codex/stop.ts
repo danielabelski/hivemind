@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
@@ -55,8 +56,11 @@ async function main(): Promise<void> {
   const sessionId = input.session_id;
   if (!sessionId) return;
 
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  const base = loadConfig();
+  if (!base) { log("no config"); return; }
+  const dirRes = resolveDirConfig(base, input.cwd ?? process.cwd());
+  if (!dirRes.collect) { log(`capture disabled for cwd=${input.cwd ?? "?"} via ${dirRes.found?.path}`); return; }
+  const config = dirRes.config;
 
   // 1. Capture the stop event (try to extract last assistant message from transcript)
   if (CAPTURE) {

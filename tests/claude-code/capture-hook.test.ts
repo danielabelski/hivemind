@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Direct source-level tests for src/hooks/capture.ts. The module runs
@@ -27,6 +30,7 @@ const ensureSessionOwnerMock = vi.fn();
 const debugLogMock = vi.fn();
 const queryMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
+const apiCtorMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
@@ -48,6 +52,7 @@ vi.mock("../../src/utils/debug.js", () => ({
 }));
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
+    constructor(...args: any[]) { apiCtorMock(...args); }
     query(sql: string) { return queryMock(sql); }
     ensureSessionsTable(t: string) { return ensureSessionsTableMock(t); }
   },
@@ -98,6 +103,7 @@ beforeEach(() => {
   debugLogMock.mockReset();
   queryMock.mockReset().mockResolvedValue([]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
+  apiCtorMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -114,6 +120,51 @@ describe("capture hook — guard", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith("no config");
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("capture hook — per-directory .hivemind", () => {
+  let hmDir: string;
+
+  afterEach(() => {
+    if (hmDir) rmSync(hmDir, { recursive: true, force: true });
+  });
+
+  function withHivemind(body: Record<string, unknown>): void {
+    hmDir = mkdtempSync(join(tmpdir(), "capture-hivemind-"));
+    writeFileSync(join(hmDir, ".hivemind"), JSON.stringify(body));
+    stdinMock.mockResolvedValue({
+      session_id: "sid-1",
+      cwd: hmDir,
+      hook_event_name: "UserPromptSubmit",
+      prompt: "hello",
+    });
+  }
+
+  it("collect:false writes nothing for this directory", async () => {
+    withHivemind({ collect: false });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(apiCtorMock).not.toHaveBeenCalled();
+  });
+
+  it("a routing .hivemind constructs the API against the routed org/workspace", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    // DeeplakeApi(token, apiUrl, orgId, workspaceId, table)
+    const args = apiCtorMock.mock.calls[0];
+    expect(args[2]).toBe("routed-org");
+    expect(args[3]).toBe("routed-ws");
+  });
+
+  it("env HIVEMIND_ORG_ID overrides the routed org (env > file)", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "env-org", orgName: "env-org" });
+    await runHook({ HIVEMIND_ORG_ID: "env-org", HIVEMIND_WORKSPACE_ID: undefined });
+    const args = apiCtorMock.mock.calls[0];
+    expect(args[2]).toBe("env-org"); // env wins for org
+    expect(args[3]).toBe("routed-ws"); // workspace still routes
   });
 });
 

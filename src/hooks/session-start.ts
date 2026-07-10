@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
@@ -195,6 +196,15 @@ async function main(): Promise<void> {
   // CLI write path (`hivemind rules add`).
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false" && entrypointPassesOnlyCliGate();
 
+  // Per-directory `.hivemind`: route this tree's traces to a configured
+  // org/workspace, or opt out entirely (`collect: false`). Resolved once and
+  // reused for the placeholder write below and the disclosure banner. Falls
+  // back to the global identity when no `.hivemind` applies.
+  const sessionCwd = input.cwd ?? process.cwd();
+  const baseConfig = loadConfig();
+  const dirRes = baseConfig ? resolveDirConfig(baseConfig, sessionCwd) : null;
+  const collectHere = captureEnabled && (dirRes?.collect ?? true);
+
   // Auto-pull skills from all org users into ~/.claude/skills/ on every
   // SessionStart. File writes inside runPull are idempotent (skipped
   // when local version is at-or-newer than remote), so re-running each
@@ -209,20 +219,22 @@ async function main(): Promise<void> {
   let rulesBlock = "";
   if (input.session_id && creds?.token) {
     try {
-      const config = loadConfig();
+      const config = dirRes?.config;
       if (config) {
         const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        if (captureEnabled) {
+        if (collectHere) {
           await api.ensureTable();
           await api.ensureSessionsTable(sessionsTable);
-          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId, pluginVersion);
+          await createPlaceholder(api, table, input.session_id, sessionCwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          const reason = process.env.HIVEMIND_CAPTURE === "false"
-            ? "HIVEMIND_CAPTURE=false"
-            : "HIVEMIND_CAPTURE_ONLY_CLI gate";
+          const reason = dirRes && !dirRes.collect
+            ? `.hivemind collect:false (${dirRes.found?.path})`
+            : process.env.HIVEMIND_CAPTURE === "false"
+              ? "HIVEMIND_CAPTURE=false"
+              : "HIVEMIND_CAPTURE_ONLY_CLI gate";
           log(`placeholder + schema ensure skipped (${reason})`);
         }
         // Docs auto sync check — the "every so often" the summary worker has.
@@ -318,8 +330,17 @@ async function main(): Promise<void> {
     ? docsWikiContextNote(creds.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
     : "";
 
+  // Disclose the EFFECTIVE identity (after any `.hivemind` overlay), so a
+  // directory that routes elsewhere (or opts out) is never silent.
+  const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
+    (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
+  const effOrg = routed ? (dirRes!.config.orgName ?? dirRes!.config.orgId) : (creds?.orgName ?? creds?.orgId);
+  const effWs = routed ? dirRes!.config.workspaceId : (creds?.workspaceId ?? "default");
+  const identityLine = dirRes && !dirRes.collect
+    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
+    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
-    ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
+    ? `${resolvedContext}\n\n${identityLine}${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;
   // Append the rules block when there's something to show, then
   // append the graph note (single line, may be empty). The renderer

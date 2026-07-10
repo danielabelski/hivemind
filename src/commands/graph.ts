@@ -559,6 +559,9 @@ export async function runBuildCommand(args: string[]): Promise<void> {
     case "skipped-disabled":
       console.log(`Cloud:         skipped (HIVEMIND_GRAPH_PUSH=0)`);
       break;
+    case "skipped-collect-disabled":
+      console.log(`Cloud:         skipped (.hivemind collect:false for this directory)`);
+      break;
     case "drift":
       console.warn(`Cloud:         DRIFT — commit ${pushOutcome.commitSha.slice(0, 7)} is in cloud with`);
       console.warn(`               sha256=${pushOutcome.cloudSha256.slice(0, 12)}... but local rebuild produced`);

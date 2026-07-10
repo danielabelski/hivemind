@@ -282,6 +282,8 @@ Disable capture entirely:
 HIVEMIND_CAPTURE=false claude
 ```
 
+Disable capture for a specific directory tree (persistent, travels with the repo) — drop a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
+
 Enable debug logging:
 
 ```bash
@@ -322,6 +324,85 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_RECALL_MIN_OVERLAP` | `2`                   | Proactive recall (lexical mode): min distinct prompt keywords a summary must share to be injected. Higher = stricter. |
 | `HIVEMIND_RECALL_TIMEOUT_MS` | `1000`                 | Proactive recall: hard cap on the synchronous search path; on timeout it skips rather than delay the turn. |
 | `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
+
+## Per-directory config (`.hivemind`)
+
+The variables above set **one global identity** for the whole machine. A `.hivemind` file lets a specific directory tree override that — either to **route** its traces to a different org/workspace, or to **opt out** of capture entirely.
+
+Drop a `.hivemind` JSON file at the root of the tree you want to configure:
+
+```json
+{
+  "orgId": "acme-corp",
+  "workspaceId": "client-work",
+  "collect": true
+}
+```
+
+| Field         | Effect                                                                        |
+|---------------|-------------------------------------------------------------------------------|
+| `orgId`       | Route captured traces from this tree to this org.                             |
+| `workspaceId` | Route to this workspace.                                                       |
+| `collect`     | `false` → **never** capture traces from this tree.                            |
+
+Any field may be omitted; omitted fields fall back to your global identity.
+
+**Two common recipes:**
+
+```jsonc
+// route this repo's traces to a client org/workspace
+{ "orgId": "acme-corp", "workspaceId": "client-work" }
+
+// never collect traces from this folder (e.g. a personal or sensitive repo)
+{ "collect": false }
+```
+
+### Committed vs local
+
+Two filenames are recognized, mirroring the `.env` / `.env.local` convention every dev already knows:
+
+| File | Commit it? | For |
+|------|-----------|-----|
+| `.hivemind` | **Yes** — like `.editorconfig` | The repo declaring where *its* traces belong (or that it's off-limits). Teammates who clone inherit it. |
+| `.hivemind.local` | **No** — gitignore it | *Your personal* override or opt-out, not imposed on teammates. Wins over `.hivemind` in the same directory. |
+
+There's nothing to hide: a `.hivemind` can't carry a token (see below), so committing one is safe — it just declares intent. Use `.hivemind.local` only when a choice is yours alone (add it to your repo's `.gitignore`, like `.env.local`).
+
+A copy-ready template lives at [`.hivemind.example`](.hivemind.example) — `cp .hivemind.example .hivemind` and edit. (The `.example` file is inert; Hivemind only reads `.hivemind` and `.hivemind.local`.)
+
+### How it resolves
+
+When a session starts, Hivemind walks **up** from the working directory — `cwd`, its parent, its grandparent, … — and uses the **first** file it finds (a `.hivemind.local` beats a `.hivemind` in the same directory). Nearest wins; ancestors above it are ignored — this is the `.git`/`.gitconfig` model, **not** `.gitignore`-style merging. There is no inheritance: a leaf file that wants both its parent's org and its own workspace must state both.
+
+```
+~/work/.hivemind           { "orgId": "acme-corp" }
+~/work/client/.hivemind    { "workspaceId": "sensitive", "collect": false }
+
+session in ~/work/client/svc/  →  uses client/.hivemind ONLY
+                                  (collect:false wins; the org above is NOT inherited)
+session in ~/work/other/       →  no .hivemind found → global identity
+```
+
+**Precedence** is the conventional `env > file > login`: an explicitly-set `HIVEMIND_ORG_ID` / `HIVEMIND_WORKSPACE_ID` overrides a `.hivemind` routing value (that field is left untouched), which in turn overrides your logged-in default. `collect: false` is a fail-safe opt-out and is always honored.
+
+### Safety: routing is disclosed, not hidden
+
+Because a `.hivemind` travels with a repo, cloning someone's repo could in principle point *your* traces at a different org. Two things keep that safe — without any approval step or ceremony:
+
+- **`.hivemind` never contains a token.** Auth stays in `~/.deeplake/credentials.json`, so a routing override can only ever target orgs your existing login **already** authorizes — the API rejects anything else. It can't leak your traces to a stranger's org; at worst it misfiles them into another of *your own* orgs.
+- **Every session tells you where its traces go.** The session-start banner prints the **effective** org/workspace after any `.hivemind` overlay — e.g. `org: acme-corp (workspace: client-work) · routed by ./.hivemind`, or `capture is disabled for this directory` when you've opted out. So a redirect is never silent; if it's not what you want, delete the file or add `.hivemind.local`.
+
+### Interaction with `org switch` / `workspace switch`
+
+`hivemind org switch` and `hivemind workspace switch` change your **global default** (they write `~/.deeplake/credentials.json`). A `.hivemind` is a **pin on top of that default**:
+
+| Location                     | Where traces go                                            |
+|------------------------------|------------------------------------------------------------|
+| Dir with a routing `.hivemind` | The pinned org/workspace — **unaffected** by `org switch`. |
+| Dir with **no** `.hivemind`  | Follows your current global default (i.e. `org switch`).   |
+| Dir with `collect: false`    | Nothing captured, regardless of the global default.        |
+
+So `org switch` moves everything that *isn't* explicitly pinned; a pin stays put by design (that's the point of routing a client repo to a fixed org). The session-start banner always shows the **effective** identity for your current directory, so a pinned tree never silently surprises you.
 
 ## Semantic search (optional)
 
