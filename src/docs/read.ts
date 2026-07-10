@@ -62,17 +62,24 @@ export interface ListDocsOpts {
 }
 
 /**
- * Project selector SQL. `project` = STRICT (write paths: never touch another
+ * Row selector SQL. `project` = STRICT (write paths: never touch another
  * project's row). `projectOrLegacy` = read paths on shared tables: scope to
  * one project but keep legacy rows (written before stamping, project='')
- * visible everywhere.
+ * visible everywhere. `scope` = the identity dimension (`main` = canonical,
+ * `u:<user>|b:<branch>` = overlay): when set, resolution is confined to that
+ * scope so a write/read never crosses into a sibling branch overlay or main.
  */
-function buildProjectFilter(opts: { project?: string; projectOrLegacy?: string }): string {
-  if (opts.project !== undefined) return ` AND project = '${sqlStr(opts.project)}'`;
-  if (opts.projectOrLegacy !== undefined) {
-    return ` AND (project = '${sqlStr(opts.projectOrLegacy)}' OR project = '')`;
+function buildProjectFilter(opts: { project?: string; projectOrLegacy?: string; scope?: string }): string {
+  const clauses: string[] = [];
+  if (opts.project !== undefined) {
+    clauses.push(`project = '${sqlStr(opts.project)}'`);
+  } else if (opts.projectOrLegacy !== undefined) {
+    clauses.push(`(project = '${sqlStr(opts.projectOrLegacy)}' OR project = '')`);
   }
-  return "";
+  if (opts.scope !== undefined) {
+    clauses.push(`scope = '${sqlStr(opts.scope)}'`);
+  }
+  return clauses.length ? ` AND ${clauses.join(" AND ")}` : "";
 }
 
 const SELECT_COLS =
@@ -216,7 +223,7 @@ export async function listDocsByIds(
   query: QueryFn,
   tableName: string,
   docIds: string[],
-  opts: { project?: string; projectOrLegacy?: string } = {},
+  opts: { project?: string; projectOrLegacy?: string; scope?: string } = {},
 ): Promise<DocRow[]> {
   const ids = [...new Set(docIds.filter((d) => d !== ""))];
   if (ids.length === 0) return [];
@@ -251,7 +258,7 @@ export async function getDocLatest(
   query: QueryFn,
   tableName: string,
   docId: string,
-  opts: { project?: string; projectOrLegacy?: string } = {},
+  opts: { project?: string; projectOrLegacy?: string; scope?: string } = {},
 ): Promise<DocRow | null> {
   const safe = sqlIdent(tableName);
   // Read ALL version rows for this doc through the stability gate, then pick

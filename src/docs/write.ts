@@ -219,7 +219,7 @@ export async function insertDocResilient(
       // EVERY attempt including the last — otherwise a final-attempt timeout
       // whose write landed reports failure and invites a duplicating retry.
       await sleep(backoff[Math.min(attempt, backoff.length - 1)]);
-      const landed = await getDocLatest(query, tableName, input.doc_id, { project: input.project }).catch(() => null);
+      const landed = await getDocLatest(query, tableName, input.doc_id, { project: input.project, scope: input.scope }).catch(() => null);
       if (landed) return { doc_id: landed.doc_id, version: landed.version };
       if (attempt === retries) break;
     }
@@ -311,12 +311,13 @@ export async function editDoc(
   query: QueryFn,
   tableName: string,
   input: EditDocInput,
-  opts: { project?: string } = {},
+  opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
-  // Optional project SELECTOR (distinct from input.project, the value to
-  // write) — in a shared org table an unscoped read can resolve the same
-  // doc_id to another project's row.
-  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project });
+  // Optional project + scope SELECTOR (distinct from input.project, the value
+  // to write) — in a shared org table an unscoped read can resolve the same
+  // doc_id to another project's row, or (with branch overlays) to a sibling
+  // scope's row. Passing scope confines the edit to one identity.
+  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project, scope: opts.scope });
   if (!previous) {
     throw new Error(`Doc not found: ${input.doc_id}`);
   }
@@ -337,11 +338,12 @@ export async function setDoc(
   query: QueryFn,
   tableName: string,
   input: SetDocInput,
-  opts: { project?: string } = {},
+  opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
-  // Project SELECTOR (shared-table safety): without it the bare doc_id can
-  // resolve to another project's row and this write would version-bump THAT.
-  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project });
+  // Project + scope SELECTOR (shared-table safety): without it the bare doc_id
+  // can resolve to another project's row — or a sibling branch overlay — and
+  // this write would version-bump THAT.
+  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project, scope: opts.scope });
   if (!previous) {
     return insertDoc(query, tableName, {
       doc_id: input.doc_id,
@@ -379,7 +381,7 @@ export async function archiveDoc(
   query: QueryFn,
   tableName: string,
   input: { doc_id: string; agent?: string; plugin_version?: string },
-  opts: { project?: string } = {},
+  opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
   return editDoc(query, tableName, {
     doc_id: input.doc_id,

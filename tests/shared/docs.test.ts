@@ -625,6 +625,15 @@ describe("getDocLatest", () => {
     await getDocLatest(query, TBL, "X", { project: "p2" });
     expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2'`);
   });
+
+  it("optional scope selector confines resolution to one identity (branch overlay safety)", async () => {
+    // With branch overlays, the same (project, doc_id) exists at scope 'main'
+    // AND at 'u:<user>|b:<branch>'. A write-resolution read must pin the scope
+    // so editing an overlay never resolves (and then version-bumps) the main row.
+    const { calls, query } = mockQuery([() => []]);
+    await getDocLatest(query, TBL, "X", { project: "p2", scope: "u:alice|b:feat" });
+    expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2' AND scope = 'u:alice|b:feat'`);
+  });
 });
 
 // ── listDocMeta (light index read — no content) ──────────────────────────────
