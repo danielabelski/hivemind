@@ -17,9 +17,10 @@ export function resolveCaptureConfig(cwd: string, log: (msg: string) => void): C
     log("no config");
     return null;
   }
-  const resolved = resolveDirConfig(base, cwd || process.cwd());
+  const effCwd = cwd || process.cwd();
+  const resolved = resolveDirConfig(base, effCwd);
   if (!resolved.collect) {
-    log(`capture disabled for cwd=${cwd || "?"} via ${resolved.found?.path}`);
+    log(`capture disabled for cwd=${effCwd} via ${resolved.found?.path}`);
     return null;
   }
   return resolved.config;

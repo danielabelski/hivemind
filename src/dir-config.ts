@@ -112,12 +112,15 @@ export interface ResolvedDirConfig {
  * env var in via `loadConfig()`, so a locked field simply keeps `base`'s value.)
  * `collect: false` is unaffected by env — it's a fail-safe opt-out.
  *
- * Pure aside from reading `env` (injectable for tests; defaults to process.env).
+ * Tests may inject the two lock vars via `envOverride`; in production the vars
+ * are read as LITERAL `process.env.X` accesses (never an aliased `process.env`)
+ * so the openclaw esbuild `define` stubs them to `undefined` and the ClawHub
+ * env-harvesting scan stays clean — see the note in src/config.ts.
  */
 export function resolveDirConfig(
   base: Config,
   cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
+  envOverride?: { HIVEMIND_ORG_ID?: string; HIVEMIND_WORKSPACE_ID?: string },
 ): ResolvedDirConfig {
   const found = findDirConfig(cwd);
   if (!found) return { config: base, collect: true, found: null };
@@ -125,8 +128,8 @@ export function resolveDirConfig(
   if (found.raw.collect === false) {
     return { config: base, collect: false, found };
   }
-  const orgLocked = !!env.HIVEMIND_ORG_ID;
-  const wsLocked = !!env.HIVEMIND_WORKSPACE_ID;
+  const orgLocked = !!(envOverride ? envOverride.HIVEMIND_ORG_ID : process.env.HIVEMIND_ORG_ID);
+  const wsLocked = !!(envOverride ? envOverride.HIVEMIND_WORKSPACE_ID : process.env.HIVEMIND_WORKSPACE_ID);
   const config: Config = {
     ...base,
     orgId: orgLocked ? base.orgId : (found.raw.orgId ?? base.orgId),

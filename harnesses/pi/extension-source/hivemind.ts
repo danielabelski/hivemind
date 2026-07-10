@@ -123,19 +123,30 @@ function findHivemindDir(startDir: string): PiDirConfig | null {
   }
 }
 
-/** Overlay the nearest `.hivemind` onto `creds` for `cwd`. Returns the (possibly
- *  routed) creds, whether capture is enabled here, and whether it was routed. */
+/** Overlay env + the nearest `.hivemind` onto `creds` for `cwd`, in the
+ *  conventional env > file > login order. Returns the effective creds, whether
+ *  capture is enabled here, and whether a `.hivemind` routed the identity. */
 function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boolean; routed: boolean } {
+  // Env wins over both the file and login (mirrors src/config.ts's
+  // `process.env.HIVEMIND_ORG_ID ?? creds.orgId`). Fold it into the base first
+  // so it holds whether or not a `.hivemind` is present, and so the lock below
+  // reflects an actually-applied value rather than a no-op.
+  const envOrgId = process.env.HIVEMIND_ORG_ID;
+  const envWs = process.env.HIVEMIND_WORKSPACE_ID;
+  const baseOrgId = envOrgId || creds.orgId;
+  const baseOrgName = envOrgId ? (creds.orgName ?? envOrgId) : creds.orgName;
+  const baseWs = envWs || creds.workspaceId;
+  const withEnv: Creds = { ...creds, orgId: baseOrgId, orgName: baseOrgName, workspaceId: baseWs };
+
   const dir = findHivemindDir(cwd || process.cwd());
-  if (!dir) return { creds, collect: true, routed: false };
-  if (dir.collect === false) return { creds, collect: false, routed: false };
-  const orgLocked = !!process.env.HIVEMIND_ORG_ID;
-  const wsLocked = !!process.env.HIVEMIND_WORKSPACE_ID;
-  const orgId = orgLocked ? creds.orgId : (dir.orgId ?? creds.orgId);
-  const orgName = orgLocked ? creds.orgName : (dir.orgName ?? dir.orgId ?? creds.orgName);
-  const workspaceId = wsLocked ? creds.workspaceId : (dir.workspaceId ?? creds.workspaceId);
-  const routed = orgId !== creds.orgId || workspaceId !== creds.workspaceId;
-  return { creds: { ...creds, orgId, orgName, workspaceId }, collect: true, routed };
+  if (!dir) return { creds: withEnv, collect: true, routed: false };
+  if (dir.collect === false) return { creds: withEnv, collect: false, routed: false };
+  // The file may fill only fields NOT pinned by an env var.
+  const orgId = envOrgId ? baseOrgId : (dir.orgId ?? baseOrgId);
+  const orgName = envOrgId ? baseOrgName : (dir.orgName ?? dir.orgId ?? baseOrgName);
+  const workspaceId = envWs ? baseWs : (dir.workspaceId ?? baseWs);
+  const routed = orgId !== baseOrgId || workspaceId !== baseWs; // .hivemind changed it
+  return { creds: { ...withEnv, orgId, orgName, workspaceId }, collect: true, routed };
 }
 
 // Inline copies of decodeJwtPayload + healDriftedOrgToken (the shared helpers
