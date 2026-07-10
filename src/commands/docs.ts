@@ -23,7 +23,7 @@
  * SQL escaping and version-bump logic lives in the docs module.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { getVersion } from "../cli/version.js";
@@ -55,7 +55,7 @@ import { setAuto, findEntry, listEntries } from "../docs/auto-registry.js";
 import { defaultIo, runDocsOnboarding } from "../docs/onboarding.js";
 import { isAutoEnabled } from "../docs/auto-registry.js";
 import { readRefreshMeta } from "../docs/meta.js";
-import { tryGitTopLevel } from "../graph/git-hook-install.js";
+import { tryGitTopLevel, postCommitHookPath, containsOurMarkers } from "../graph/git-hook-install.js";
 import { runWikiRefreshCycle, runLocalWikiRefresh } from "../docs/wiki-refresh.js";
 import { loadSnapshotByCommit } from "../graph/diff.js";
 import { repoDir } from "../graph/snapshot.js";
@@ -119,6 +119,74 @@ function gitHeadOf(cwd: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * True iff a hivemind-managed post-commit hook is installed for `cwd`. The hook
+ * is one of the two refresh triggers; its presence is what upgrades the wiki
+ * from "refreshes on session start" to "refreshes on every commit".
+ */
+function hookInstalledAt(cwd: string): boolean {
+  const p = postCommitHookPath(cwd);
+  if (!p) return false;
+  try {
+    return existsSync(p) && containsOurMarkers(readFileSync(p, "utf8"));
+  } catch {
+    return false; // unreadable hook → treat as absent, never throw on a hint path
+  }
+}
+
+/**
+ * The freshness hint printed after a manual generation command when the user
+ * declines (or can't be asked about) auto refresh. A corpus is only kept up to
+ * date when the auto-registry flag is ON — it gates BOTH refresh triggers (the
+ * post-commit hook AND the SessionStart catch-up tick). The hook adds instant
+ * per-commit refresh on top. With the flag OFF nothing refreshes the corpus at
+ * all, so a freshly-generated corpus silently goes stale — this hint is the
+ * source-level close of that gap. `subject` names what stays fresh, phrased to
+ * open a sentence ("This wiki" / "These docs"), so the message matches the
+ * command that printed it. Returns null when both are wired (no nag).
+ */
+export function wikiFreshnessHint(state: { autoEnabled: boolean; hookInstalled: boolean; subject: string }): string | null {
+  if (state.autoEnabled && state.hookInstalled) return null; // fully wired
+  if (state.autoEnabled) {
+    // Refreshes on session start already; only the per-commit hook is missing.
+    return "Auto refresh is ON (updates on session start). For instant per-commit refresh: hivemind graph init";
+  }
+  // Flag OFF → the corpus will NOT refresh until enabled.
+  const base = `${state.subject} will NOT stay fresh — nothing refreshes it yet. Enable per-session refresh: hivemind docs auto on`;
+  return state.hookInstalled ? base : `${base} (and per-commit refresh: hivemind graph init)`;
+}
+
+/**
+ * After a manual generation command (`docs wiki` / `docs generate`) writes a
+ * corpus, wire freshness. A human is ASKED to turn on auto refresh; on yes we
+ * flip the same per-(org, project) registry flag `docs auto on` sets, so both
+ * the post-commit hook and the SessionStart tick will keep the corpus fresh.
+ * Automation (no TTY) is never blocked on stdin — it only sees the passive
+ * `wikiFreshnessHint`. `subject` names what stays fresh in the prompt
+ * ("this wiki" / "these docs"). No-op when auto is already on.
+ */
+async function offerAutoRefresh(
+  cfg: ReturnType<typeof requireConfig>,
+  project: string,
+  cwd: string,
+  subject: string,
+): Promise<void> {
+  if (isAutoEnabled(cfg.orgId, project)) return;
+  const io = defaultIo();
+  if (io.interactive) {
+    const a = await io.ask(`\nKeep ${subject} fresh automatically on every commit? [y/N] `);
+    if (/^y(es)?$/i.test(a.trim())) {
+      setAuto({ orgId: cfg.orgId, orgName: cfg.orgName, project, path: cwd, auto: true });
+      console.log("Auto refresh ON. For instant per-commit refresh also run: hivemind graph init");
+      return;
+    }
+  }
+  // Capitalize the subject to open the hint sentence ("this wiki" → "This wiki").
+  const sentenceSubject = subject.charAt(0).toUpperCase() + subject.slice(1);
+  const hint = wikiFreshnessHint({ autoEnabled: false, hookInstalled: hookInstalledAt(cwd), subject: sentenceSubject });
+  if (hint) console.log(`\n${hint}`);
 }
 
 function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
@@ -879,6 +947,10 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       if (o.status === "created") console.log(`  created ${o.doc_id} (${o.files} files, ${o.chunks} chunk${o.chunks === 1 ? "" : "s"})`);
       else console.log(`  ${o.status} ${o.doc_id}: ${o.reason ?? ""}`);
     }
+    // Freshness wiring: a just-generated corpus is a still photo unless auto
+    // refresh is on. Offer to enable it (a human gets asked; automation only
+    // sees the passive hint and is never blocked on stdin).
+    await offerAutoRefresh(cfg, project, cwd, "this wiki");
     return;
   }
 
@@ -965,6 +1037,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     for (const o of report.outcomes) {
       if (o.status !== "created") console.log(`  ${o.status} ${o.doc_id}: ${o.reason ?? ""}`);
     }
+    // Same freshness wiring as `docs wiki`: offer to keep these per-file docs
+    // fresh, or fall back to the passive hint under automation.
+    await offerAutoRefresh(cfg, project, cwd, "these docs");
     return;
   }
 
