@@ -463,7 +463,8 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       const subpath = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
       logFn(`docs vfs: ${subpath || "(root)"}`);
       const docsCwd = input.cwd ?? process.cwd();
-      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(docsCwd).key, readerScope: currentScope(defaultGit(docsCwd)) });
+      const docsGit = defaultGit(docsCwd);
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(docsCwd).key, readerScope: currentScope(docsGit), git: docsGit });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);

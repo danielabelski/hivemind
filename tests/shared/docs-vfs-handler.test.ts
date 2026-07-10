@@ -73,6 +73,30 @@ describe("handleDocsVfs", () => {
     expect(calls.some((c) => c.includes("WHERE doc_id = 'src/graph/diff.ts'"))).toBe(true);
   });
 
+  it("prepends a staleness banner when a member file's fingerprint drifted from HEAD", async () => {
+    const { query } = router([], [], [
+      fullRow("src/graph/diff.ts", "# diff\n\nBody.", { source_fp: JSON.stringify({ "src/graph/diff.ts": "oldsha" }) }),
+    ]);
+    const git = (args: string[]) => (args[0] === "ls-tree" ? "100644 blob newsha\tsrc/graph/diff.ts\n" : null);
+    const r = await handleDocsVfs("src/graph/diff.ts.md", query, TBL, { readerScope: "main", git });
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain("This page may be stale");
+      expect(r.body).toContain("src/graph/diff.ts"); // names the changed file
+      expect(r.body).toContain("Body."); // still serves the content
+    }
+  });
+
+  it("no banner when the fingerprint still matches HEAD", async () => {
+    const { query } = router([], [], [
+      fullRow("src/graph/diff.ts", "# diff\n\nBody.", { source_fp: JSON.stringify({ "src/graph/diff.ts": "samesha" }) }),
+    ]);
+    const git = (args: string[]) => (args[0] === "ls-tree" ? "100644 blob samesha\tsrc/graph/diff.ts\n" : null);
+    const r = await handleDocsVfs("src/graph/diff.ts.md", query, TBL, { readerScope: "main", git });
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).not.toContain("may be stale");
+  });
+
   it("returns not-found for a leaf whose doc does not exist", async () => {
     const { query } = router([], [], []);
     const r = await handleDocsVfs("src/graph/nope.ts.md", query, TBL);

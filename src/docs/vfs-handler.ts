@@ -23,6 +23,9 @@ import { listDocMeta, listDocsByIds, getDocLatest, type QueryFn } from "./read.j
 import { buildDocsIndex, dirOf, firstDocLine, type DocMeta } from "./index-render.js";
 import { searchDocs, type SearchOptions } from "../shell/grep-core.js";
 import { sqlLike } from "../utils/sql.js";
+import { computeFingerprint, parseFingerprint, changedFiles } from "./fingerprint.js";
+import { parseFilesIndex, WIKI_DOC_PREFIX } from "./wiki-generate.js";
+import type { GitRunner } from "./branch-scope.js";
 import type { DocEmbedder } from "./embed.js";
 
 export type DocsVfsResult =
@@ -41,6 +44,12 @@ export interface DocsVfsOptions {
    * legacy behavior (latest version, scope-agnostic).
    */
   readerScope?: string;
+  /**
+   * Git runner for the read-time freshness verdict: when present, a leaf doc
+   * whose stored fingerprint differs from HEAD's is served WITH a banner naming
+   * the changed files, so the reader falls back to source and stays correct.
+   */
+  git?: GitRunner;
 }
 
 /** Resolve a `<memory>/docs/` subpath to rendered text from the docs table. */
@@ -110,9 +119,24 @@ export async function handleDocsVfs(
   const docId = path.slice(0, -".md".length);
   const row = await getDocLatest(query, tableName, docId, { projectOrLegacy: opts.project, readerScope: opts.readerScope });
   if (!row) return { kind: "not-found", message: `${subpath}: No such file or directory` };
+
+  // Read-time freshness verdict: compare the page's stored fingerprint to HEAD's
+  // current one. If member files changed since the page was written, serve it WITH
+  // a banner naming them, so the reader confirms against source (on-demand posture).
+  let banner = "";
+  if (opts.git && row.source_fp) {
+    const files = row.doc_id.startsWith(WIKI_DOC_PREFIX) ? parseFilesIndex(row.content) : [row.doc_id];
+    const changed = changedFiles(parseFingerprint(row.source_fp), computeFingerprint(opts.git, files));
+    if (changed.length > 0) {
+      banner =
+        `> [!] This page may be stale — ${changed.length} source file(s) changed since it was written. ` +
+        `Confirm against the source before relying on it: ${changed.join(", ")}\n\n`;
+    }
+  }
+
   const header =
     `# ${row.doc_id}\n` +
     `version: ${row.version}  tier: ${row.tier}  status: ${row.status}  updated: ${row.updated_at}\n` +
     `---\n`;
-  return { kind: "ok", body: header + row.content };
+  return { kind: "ok", body: header + banner + row.content };
 }
