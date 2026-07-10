@@ -83,3 +83,34 @@ export function currentScope(git: GitRunner, trunk?: string): string {
   const trunkName = trunk ?? trunkBranch(git);
   return branch === trunkName ? MAIN_SCOPE : branchScope(branch);
 }
+
+/**
+ * Pick the row a reader on `readerScope` should see, from all candidate rows
+ * for ONE doc_id across scopes. Precedence:
+ *   reader's own branch overlay  >  main  >  (any other branch: ignored)
+ * Within the winning scope, the highest `version` wins.
+ *
+ * This is the read-side isolation guarantee: a reader on `b:feature` sees the
+ * feature overlay if it exists, else falls back to main, and NEVER another
+ * branch's overlay; a reader on `main` sees only `main` rows. Rows missing a
+ * `scope` (legacy / un-stamped) count as `main` — so pre-branch corpora keep
+ * resolving unchanged.
+ */
+export function pickByScopePrecedence<T extends { scope?: string; version: number }>(
+  rows: readonly T[],
+  readerScope: string,
+): T | null {
+  let best: T | null = null;
+  let bestRank = -1;
+  for (const r of rows) {
+    const s = r.scope ?? MAIN_SCOPE;
+    // 2 = the reader's own scope, 1 = main fallback, 0 = a foreign branch.
+    const rank = s === readerScope ? 2 : s === MAIN_SCOPE ? 1 : 0;
+    if (rank === 0) continue; // never surface another branch's overlay
+    if (best === null || rank > bestRank || (rank === bestRank && r.version > best.version)) {
+      best = r;
+      bestRank = rank;
+    }
+  }
+  return best;
+}

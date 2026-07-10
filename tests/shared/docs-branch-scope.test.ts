@@ -6,6 +6,7 @@ import {
   currentBranch,
   trunkBranch,
   currentScope,
+  pickByScopePrecedence,
   type GitRunner,
 } from "../../src/docs/branch-scope.js";
 
@@ -91,5 +92,46 @@ describe("currentScope", () => {
     const git = fakeGit({ "rev-parse --abbrev-ref HEAD": "dev" });
     expect(currentScope(git, "dev")).toBe(MAIN_SCOPE);
     expect(currentScope(git, "main")).toBe("b:dev");
+  });
+});
+
+describe("pickByScopePrecedence", () => {
+  const row = (scope: string | undefined, version: number, tag: string) => ({ scope, version, tag });
+
+  it("prefers the reader's branch overlay over main", () => {
+    const rows = [row("main", 5, "main"), row("b:feat", 2, "overlay")];
+    expect(pickByScopePrecedence(rows, "b:feat")?.tag).toBe("overlay");
+  });
+
+  it("falls back to main when the reader's branch has no overlay", () => {
+    const rows = [row("main", 5, "main"), row("b:other", 9, "other")];
+    expect(pickByScopePrecedence(rows, "b:feat")?.tag).toBe("main");
+  });
+
+  it("never surfaces another branch's overlay to a main reader", () => {
+    const rows = [row("main", 3, "main"), row("b:feat", 99, "overlay")];
+    expect(pickByScopePrecedence(rows, "main")?.tag).toBe("main");
+  });
+
+  it("never surfaces a foreign branch overlay to a different branch reader", () => {
+    const rows = [row("b:alpha", 4, "alpha"), row("b:beta", 7, "beta")];
+    // reader on beta sees beta; reader on gamma sees nothing (no main, no gamma)
+    expect(pickByScopePrecedence(rows, "b:beta")?.tag).toBe("beta");
+    expect(pickByScopePrecedence(rows, "b:gamma")).toBeNull();
+  });
+
+  it("within the winning scope, the highest version wins", () => {
+    const rows = [row("b:feat", 2, "old"), row("b:feat", 4, "new"), row("main", 100, "main")];
+    expect(pickByScopePrecedence(rows, "b:feat")?.tag).toBe("new");
+  });
+
+  it("treats a missing scope as main (legacy rows resolve unchanged)", () => {
+    const rows = [row(undefined, 1, "legacy")];
+    expect(pickByScopePrecedence(rows, "main")?.tag).toBe("legacy");
+    expect(pickByScopePrecedence(rows, "b:feat")?.tag).toBe("legacy"); // falls back to main
+  });
+
+  it("returns null on empty input", () => {
+    expect(pickByScopePrecedence([], "main")).toBeNull();
   });
 });
