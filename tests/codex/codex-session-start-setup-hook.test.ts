@@ -173,9 +173,10 @@ describe("codex session-start-setup hook — centralized autoupdate", () => {
     const opts = autoUpdateMock.mock.calls[0][1];
     expect(opts.agent).toBe("codex");
     // bundleDir must be threaded so the Codex-managed guard can detect a
-    // plugin-directory install and skip the npm self-update there.
-    expect(typeof opts.bundleDir).toBe("string");
-    expect(opts.bundleDir.length).toBeGreaterThan(0);
+    // plugin-directory install and skip the npm self-update there. It is
+    // dirname(fileURLToPath(import.meta.url)) of session-start-setup, so it
+    // ends with hooks/codex — assert the suffix to catch wrong-dir regressions.
+    expect(opts.bundleDir).toMatch(/[\\/]hooks[\\/]codex$/);
   });
 
   it("passes the loaded creds (so the helper can read creds.autoupdate)", async () => {
