@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { commitRefresh, readRefreshMeta, releaseClaim, tryClaimTurn } from "./meta.js";
 import { gateDocEdit } from "./gate.js";
 import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
+import { parseScope, trunkBranch } from "./branch-scope.js";
 import {
   appendFilesIndex,
   generateWikiPages,
@@ -251,15 +252,29 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   const lastSha = claim.meta.last_refresh_sha;
   const patchCounts = { ...claim.meta.patch_counts };
 
-  // The refresh window. No prior sha (first cycle) or an unreachable sha
-  // (history rewritten) → null = "everything is a candidate", logged.
+  // The refresh window base. Normally the stored cursor. But on a BRANCH's
+  // first cycle (empty cursor), seed it from the merge-base with the trunk so
+  // the window is the branch's OWN changes — otherwise every page would be
+  // regenerated as an overlay identical to main (correct but wasteful).
+  let baseSha = lastSha;
+  if (lastSha === "" && parseScope(scope).kind === "branch") {
+    const trunk = trunkBranch(args.git);
+    const mb = (args.git(["merge-base", "HEAD", `origin/${trunk}`]) ?? args.git(["merge-base", "HEAD", trunk]))?.trim();
+    if (mb) {
+      baseSha = mb;
+      log(`branch first cycle — window from merge-base ${mb.slice(0, 8)}..HEAD`);
+    }
+  }
+
+  // The refresh window. No base sha (first cycle on the trunk) or an unreachable
+  // sha (history rewritten) → null = "everything is a candidate", logged.
   let changed: Set<string> | null = null;
-  if (lastSha !== "") {
-    const out = args.git(["diff", "--name-only", `${lastSha}..HEAD`]);
+  if (baseSha !== "") {
+    const out = args.git(["diff", "--name-only", `${baseSha}..HEAD`]);
     if (out !== null) {
       changed = new Set(out.split("\n").map((l) => l.trim()).filter(Boolean));
     } else {
-      log(`diff ${lastSha}..HEAD unavailable — full-candidate cycle`);
+      log(`diff ${baseSha}..HEAD unavailable — full-candidate cycle`);
     }
   } else {
     log("first refresh cycle — full-candidate cycle");
@@ -318,7 +333,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     const touched = changed === null || group.files.some((f) => changed.has(f));
     if (!touched && !membershipChanged) continue;
 
-    const diff = lastSha === "" ? null : args.git(["diff", `${lastSha}..HEAD`, "--", ...group.files]);
+    const diff = baseSha === "" ? null : args.git(["diff", `${baseSha}..HEAD`, "--", ...group.files]);
     if (diff === null && !membershipChanged) {
       // No usable diff to patch from → regenerate rather than guess.
       const res = await regenerate(group);

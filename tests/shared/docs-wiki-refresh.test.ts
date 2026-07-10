@@ -33,14 +33,14 @@ function snap(nodes: GraphNode[]): GraphSnapshot {
  * the modules under test. SELECTs are answered from state; DELETE/INSERT and
  * UPDATE mutate the meta row so lease semantics run for real.
  */
-function makeBackend(opts: { meta?: Record<string, unknown> | null; metaUpdatedAt?: string; pages?: Array<Record<string, unknown>> }) {
+function makeBackend(opts: { meta?: Record<string, unknown> | null; metaUpdatedAt?: string; pages?: Array<Record<string, unknown>>; scope?: string }) {
   const state = {
     meta: opts.meta === undefined ? null : opts.meta,
     metaUpdatedAt: opts.metaUpdatedAt ?? "2026-07-08T00:00:00.000Z",
     pages: opts.pages ?? [],
   };
   const calls: string[] = [];
-  const metaId = docRowId(P, "main", "_meta");
+  const metaId = docRowId(P, opts.scope ?? "main", "_meta");
   const query = vi.fn(async (sql: string) => {
     calls.push(sql);
     const s = sql.trim();
@@ -106,6 +106,38 @@ describe("runWikiRefreshCycle", () => {
     run: async () => "NO_CHANGE", git, owner: "me", now: NOW, sleep: noSleep,
     regenerate: async () => "created",
     ...extra,
+  });
+
+  it("branch first cycle seeds the window from the merge-base with trunk (not full-candidate)", async () => {
+    const backend = makeBackend({
+      scope: "b:feat",
+      meta: { last_refresh_sha: "", claimed_by: null, claimed_at: null, patch_counts: {} }, // fresh branch cursor
+      pages: [
+        pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo."),
+        pageRow("pkg/io", ["pkg/io/b.ts"], "## Purpose\nbar."),
+      ],
+    });
+    const MB = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee";
+    const gitCalls: string[] = [];
+    const git: GitRunner = (args) => {
+      gitCalls.push(args.join(" "));
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "merge-base") return `${MB}\n`;
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n"; // only core changed vs MB
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    const report = await runWikiRefreshCycle(
+      baseArgs(backend, git, { scope: "b:feat", force: true, run: async () => "## Purpose\nfoo v2." }),
+    );
+    // The window is seeded from the merge-base, not treated as full-candidate.
+    expect(gitCalls).toContain("merge-base HEAD origin/main");
+    expect(gitCalls).toContain(`diff --name-only ${MB}..HEAD`);
+    // Only the branch-changed page is a candidate; the untouched page is skipped free.
+    const acted = report.outcomes.map((o) => o.doc_id);
+    expect(acted).toContain("wiki/pkg/core");
+    expect(acted).not.toContain("wiki/pkg/io");
   });
 
   it("HEAD == last_refresh_sha → up-to-date, no lease taken, no LLM", async () => {
