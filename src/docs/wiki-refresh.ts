@@ -31,6 +31,7 @@ import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_C
 import { parseScope, trunkBranch, currentBranch } from "./branch-scope.js";
 import { sourcePushed, workingTreeClean } from "./fingerprint.js";
 import { promoteMergedOverlays } from "./promote.js";
+import { writePrivateDoc, deletePrivateDoc } from "./private-store.js";
 import {
   appendFilesIndex,
   generateWikiPages,
@@ -338,9 +339,14 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   const holdReason = (files: string[]): string | null => {
     if (detached) return "detached HEAD — ambiguous branch identity";
     if (!workingTreeClean(args.git, files)) return "uncommitted changes in member files";
-    if (branchName !== null && !sourcePushed(args.git, files, branchName)) return "source not pushed to origin";
     return null;
   };
+  // A committed-clean page on a branch not yet on origin is PRIVATE: written to
+  // the local store, never the shared cloud, until the source is pushed.
+  const isPrivate = (files: string[]): boolean =>
+    branchName !== null && !sourcePushed(args.git, files, branchName);
+  const stampPrivate = (doc: { doc_id: string; path: string; content: string; source_fp: string; tier: "fast" | "slow" }): void =>
+    writePrivateDoc(args.project, scope, { ...doc, updated_at: nowFn().toISOString() });
 
   for (const group of groups) {
     const docId = wikiDocId(group.key);
@@ -355,6 +361,14 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
         outcomes.push({ doc_id: docId, action: "held", reasons: [hr] });
         continue;
       }
+      // A brand-new subsystem authored on an unpushed branch is held from the
+      // cloud (full regeneration writes to the shared table); it publishes once
+      // the source is pushed. (Private materialization covers UPDATES to existing
+      // pages via the patch path below.)
+      if (isPrivate(group.files)) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["new subsystem on an unpushed branch — publishes on push"] });
+        continue;
+      }
       const res = await regenerate(group);
       if (res === "skipped") {
         outcomes.push({ doc_id: docId, action: "skipped", reasons: ["below min size — no page wanted"] });
@@ -362,7 +376,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       }
       outcomes.push({ doc_id: docId, action: res === "created" ? "generated" : "failed" });
       if (res === "failed") failures++;
-      else patchCounts[docId] = 0;
+      else { patchCounts[docId] = 0; if (branchName) deletePrivateDoc(args.project, scope, docId); }
       continue;
     }
 
@@ -392,11 +406,13 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       continue;
     }
 
+    const priv = isPrivate(group.files);
     const out = await updateWikiPage({
       query: args.query,
       tableName: args.tableName,
       page,
       scope,
+      privateSink: priv ? stampPrivate : undefined,
       pageKey: group.key,
       files: group.files,
       snap: args.snap,
@@ -412,6 +428,11 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       agent: args.agent,
       pluginVersion: args.pluginVersion,
     });
+    // Published to the shared cloud (source is pushed) → drop any stale private
+    // copy from before the push.
+    if (!priv && branchName && (out.action === "patched" || out.action === "mechanics_refreshed")) {
+      deletePrivateDoc(args.project, scope, docId);
+    }
 
     if (out.action === "escalate") {
       const res = await regenerate(group);

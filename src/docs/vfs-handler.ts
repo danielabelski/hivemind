@@ -25,7 +25,8 @@ import { searchDocs, type SearchOptions } from "../shell/grep-core.js";
 import { sqlLike } from "../utils/sql.js";
 import { computeFingerprint, parseFingerprint, changedFiles } from "./fingerprint.js";
 import { parseFilesIndex, WIKI_DOC_PREFIX } from "./wiki-generate.js";
-import type { GitRunner } from "./branch-scope.js";
+import { readPrivateDoc } from "./private-store.js";
+import { MAIN_SCOPE, type GitRunner } from "./branch-scope.js";
 import type { DocEmbedder } from "./embed.js";
 
 export type DocsVfsResult =
@@ -117,26 +118,42 @@ export async function handleDocsVfs(
 
   // Leaf: "<source-file>.md" → doc for that file.
   const docId = path.slice(0, -".md".length);
-  const row = await getDocLatest(query, tableName, docId, { projectOrLegacy: opts.project, readerScope: opts.readerScope });
-  if (!row) return { kind: "not-found", message: `${subpath}: No such file or directory` };
 
-  // Read-time freshness verdict: compare the page's stored fingerprint to HEAD's
-  // current one. If member files changed since the page was written, serve it WITH
-  // a banner naming them, so the reader confirms against source (on-demand posture).
-  let banner = "";
-  if (opts.git && row.source_fp) {
-    const files = row.doc_id.startsWith(WIKI_DOC_PREFIX) ? parseFilesIndex(row.content) : [row.doc_id];
-    const changed = changedFiles(parseFingerprint(row.source_fp), computeFingerprint(opts.git, files));
-    if (changed.length > 0) {
-      banner =
-        `> [!] This page may be stale — ${changed.length} source file(s) changed since it was written. ` +
-        `Confirm against the source before relying on it: ${changed.join(", ")}\n\n`;
+  // Highest precedence: THIS machine's private doc for the current branch (a doc
+  // built from committed-but-unpushed code, held out of the shared cloud). Only
+  // the owner, on that branch, sees it.
+  if (opts.project && opts.readerScope && opts.readerScope !== MAIN_SCOPE) {
+    const priv = readPrivateDoc(opts.project, opts.readerScope, docId);
+    if (priv) {
+      const banner = staleBanner(opts.git, priv.doc_id, priv.content, priv.source_fp);
+      const header = `# ${priv.doc_id}\nvisibility: private (this branch, not pushed)  updated: ${priv.updated_at}\n---\n`;
+      return { kind: "ok", body: header + banner + priv.content };
     }
   }
 
+  const row = await getDocLatest(query, tableName, docId, { projectOrLegacy: opts.project, readerScope: opts.readerScope });
+  if (!row) return { kind: "not-found", message: `${subpath}: No such file or directory` };
+
+  const banner = staleBanner(opts.git, row.doc_id, row.content, row.source_fp);
   const header =
     `# ${row.doc_id}\n` +
     `version: ${row.version}  tier: ${row.tier}  status: ${row.status}  updated: ${row.updated_at}\n` +
     `---\n`;
   return { kind: "ok", body: header + banner + row.content };
+}
+
+/**
+ * Read-time freshness verdict: compare the page's stored fingerprint to HEAD's
+ * current one. If member files changed since it was written, return a banner
+ * naming them so the reader confirms against source (on-demand posture); else "".
+ */
+function staleBanner(git: GitRunner | undefined, docId: string, content: string, source_fp?: string): string {
+  if (!git || !source_fp) return "";
+  const files = docId.startsWith(WIKI_DOC_PREFIX) ? parseFilesIndex(content) : [docId];
+  const changed = changedFiles(parseFingerprint(source_fp), computeFingerprint(git, files));
+  if (changed.length === 0) return "";
+  return (
+    `> [!] This page may be stale — ${changed.length} source file(s) changed since it was written. ` +
+    `Confirm against the source before relying on it: ${changed.join(", ")}\n\n`
+  );
 }

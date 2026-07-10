@@ -116,6 +116,12 @@ export interface WikiUpdateArgs {
    * Default `main` — legacy in-place behavior.
    */
   scope?: string;
+  /**
+   * When set, the patched page is written HERE (the local private store)
+   * instead of the shared cloud table — used for committed-but-unpushed branch
+   * code, which must never reach the cloud. The caller persists it locally.
+   */
+  privateSink?: (doc: { doc_id: string; path: string; content: string; source_fp: string; tier: "fast" | "slow" }) => void;
 }
 
 export type WikiUpdateOutcome =
@@ -188,6 +194,15 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
   try {
     const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
     const source_fp = serializeFingerprint(computeFingerprint(defaultGit(args.repoRoot), args.files));
+
+    // Private branch code: persist locally instead of the shared cloud.
+    if (args.privateSink) {
+      args.privateSink({ doc_id: args.page.doc_id, path: args.page.path, content: newContent, source_fp, tier: args.page.tier });
+      return noChange
+        ? { action: "mechanics_refreshed", version: args.page.version }
+        : { action: "patched", version: args.page.version, changedLines: gate.changedLines };
+    }
+
     const targetScope = args.scope ?? "main";
     const pageScope = args.page.scope ?? "main";
     let res: { version: number };
