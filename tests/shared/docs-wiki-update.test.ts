@@ -138,6 +138,27 @@ describe("updateWikiPage", () => {
     expect(calls.filter((c) => /^UPDATE/i.test(c))).toHaveLength(1);
   });
 
+  it("on a branch, patches a main-based page as a copy-on-write overlay (never UPDATEs main)", async () => {
+    // page resolved to scope 'main' (the base), but we write to 'b:feat'. The
+    // write must CREATE the overlay via upsert (DELETE+INSERT at the overlay id),
+    // and must not UPDATE the main row.
+    const p = freshPage("## Purpose\nfoo returns 0.");
+    const { calls, query } = mockQuery([]);
+    const out = await updateWikiPage({
+      query, tableName: "hivemind_docs", page: p, scope: "b:feat", pageKey: "pkg/core",
+      files: FILES, snap: SNAP(), repoRoot: dir, diff: "- return 0\n+ return 1",
+      run: async () => "## Purpose\nfoo returns 1.", escalation: noEscalation,
+    });
+    expect(out.action).toBe("patched");
+    expect(calls.some((c) => /^UPDATE/i.test(c))).toBe(false); // main untouched
+    const insert = calls.find((c) => /^INSERT/i.test(c))!;
+    expect(insert).toContain("'p|b:feat|wiki/pkg/core'"); // overlay row id
+    expect(insert).toContain("foo returns 1.");
+    const del = calls.find((c) => /^DELETE/i.test(c))!;
+    expect(del).toContain("scope = 'b:feat'");   // delete confined to the overlay scope
+    expect(del).not.toContain("scope = 'main'"); // main row is safe
+  });
+
   it("strips a chatty preamble before the first heading — caught live in the tick e2e", async () => {
     const p = freshPage("## Purpose\nfoo returns 0.");
     const { calls, query } = mockQuery([[rowFor(p)]]);

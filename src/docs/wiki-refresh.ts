@@ -280,7 +280,10 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
 
   const groups = selectWikiGroups(args.snap);
   const pages = new Map<string, DocRow>();
-  for (const d of await listDocs(args.query, args.tableName, { project: args.project, status: "active", limit: 100000 })) {
+  // Read the branch's VIEW: on a feature branch `readerScope` resolves each page
+  // to its own overlay where one exists, and to main as the base everywhere
+  // else — so a first patch on the branch copies-on-write from main.
+  for (const d of await listDocs(args.query, args.tableName, { project: args.project, status: "active", limit: 100000, readerScope: scope })) {
     if (d.doc_id.startsWith(WIKI_DOC_PREFIX)) pages.set(d.doc_id, d);
   }
 
@@ -329,6 +332,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       query: args.query,
       tableName: args.tableName,
       page,
+      scope,
       pageKey: group.key,
       files: group.files,
       snap: args.snap,

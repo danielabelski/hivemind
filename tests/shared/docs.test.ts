@@ -514,6 +514,26 @@ describe("listDocs", () => {
     expect(rows.map(r => r.doc_id).sort()).toEqual(["A", "B"]);
   });
 
+  it("readerScope resolves each doc to the reader's overlay, else main (branch view)", async () => {
+    const { calls, query } = mockQuery([
+      () => [
+        // page A: main + a b:feat overlay -> reader on b:feat sees the overlay
+        fakeRow({ id: "am", doc_id: "A", version: 9, content: "A main", scope: "main" }),
+        fakeRow({ id: "ao", doc_id: "A", version: 1, content: "A overlay", scope: "b:feat" }),
+        // page B: only main -> falls back to main
+        fakeRow({ id: "bm", doc_id: "B", version: 1, content: "B main", scope: "main" }),
+        // page C: only a FOREIGN branch overlay -> hidden (no row surfaces)
+        fakeRow({ id: "co", doc_id: "C", version: 1, content: "C other", scope: "b:other" }),
+      ],
+    ]);
+    const rows = await listDocs(query, TBL, { readerScope: "b:feat" });
+    const byId = new Map(rows.map(r => [r.doc_id, r.content]));
+    expect(byId.get("A")).toBe("A overlay");
+    expect(byId.get("B")).toBe("B main");
+    expect(byId.has("C")).toBe(false); // foreign overlay never surfaces
+    expect(calls[0]).toContain(", scope FROM"); // scope column selected in this mode
+  });
+
   it("union order cannot resurrect a stale version: v1 seen FIRST, v2 still wins", async () => {
     // stableUnionRows returns first-seen order across re-reads — the SQL
     // ORDER BY does not survive it. The latest pick must be by comparison.
