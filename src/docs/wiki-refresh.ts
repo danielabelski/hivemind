@@ -308,6 +308,12 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   const regenerate = args.regenerate ?? defaultRegenerate(args);
   const outcomes: WikiRefreshOutcome[] = [];
   let failures = 0;
+  // Pages written PRIVATELY (unpushed) have pending "publish on push" work. A
+  // push does NOT move HEAD, so if we advanced the cursor past them the next
+  // cycle would short-circuit as up-to-date and never publish them. Counting
+  // them keeps the cursor behind until they are pushed (then published). (Dirty/
+  // detached holds don't need this: the commit that cleans them moves HEAD.)
+  let pendingPublish = 0;
 
   // Publish gate: on a branch, only pages whose source is already on
   // origin/<branch> may be written to the SHARED cloud table. A page built from
@@ -367,6 +373,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       // pages via the patch path below.)
       if (isPrivate(group.files)) {
         outcomes.push({ doc_id: docId, action: "held", reasons: ["new subsystem on an unpushed branch — publishes on push"] });
+        pendingPublish++;
         continue;
       }
       const res = await regenerate(group);
@@ -428,9 +435,11 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       agent: args.agent,
       pluginVersion: args.pluginVersion,
     });
-    // Published to the shared cloud (source is pushed) → drop any stale private
-    // copy from before the push.
-    if (!priv && branchName && (out.action === "patched" || out.action === "mechanics_refreshed")) {
+    if (priv) {
+      // Written to the local private store — pending publish once pushed.
+      pendingPublish++;
+    } else if (branchName) {
+      // On the cloud (source pushed) → any pre-push private copy is now obsolete.
       deletePrivateDoc(args.project, scope, docId);
     }
 
@@ -450,10 +459,13 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     }
   }
 
-  // Commit point: the sha advances ONLY on a fully clean cycle. Failures leave
-  // it untouched so the next turn redoes the window (idempotent by design).
-  if (failures > 0) {
-    log(`${failures} page(s) failed — sha NOT advanced, next turn redoes the window`);
+  // Commit point: the sha advances ONLY on a fully clean cycle with nothing left
+  // to publish. Failures OR pending-private pages leave it untouched so the next
+  // turn redoes the window (idempotent by design) — critically, so a page that
+  // was private this cycle gets published once its source is pushed (the push
+  // doesn't move HEAD, so an advanced cursor would strand it forever).
+  if (failures > 0 || pendingPublish > 0) {
+    log(`${failures} failed, ${pendingPublish} pending publish — sha NOT advanced, next turn redoes the window`);
     // Free the lease so the retry does not have to wait out the 30-min TTL;
     // the untouched sha makes the redo idempotent.
     await releaseClaim(args.query, args.tableName, args.project, scope, {

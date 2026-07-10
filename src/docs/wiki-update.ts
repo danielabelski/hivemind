@@ -192,10 +192,11 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
   }
 
   try {
-    const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
     const source_fp = serializeFingerprint(computeFingerprint(defaultGit(args.repoRoot), args.files));
 
-    // Private branch code: persist locally instead of the shared cloud.
+    // Private branch code: persist locally instead of the shared cloud — and do
+    // NOT embed it (the embedder may be a remote service; private branch docs
+    // must never leave this machine).
     if (args.privateSink) {
       args.privateSink({ doc_id: args.page.doc_id, path: args.page.path, content: newContent, source_fp, tier: args.page.tier });
       return noChange
@@ -203,6 +204,7 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
         : { action: "patched", version: args.page.version, changedLines: gate.changedLines };
     }
 
+    const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
     const targetScope = args.scope ?? "main";
     const pageScope = args.page.scope ?? "main";
     let res: { version: number };

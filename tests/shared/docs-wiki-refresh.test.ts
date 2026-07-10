@@ -173,6 +173,10 @@ describe("runWikiRefreshCycle", () => {
       // The private doc landed in the local store for (project, branch).
       const priv = readPrivateDoc(P, "b:feat", "wiki/pkg/core");
       expect(priv?.content).toContain("foo v2 (private)");
+      // Cursor must NOT advance while a page is pending publish — else after push
+      // (HEAD unchanged) the next cycle short-circuits and never publishes it.
+      expect(report.status).toBe("incomplete");
+      expect((backend.state.meta as { last_refresh_sha: string }).last_refresh_sha).toBe(PREV);
     } finally {
       delete process.env.HIVEMIND_DOCS_PRIVATE_DIR;
       rmSync(privDir, { recursive: true, force: true });

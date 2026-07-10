@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -56,10 +56,17 @@ describe("private-store", () => {
 
   it("a corrupt store file degrades to empty, never throws", () => {
     writePrivateDoc("p", "b:feat", doc());
-    const file = join(dir, "p__b_feat.json");
-    expect(existsSync(file)).toBe(true);
-    require("node:fs").writeFileSync(file, "{ not json");
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    writeFileSync(join(dir, files[0]), "{ not json");
     expect(readPrivateDoc("p", "b:feat", "wiki/pkg/core")).toBeNull();
     expect(listPrivateDocs("p", "b:feat")).toEqual([]);
+  });
+
+  it("distinct scopes with slug-colliding names do NOT share a file (injective)", () => {
+    writePrivateDoc("p", "b:feat/x", doc({ content: "SLASH" }));
+    writePrivateDoc("p", "b:feat_x", doc({ content: "UNDERSCORE" }));
+    expect(readPrivateDoc("p", "b:feat/x", "wiki/pkg/core")?.content).toBe("SLASH");
+    expect(readPrivateDoc("p", "b:feat_x", "wiki/pkg/core")?.content).toBe("UNDERSCORE");
   });
 });
