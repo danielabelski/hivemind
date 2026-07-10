@@ -183,6 +183,30 @@ describe("runWikiRefreshCycle", () => {
     }
   });
 
+  it("private page with no usable diff is HELD, never regenerated to the cloud (codex r3 leak)", async () => {
+    const backend = makeBackend({
+      scope: "b:feat",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    const regenerate = vi.fn(async () => "created" as const); // the CLOUD write seam
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return ""; // clean
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "diff") return null; // per-group diff unavailable → would regenerate
+      if (args[0] === "ls-tree" && args[1] === "HEAD") return "100644 blob NEW\tpkg/core/a.ts\n";
+      if (args[0] === "ls-tree" && args[1] === "origin/feat") return null; // unpushed
+      return null;
+    };
+    const oneGroup = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts")]);
+    const report = await runWikiRefreshCycle(baseArgs(backend, git, { scope: "b:feat", snap: oneGroup, regenerate, run: async () => "x" }));
+    expect(regenerate).not.toHaveBeenCalled(); // NEVER regenerate a private page to cloud
+    expect(report.outcomes[0].action).toBe("held");
+    expect(report.status).toBe("incomplete"); // pending publish → cursor not advanced
+  });
+
   it("dirty working tree is held (never documents uncommitted bytes)", async () => {
     const backend = makeBackend({
       scope: "b:feat",

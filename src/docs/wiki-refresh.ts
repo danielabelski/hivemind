@@ -403,9 +403,20 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       continue;
     }
 
+    // Whether this page's source is unpushed (→ private, cloud writes forbidden).
+    // Computed BEFORE the regeneration branches so they never leak private
+    // content to the shared cloud via `regenerate()` → generateWikiPages/upsertDoc.
+    const priv = isPrivate(group.files);
+
     const diff = baseSha === "" ? null : args.git(["diff", `${baseSha}..HEAD`, "--", ...group.files]);
     if (diff === null && !membershipChanged) {
-      // No usable diff to patch from → regenerate rather than guess.
+      // No usable diff to patch from → normally regenerate. But a private page
+      // must NOT be regenerated to the cloud; hold it until pushed.
+      if (priv) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["private page needs regeneration — publishes on push"] });
+        pendingPublish++;
+        continue;
+      }
       const res = await regenerate(group);
       outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: ["no usable diff"] });
       if (res === "failed") failures++;
@@ -413,7 +424,6 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       continue;
     }
 
-    const priv = isPrivate(group.files);
     const out = await updateWikiPage({
       query: args.query,
       tableName: args.tableName,
@@ -444,10 +454,18 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     }
 
     if (out.action === "escalate") {
-      const res = await regenerate(group);
-      outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: out.reasons });
-      if (res === "failed") failures++;
-      else patchCounts[docId] = 0;
+      // Over-budget patch → normally full regeneration (which escalate did NOT
+      // write). A private page can't regenerate to the cloud, so it is held and
+      // stays pending (already counted above) until pushed — then it regenerates
+      // to the cloud cleanly.
+      if (priv) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["private page over patch budget — regenerates on push"] });
+      } else {
+        const res = await regenerate(group);
+        outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: out.reasons });
+        if (res === "failed") failures++;
+        else patchCounts[docId] = 0;
+      }
     } else if (out.action === "failed") {
       outcomes.push({ doc_id: docId, action: "failed", reasons: [out.reason] });
       failures++;
