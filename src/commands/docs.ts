@@ -62,6 +62,8 @@ import { repoDir } from "../graph/snapshot.js";
 import { execFileSync } from "node:child_process";
 import { hostname, userInfo } from "node:os";
 import type { GitRunner } from "../docs/candidates.js";
+import { defaultGit } from "../docs/candidates.js";
+import { currentScope } from "../docs/branch-scope.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeDocEmbedder } from "../docs/embed.js";
 import { backfillDocEmbeddings } from "../docs/backfill.js";
@@ -668,6 +670,10 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
     const report = await runWikiRefreshCycle({
       query, tableName, snap, repoRoot: cwd, project,
+      // Branch identity: on the trunk this is `main` (canonical corpus); on a
+      // feature branch it is `b:<branch>`, so the refresh reads/writes/leases
+      // its own overlay and never touches main.
+      scope: currentScope(git),
       run: makeHostRunPrompt(), runPage: makeHostPageRunPrompt(), git,
       owner: `${userInfo().username}@${hostname()}:${process.pid}`,
       force,
@@ -858,6 +864,9 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     if (!process.env.HIVEMIND_QUERY_TIMEOUT_MS) process.env.HIVEMIND_QUERY_TIMEOUT_MS = "30000";
     const report = await generateWikiPages({
       query, tableName, snap, repoRoot: cwd, project,
+      // Branch identity for the written rows: `main` on the trunk, `b:<branch>`
+      // on a feature branch (a branch-scoped overlay, invisible on main).
+      scope: currentScope(defaultGit(cwd)),
       include, exclude, existing, force, limit, concurrency,
       run: makeHostRunPrompt(),
       runPage: makeHostPageRunPrompt(),
