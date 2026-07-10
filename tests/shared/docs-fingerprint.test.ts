@@ -3,6 +3,7 @@ import {
   computeFingerprint,
   computeFingerprintAt,
   sourcePushed,
+  workingTreeClean,
   serializeFingerprint,
   parseFingerprint,
   changedFiles,
@@ -117,5 +118,28 @@ describe("computeFingerprintAt / sourcePushed (publish gate)", () => {
 
   it("empty file set is trivially pushed", () => {
     expect(sourcePushed(gitByRef({}), [], "feat")).toBe(true);
+  });
+});
+
+describe("workingTreeClean", () => {
+  const gitStatus = (out: string | null): GitRunner => (args) =>
+    args[0] === "status" ? out : null;
+
+  it("clean when `git status --porcelain` is empty", () => {
+    expect(workingTreeClean(gitStatus(""), ["a.ts"])).toBe(true);
+  });
+  it("dirty when a member file is modified", () => {
+    expect(workingTreeClean(gitStatus(" M a.ts\n"), ["a.ts"])).toBe(false);
+  });
+  it("dirty when a member file is untracked (?? — the leak codex flagged)", () => {
+    expect(workingTreeClean(gitStatus("?? a.ts\n"), ["a.ts"])).toBe(false);
+  });
+  it("empty file set is clean without a git call", () => {
+    let called = false;
+    expect(workingTreeClean(() => { called = true; return "x"; }, [])).toBe(true);
+    expect(called).toBe(false);
+  });
+  it("no git (null) → clean (non-git repo has no committed notion)", () => {
+    expect(workingTreeClean(gitStatus(null), ["a.ts"])).toBe(true);
   });
 });

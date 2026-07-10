@@ -28,8 +28,8 @@ import { join } from "node:path";
 import { commitRefresh, readRefreshMeta, releaseClaim, tryClaimTurn } from "./meta.js";
 import { gateDocEdit } from "./gate.js";
 import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
-import { parseScope, trunkBranch } from "./branch-scope.js";
-import { sourcePushed } from "./fingerprint.js";
+import { parseScope, trunkBranch, currentBranch } from "./branch-scope.js";
+import { sourcePushed, workingTreeClean } from "./fingerprint.js";
 import { promoteMergedOverlays } from "./promote.js";
 import {
   appendFilesIndex,
@@ -321,15 +321,26 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   // regenerate. Promoted pages are then skipped by the loop below.
   const promotedIds = new Set<string>();
   if (branchName === null) {
-    for (const p of await promoteMergedOverlays(args.query, args.tableName, args.project, args.git, { agent: args.agent, pluginVersion: args.pluginVersion })) {
+    const groupFiles = new Map(groups.map((g) => [wikiDocId(g.key), g.files]));
+    for (const p of await promoteMergedOverlays(args.query, args.tableName, args.project, args.git, groupFiles, { agent: args.agent, pluginVersion: args.pluginVersion })) {
       promotedIds.add(p.doc_id);
       outcomes.push({ doc_id: p.doc_id, action: "promoted", reasons: [`from ${p.fromScope}`] });
     }
   }
-  // A page is publishable to the shared cloud only when its source is already on
-  // origin/<branch>. Checked at the write sites (not for skipped pages) so an
-  // unpushed branch holds exactly the pages it would otherwise publish.
-  const held = (files: string[]): boolean => branchName !== null && !sourcePushed(args.git, files, branchName);
+  // A page may be written to the shared cloud only when it is committed-clean
+  // (content == committed HEAD, so it never documents uncommitted bytes) AND —
+  // on a branch — its source is already on origin/<branch>. Checked at the write
+  // sites (not for skipped pages). Returns the hold reason, or null if writable.
+  // Detached HEAD resolves to `main` scope but has no branch identity — writing
+  // a detached commit's docs to the canonical corpus would bypass the branch
+  // gate, so hold everything until on a real branch.
+  const detached = branchName === null && currentBranch(args.git) === null;
+  const holdReason = (files: string[]): string | null => {
+    if (detached) return "detached HEAD — ambiguous branch identity";
+    if (!workingTreeClean(args.git, files)) return "uncommitted changes in member files";
+    if (branchName !== null && !sourcePushed(args.git, files, branchName)) return "source not pushed to origin";
+    return null;
+  };
 
   for (const group of groups) {
     const docId = wikiDocId(group.key);
@@ -339,8 +350,9 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
 
     // New subsystem → fresh page.
     if (!page) {
-      if (held(group.files)) {
-        outcomes.push({ doc_id: docId, action: "held", reasons: ["source not pushed to origin"] });
+      const hr = holdReason(group.files);
+      if (hr) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: [hr] });
         continue;
       }
       const res = await regenerate(group);
@@ -364,8 +376,9 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     const touched = changed === null || group.files.some((f) => changed.has(f));
     if (!touched && !membershipChanged) continue;
 
-    if (held(group.files)) {
-      outcomes.push({ doc_id: docId, action: "held", reasons: ["source not pushed to origin"] });
+    const hr = holdReason(group.files);
+    if (hr) {
+      outcomes.push({ doc_id: docId, action: "held", reasons: [hr] });
       continue;
     }
 

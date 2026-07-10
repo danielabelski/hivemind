@@ -51,6 +51,22 @@ export function computeFingerprint(git: GitRunner, files: readonly string[]): So
 }
 
 /**
+ * True iff every member file is committed-clean — working tree == HEAD, with no
+ * modified or untracked bytes among them (`git status --porcelain -- <files>`
+ * is empty). Doc content is read from the WORKING TREE, while the fingerprint
+ * and publish gate reason about committed HEAD; publishing is only consistent
+ * when the two agree. A dirty or untracked member file means the page would
+ * document uncommitted bytes stamped as committed HEAD — so it must be held.
+ * No git (null) → true: a non-git repo has no notion of "committed".
+ */
+export function workingTreeClean(git: GitRunner, files: readonly string[]): boolean {
+  if (files.length === 0) return true;
+  const out = git(["status", "--porcelain", "--", ...files]);
+  if (out === null) return true;
+  return out.trim() === "";
+}
+
+/**
  * Is a page's source PUBLISHED — i.e. does every member file have, on
  * `origin/<branch>`, the exact same blob it has at HEAD? True → the doc can be
  * shared to the cloud (teammates on the branch have this code). False → the code

@@ -45,15 +45,23 @@ export interface Promotion {
 
 /**
  * Decide which branch overlays can be promoted to main. An overlay qualifies iff
- * its `source_fp` equals main's current fingerprint (`git ls-tree HEAD`) for the
- * page's files. Only wiki pages (files come from the `## Files` index) are
- * considered. Pure — all git access is the injected runner.
+ * its `source_fp` equals main's current fingerprint for the page's CURRENT group
+ * membership (`groupFiles`, from the live snapshot — NOT the possibly-stale
+ * `## Files` index of a stored page). This is what makes promotion safe under a
+ * membership change: if the merge added/removed a member, the current
+ * fingerprint won't match the overlay's, so it is not promoted and the normal
+ * refresh regenerates it. A page whose group no longer exists is skipped. Pure —
+ * all git access is the injected runner.
  */
-export function planPromotions(rows: readonly PromoteRow[], git: GitRunner): Promotion[] {
+export function planPromotions(
+  rows: readonly PromoteRow[],
+  git: GitRunner,
+  groupFiles: ReadonlyMap<string, string[]>,
+): Promotion[] {
   // Group rows per doc_id into { main, overlays }.
   const byDoc = new Map<string, { main?: PromoteRow; overlays: PromoteRow[] }>();
   for (const r of rows) {
-    if (!r.doc_id.startsWith(WIKI_DOC_PREFIX)) continue; // fingerprint files come from ## Files
+    if (!r.doc_id.startsWith(WIKI_DOC_PREFIX)) continue;
     const g = byDoc.get(r.doc_id) ?? { overlays: [] };
     if (parseScope(r.scope).kind === "branch") g.overlays.push(r);
     else g.main = r;
@@ -63,19 +71,28 @@ export function planPromotions(rows: readonly PromoteRow[], git: GitRunner): Pro
   const out: Promotion[] = [];
   for (const [doc_id, g] of byDoc) {
     if (g.overlays.length === 0) continue;
-    // Files from whichever page we have (main preferred; else any overlay).
-    const files = parseFilesIndex((g.main ?? g.overlays[0]).content);
-    if (files.length === 0) continue;
+    const files = groupFiles.get(doc_id);
+    if (!files || files.length === 0) continue; // group gone / empty → let refresh handle it
     const mainFp = computeFingerprint(git, files);
     if (Object.keys(mainFp).length === 0) continue; // no git signal → don't promote
     const mainFpStr = serializeFingerprint(mainFp);
     for (const ov of g.overlays) {
+      // The overlay must ALSO cover exactly the current membership (its ## Files
+      // == the group's files) — else it documents a stale file set.
+      if (!sameFileSet(parseFilesIndex(ov.content), files)) continue;
       if (isFresh(parseFingerprint(ov.source_fp), mainFp)) {
         out.push({ doc_id, fromScope: ov.scope, path: ov.path, content: ov.content, tier: ov.tier, mainFp: mainFpStr });
       }
     }
   }
   return out;
+}
+
+/** Order-independent equality of two file lists. */
+function sameFileSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((f) => s.has(f));
 }
 
 export interface PromoteOutcome {
@@ -94,6 +111,7 @@ export async function promoteMergedOverlays(
   tableName: string,
   project: string,
   git: GitRunner,
+  groupFiles: ReadonlyMap<string, string[]>,
   opts: { agent?: string; pluginVersion?: string } = {},
 ): Promise<PromoteOutcome[]> {
   const safe = sqlIdent(tableName);
@@ -112,7 +130,7 @@ export async function promoteMergedOverlays(
   }));
 
   const outcomes: PromoteOutcome[] = [];
-  for (const p of planPromotions(rows, git)) {
+  for (const p of planPromotions(rows, git, groupFiles)) {
     try {
       await upsertDoc(query, tableName, {
         doc_id: p.doc_id,
