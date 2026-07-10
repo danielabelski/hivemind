@@ -65,7 +65,7 @@ async function main(): Promise<void> {
   // can stall for tens of seconds against a slow/unreachable backend, and
   // autoUpdate has no dependency on table state. Run it first so the user
   // sees the upgrade notice promptly even when the API is down.
-  await autoUpdate(creds, { agent: "codex" });
+  await autoUpdate(creds, { agent: "codex", bundleDir: __bundleDir });
 
   // Table setup + sync — always sync, only skip placeholder when capture disabled
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
