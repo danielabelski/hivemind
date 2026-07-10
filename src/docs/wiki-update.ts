@@ -25,6 +25,8 @@
 import { gateDocEdit } from "./gate.js";
 import { unwrapModelOutput } from "./refresh-llm.js";
 import { editDoc, upsertDoc } from "./write.js";
+import { computeFingerprint, serializeFingerprint } from "./fingerprint.js";
+import { defaultGit } from "./candidates.js";
 import { appendFilesIndex, collectWikiAnchors, stripFilesIndex, type RunPromptFn } from "./wiki-generate.js";
 import type { DocEmbedder } from "./embed.js";
 import type { DocRow, QueryFn } from "./read.js";
@@ -185,6 +187,7 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
 
   try {
     const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
+    const source_fp = serializeFingerprint(computeFingerprint(defaultGit(args.repoRoot), args.files));
     const targetScope = args.scope ?? "main";
     const pageScope = args.page.scope ?? "main";
     let res: { version: number };
@@ -198,6 +201,7 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
           doc_id: args.page.doc_id,
           content: newContent,
           anchors: newAnchors,
+          source_fp,
           agent: args.agent ?? "docs-wiki-update",
           plugin_version: args.pluginVersion,
           content_embedding,
@@ -216,6 +220,7 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
         tier: args.page.tier,
         project: args.page.project,
         scope: targetScope,
+        source_fp,
         agent: args.agent ?? "docs-wiki-update",
         plugin_version: args.pluginVersion,
         content_embedding,

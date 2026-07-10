@@ -204,6 +204,11 @@ export const DOCS_COLUMNS: readonly ColumnDef[] = Object.freeze([
   // (written only by the elected refresh turn); `u:<user>|b:<branch>` =
   // a personal branch overlay (v2, opt-in). Reads default to `main`.
   { name: "scope",          sql: "TEXT NOT NULL DEFAULT 'main'" },
+  // Per-page source fingerprint: JSON `{file: git-blob-sha}` the page was
+  // generated from. Drives freshness (stale iff it differs from HEAD's), the
+  // overlay-divergence decision, the origin publish gate, and merge promotion.
+  // Read only where needed (scoped reads) so generic reads stay heal-safe.
+  { name: "source_fp",      sql: "TEXT NOT NULL DEFAULT '{}'" },
   { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
   { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },

@@ -31,6 +31,8 @@ import { buildAnchor } from "./anchors.js";
 import { selectTargets } from "./generate.js";
 import { runPool } from "./pool.js";
 import { upsertDoc } from "./write.js";
+import { computeFingerprint, serializeFingerprint } from "./fingerprint.js";
+import { defaultGit } from "./candidates.js";
 import { groupFilesBySubsystem, type WikiGroup } from "./wiki-groups.js";
 import type { DocEmbedder } from "./embed.js";
 import type { DocAnchor, QueryFn } from "./read.js";
@@ -401,6 +403,7 @@ export async function generateWikiPages(args: WikiGenArgs): Promise<WikiReport> 
 
     try {
       const content_embedding = args.embed ? (await args.embed(content)) ?? undefined : undefined;
+      const source_fp = serializeFingerprint(computeFingerprint(defaultGit(args.repoRoot), group.files));
       await upsertDoc(args.query, args.tableName, {
         doc_id: docId,
         path: defaultWikiVfsPath(project, group.key),
@@ -409,6 +412,7 @@ export async function generateWikiPages(args: WikiGenArgs): Promise<WikiReport> 
         tier: "slow",
         project,
         scope,
+        source_fp,
         agent: args.agent ?? "docs-wiki",
         plugin_version: args.pluginVersion,
         content_embedding,

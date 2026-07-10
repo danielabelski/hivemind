@@ -260,7 +260,7 @@ describe("upsertDoc", () => {
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
     // id column is the deterministic composite, NOT a random uuid
     expect(calls[1]).toContain(`'p|main|src/a.ts', 'src/a.ts',`);
-    expect(calls[1]).toContain(`'p', 'main', 1, `); // project, scope, always version 1
+    expect(calls[1]).toContain(`'p', 'main', E'{}', 1, `); // project, scope, source_fp, version 1
   });
 
   it("writing a branch overlay scopes the DELETE — never touches the main row", async () => {
@@ -280,7 +280,7 @@ describe("upsertDoc", () => {
       `OR (doc_id = 'src/a.ts' AND project = 'p' AND scope = 'u:alice|b:feature')`,
     );
     expect(calls[0]).not.toContain("scope = 'main'");
-    expect(calls[1]).toContain(`'p', 'u:alice|b:feature', 1, `); // project, overlay scope
+    expect(calls[1]).toContain(`'p', 'u:alice|b:feature', E'{}', 1, `); // project, overlay scope, source_fp
   });
 
   it("retry after a timeout re-runs DELETE+INSERT — never forks a second row", async () => {
@@ -531,7 +531,7 @@ describe("listDocs", () => {
     expect(byId.get("A")).toBe("A overlay");
     expect(byId.get("B")).toBe("B main");
     expect(byId.has("C")).toBe(false); // foreign overlay never surfaces
-    expect(calls[0]).toContain(", scope FROM"); // scope column selected in this mode
+    expect(calls[0]).toContain(", scope, source_fp FROM"); // scope column selected in this mode
   });
 
   it("union order cannot resurrect a stale version: v1 seen FIRST, v2 still wins", async () => {
@@ -664,7 +664,7 @@ describe("getDocLatest", () => {
       fakeRow({ id: "o", doc_id: "X", version: 1, content: "OVERLAY", scope: "b:feat" }),
     ]]);
     const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
-    expect(calls[0]).toContain(", scope FROM");   // scope column is selected
+    expect(calls[0]).toContain(", scope, source_fp FROM");   // scope column is selected
     expect(calls[0]).not.toContain("AND scope =");  // NOT filtered — all scopes fetched
     expect(row?.content).toBe("OVERLAY");
   });
@@ -685,13 +685,13 @@ describe("getDocLatest", () => {
     const calls: string[] = [];
     const query = vi.fn(async (sql: string) => {
       calls.push(sql);
-      if (call++ === 0 && sql.includes(", scope FROM")) throw new Error(`column "scope" does not exist`);
+      if (call++ === 0 && sql.includes(", scope, source_fp FROM")) throw new Error(`column "scope" does not exist`);
       return [fakeRow({ doc_id: "X", version: 2, content: "LEGACY" })];
     });
     const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
     expect(row?.content).toBe("LEGACY");
-    expect(calls[0]).toContain(", scope FROM");
-    expect(calls[1]).not.toContain(", scope FROM");
+    expect(calls[0]).toContain(", scope, source_fp FROM");
+    expect(calls[1]).not.toContain(", scope, source_fp FROM");
   });
 });
 

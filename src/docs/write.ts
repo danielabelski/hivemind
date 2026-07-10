@@ -40,6 +40,8 @@ export interface InsertDocInput {
   project?: string;
   /** Shared view the row belongs to. Default `main` (the canonical truth). */
   scope?: string;
+  /** Serialized source fingerprint (`{file: blob-sha}` JSON). Default `{}`. */
+  source_fp?: string;
   /** Override the `agent` column. Default "manual". */
   agent?: string;
   /** Plugin version that produced the write. Empty string lands the default. */
@@ -94,6 +96,8 @@ export interface EditDocInput {
   path?: string;
   /** New project. Omit to keep the previous project. */
   project?: string;
+  /** New serialized source fingerprint. Omit to leave the column untouched. */
+  source_fp?: string;
   agent?: string;
   plugin_version?: string;
   /** Optional precomputed nomic embedding of `content` (search vector). */
@@ -146,7 +150,7 @@ export async function insertDoc(
 
   const sql =
     `INSERT INTO "${safe}" ` +
-    `(id, doc_id, path, content, anchors, tier, status, project, scope, version, ` +
+    `(id, doc_id, path, content, anchors, tier, status, project, scope, source_fp, version, ` +
     `created_at, updated_at, agent, plugin_version, content_embedding) ` +
     `VALUES (` +
     `'${sqlStr(rowId)}', ` +
@@ -158,6 +162,7 @@ export async function insertDoc(
     `'active', ` +
     `'${sqlStr(input.project ?? "")}', ` +
     `'${sqlStr(input.scope ?? "main")}', ` +
+    `E'${sqlStr(input.source_fp ?? "{}")}', ` +
     `1, ` +
     `'${sqlStr(now)}', ` +
     `'${sqlStr(now)}', ` +
@@ -279,12 +284,12 @@ export async function upsertDoc(
       );
       const sql =
         `INSERT INTO "${safe}" ` +
-        `(id, doc_id, path, content, anchors, tier, status, project, scope, version, ` +
+        `(id, doc_id, path, content, anchors, tier, status, project, scope, source_fp, version, ` +
         `created_at, updated_at, agent, plugin_version, content_embedding) ` +
         `VALUES (` +
         `'${sqlStr(id)}', '${sqlStr(input.doc_id)}', '${sqlStr(input.path)}', ` +
         `E'${sqlStr(input.content)}', E'${sqlStr(anchors)}', '${sqlStr(tier)}', ` +
-        `'active', '${sqlStr(input.project ?? "")}', '${sqlStr(scope)}', 1, ` +
+        `'active', '${sqlStr(input.project ?? "")}', '${sqlStr(scope)}', E'${sqlStr(input.source_fp ?? "{}")}', 1, ` +
         `'${sqlStr(now)}', '${sqlStr(now)}', ` +
         `'${sqlStr(input.agent ?? "manual")}', '${sqlStr(input.plugin_version ?? "")}', ` +
         `${embeddingSqlLiteral(input.content_embedding)}` +
@@ -441,6 +446,9 @@ async function updateInPlace(
       : next.content !== undefined && next.content !== previous.content
         ? `content_embedding = NULL, `
         : ""}` +
+    // Fingerprint moves with the content: a patch that lands new bytes stamps
+    // the new source state so freshness reflects what the page now describes.
+    `${next.source_fp !== undefined ? `source_fp = E'${sqlStr(next.source_fp)}', ` : ""}` +
     `version = ${nextVersion}, ` +
     `updated_at = '${sqlStr(now)}', ` +
     `agent = '${sqlStr(next.agent ?? "manual")}', ` +
