@@ -14,7 +14,7 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig } from "../../config.js";
+import { resolveCaptureConfig } from "../shared/dir-gate.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
@@ -90,8 +90,8 @@ async function main(): Promise<void> {
   if (!CAPTURE) return;
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
   const input = await readStdin<CursorCaptureInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  const config = resolveCaptureConfig(resolveCwd(input), log);
+  if (!config) return;
 
   const sessionId = input.conversation_id ?? `cursor-${Date.now()}`;
   const event = input.hook_event_name ?? "";

@@ -8,7 +8,8 @@
  */
 
 import { readStdin } from "../utils/stdin.js";
-import { loadConfig, type Config } from "../config.js";
+import { type Config } from "../config.js";
+import { resolveCaptureConfig } from "./shared/dir-gate.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr } from "../utils/sql.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
@@ -80,8 +81,10 @@ async function main(): Promise<void> {
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
   if (!entrypointPassesOnlyCliGate()) return;
   const input = await readStdin<HookInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  // Per-directory `.hivemind`: skip capture where opted out, and route to the
+  // configured org/workspace otherwise.
+  const config = resolveCaptureConfig(input.cwd ?? process.cwd(), log);
+  if (!config) return;
 
   // Self-heal the owner record for sessions that were already open before this
   // shipped (SessionStart only records it for new sessions). One /proc walk on

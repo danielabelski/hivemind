@@ -13,7 +13,8 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig, type Config } from "../../config.js";
+import { type Config } from "../../config.js";
+import { resolveCaptureConfig } from "../shared/dir-gate.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
@@ -75,8 +76,8 @@ async function main(): Promise<void> {
   if (!CAPTURE) return;
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
   const input = await readStdin<CodexHookInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  const config = resolveCaptureConfig(input.cwd ?? process.cwd(), log);
+  if (!config) return;
 
   const sessionsTable = config.sessionsTableName;
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);

@@ -13,6 +13,7 @@
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { tryAcquireLock } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCursorWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { forceSessionEndTrigger } from "../../skillify/triggers.js";
@@ -33,8 +34,11 @@ async function main(): Promise<void> {
   const sessionId = input.conversation_id ?? input.session_id ?? "";
   log(`session=${sessionId || "?"} reason=${input.reason ?? "?"} status=${input.final_status ?? "?"}`);
   if (!sessionId) return;
-  const config = loadConfig();
-  if (!config) { wikiLog(`SessionEnd: no config, skipping summary`); return; }
+  const base = loadConfig();
+  if (!base) { wikiLog(`SessionEnd: no config, skipping summary`); return; }
+  const dirRes = resolveDirConfig(base, process.cwd());
+  if (!dirRes.collect) { wikiLog(`SessionEnd: capture disabled for this directory (${dirRes.found?.path})`); return; }
+  const config = dirRes.config;
 
   // Skillify has its own per-project lock — fire before the wiki-worker lock
   // check so a Periodic trigger that already holds the lock doesn't suppress

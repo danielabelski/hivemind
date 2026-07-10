@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { readStdin } from "../../utils/stdin.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
@@ -70,15 +71,21 @@ async function main(): Promise<void> {
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id) {
     try {
-      const config = loadConfig();
-      if (config) {
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-        await api.ensureTable();
-        await api.ensureSessionsTable(config.sessionsTableName);
-        if (captureEnabled) {
+      const base = loadConfig();
+      if (base) {
+        const dirRes = resolveDirConfig(base, input.cwd ?? process.cwd());
+        const config = dirRes.config;
+        if (captureEnabled && dirRes.collect) {
+          const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+          await api.ensureTable();
+          await api.ensureSessionsTable(config.sessionsTableName);
           await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
+          log("setup complete");
+        } else {
+          log(!dirRes.collect
+            ? `setup skipped — .hivemind collect:false (${dirRes.found?.path})`
+            : "setup skipped — HIVEMIND_CAPTURE=false");
         }
-        log("setup complete");
       }
     } catch (e: any) {
       log(`setup failed: ${e.message}`);

@@ -134,10 +134,12 @@ describe("codex session-start-setup hook — placeholder branching", () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
-  it("skips placeholder when HIVEMIND_CAPTURE=false but still ensures tables", async () => {
+  it("skips all backend setup when HIVEMIND_CAPTURE=false", async () => {
+    // Setup writes (ensure DDL + placeholder) are gated on captureEnabled &&
+    // collect, matching the claude hook — nothing touches the backend.
     await runHook({ HIVEMIND_CAPTURE: "false" });
-    expect(ensureTableMock).toHaveBeenCalled();
-    expect(ensureSessionsTableMock).toHaveBeenCalled();
+    expect(ensureTableMock).not.toHaveBeenCalled();
+    expect(ensureSessionsTableMock).not.toHaveBeenCalled();
     expect(queryMock).not.toHaveBeenCalled();
   });
 

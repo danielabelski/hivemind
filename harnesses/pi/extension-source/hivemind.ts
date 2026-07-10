@@ -93,6 +93,62 @@ function loadCreds(): Creds | null {
   }
 }
 
+// Per-directory `.hivemind` (route org/workspace, or opt out of capture).
+// Self-contained mirror of src/dir-config.ts — pi extensions ship as raw .ts
+// with no shared-module imports, so keep in lockstep with that file. Walk up
+// from cwd for the nearest `.hivemind.local` / `.hivemind` (nearest wins,
+// `.local` beats committed), and overlay org/workspace onto creds. Precedence
+// is env > file > login: HIVEMIND_ORG_ID / HIVEMIND_WORKSPACE_ID lock a field.
+interface PiDirConfig { orgId?: string; orgName?: string; workspaceId?: string; collect?: boolean; }
+
+function findHivemindDir(startDir: string): PiDirConfig | null {
+  let dir = startDir || process.cwd();
+  for (;;) {
+    for (const name of [".hivemind.local", ".hivemind"]) {
+      try {
+        const raw = JSON.parse(readFileSync(join(dir, name), "utf-8"));
+        if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+          const out: PiDirConfig = {};
+          if (typeof raw.orgId === "string") out.orgId = raw.orgId;
+          if (typeof raw.orgName === "string") out.orgName = raw.orgName;
+          if (typeof raw.workspaceId === "string") out.workspaceId = raw.workspaceId;
+          if (typeof raw.collect === "boolean") out.collect = raw.collect;
+          return out;
+        }
+      } catch { /* absent / unparseable — keep walking up */ }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null; // filesystem root
+    dir = parent;
+  }
+}
+
+/** Overlay env + the nearest `.hivemind` onto `creds` for `cwd`, in the
+ *  conventional env > file > login order. Returns the effective creds, whether
+ *  capture is enabled here, and whether a `.hivemind` routed the identity. */
+function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boolean; routed: boolean } {
+  // Env wins over both the file and login (mirrors src/config.ts's
+  // `process.env.HIVEMIND_ORG_ID ?? creds.orgId`). Fold it into the base first
+  // so it holds whether or not a `.hivemind` is present, and so the lock below
+  // reflects an actually-applied value rather than a no-op.
+  const envOrgId = process.env.HIVEMIND_ORG_ID;
+  const envWs = process.env.HIVEMIND_WORKSPACE_ID;
+  const baseOrgId = envOrgId || creds.orgId;
+  const baseOrgName = envOrgId ? (creds.orgName ?? envOrgId) : creds.orgName;
+  const baseWs = envWs || creds.workspaceId;
+  const withEnv: Creds = { ...creds, orgId: baseOrgId, orgName: baseOrgName, workspaceId: baseWs };
+
+  const dir = findHivemindDir(cwd || process.cwd());
+  if (!dir) return { creds: withEnv, collect: true, routed: false };
+  if (dir.collect === false) return { creds: withEnv, collect: false, routed: false };
+  // The file may fill only fields NOT pinned by an env var.
+  const orgId = envOrgId ? baseOrgId : (dir.orgId ?? baseOrgId);
+  const orgName = envOrgId ? baseOrgName : (dir.orgName ?? dir.orgId ?? baseOrgName);
+  const workspaceId = envWs ? baseWs : (dir.workspaceId ?? baseWs);
+  const routed = orgId !== baseOrgId || workspaceId !== baseWs; // .hivemind changed it
+  return { creds: { ...withEnv, orgId, orgName, workspaceId }, collect: true, routed };
+}
+
 // Inline copies of decodeJwtPayload + healDriftedOrgToken (the shared helpers
 // live in src/commands/auth.ts, but pi extensions ship as raw .ts with no
 // shared-module imports — kept in lockstep with that file).
@@ -1214,7 +1270,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   // ctx.cwd are the canonical sources for session id + cwd — the events
   // themselves don't carry them.
 
-  pi.on("session_start", async (_event: any, _ctx: any) => {
+  pi.on("session_start", async (_event: any, ctx: any) => {
     logHm(`session_start: fired (capture=${captureEnabled}, embed=${process.env.HIVEMIND_EMBEDDINGS !== "false"}, table=${SESSIONS_TABLE})`);
     let creds = loadCreds();
     if (!creds) {
@@ -1222,6 +1278,18 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     } else {
       logHm(`session_start: creds org=${creds.orgName ?? creds.orgId} ws=${creds.workspaceId}`);
       creds = await healDriftedOrgTokenInline(creds);
+    }
+
+    // Per-directory `.hivemind`: opt out of capture (collect:false), or route
+    // to a configured org/workspace, based on the session's cwd.
+    const sessionCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
+    let dirCollect = true;
+    let dirRouted = false;
+    if (creds) {
+      const dr = applyDirConfig(creds, sessionCwd);
+      dirCollect = dr.collect;
+      dirRouted = dr.routed;
+      if (dr.collect) creds = dr.creds; // route only when we're capturing here
     }
 
     // Centralized autoupdate: shells out to `hivemind update` (npm-based,
@@ -1249,7 +1317,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       } catch { /* network down / which missing — silent */ }
     }
 
-    if (creds && captureEnabled) {
+    if (creds && captureEnabled && dirCollect) {
       // Other agents' session-start hooks create the memory + sessions tables
       // via DeeplakeApi.ensureTable / ensureSessionsTable. The pi extension is
       // standalone (no shared lib import to keep it raw-.ts), so we issue the
@@ -1357,8 +1425,11 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     const localMinedNote = localMined > 0
       ? `\n${localMined} local skill${localMined === 1 ? "" : "s"} from past 'hivemind skillify mine-local' run(s) live in ~/.claude/skills/. Run 'hivemind login' to start sharing new mining results with your team.`
       : "";
+    const identityLine = !dirCollect
+      ? `Deeplake capture is disabled for this directory (.hivemind); memory search still uses org: ${creds?.orgName ?? creds?.orgId}.`
+      : `Logged in to Deeplake as org: ${creds?.orgName ?? creds?.orgId} (workspace: ${creds?.workspaceId})${dirRouted ? " · routed by .hivemind" : ""}.`;
     const additional = creds
-      ? `${CONTEXT_PREAMBLE}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId}).`
+      ? `${CONTEXT_PREAMBLE}\n${identityLine}`
       : `${CONTEXT_PREAMBLE}\nNot logged in to Deeplake. Run \`hivemind login\` to authenticate.${localMinedNote}`;
     return { additionalContext: additional };
   });
@@ -1367,12 +1438,15 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     logHm(`input: fired source=${event?.source ?? "?"}`);
     if (!captureEnabled) { logHm(`input: capture disabled, skipping`); return; }
     if (event.source === "extension") { logHm(`input: extension-injected, skipping`); return; }
-    const creds = loadCreds();
+    let creds = loadCreds();
     if (!creds) { logHm(`input: no creds, skipping`); return; }
     const text = typeof event.text === "string" ? event.text : "";
     if (!text) { logHm(`input: empty text, skipping`); return; }
     const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pi-${Date.now()}`;
     const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
+    const dirRes = applyDirConfig(creds, cwd);
+    if (!dirRes.collect) { logHm(`input: capture disabled for cwd=${cwd} via .hivemind`); return; }
+    creds = dirRes.creds;
     try {
       await writeSessionRow(creds, sessionId, "pi", "input", cwd, {
         id: crypto.randomUUID(),
@@ -1392,10 +1466,13 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event: any, ctx: any) => {
     logHm(`tool_result: fired tool=${event?.toolName ?? "?"} isError=${event?.isError === true}`);
     if (!captureEnabled) { logHm(`tool_result: capture disabled, skipping`); return; }
-    const creds = loadCreds();
+    let creds = loadCreds();
     if (!creds) { logHm(`tool_result: no creds, skipping`); return; }
     const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pi-${Date.now()}`;
     const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
+    const dirRes = applyDirConfig(creds, cwd);
+    if (!dirRes.collect) { logHm(`tool_result: capture disabled for cwd=${cwd} via .hivemind`); return; }
+    creds = dirRes.creds;
     // event.content is (TextContent | ImageContent)[]; extract text blocks.
     const contentBlocks: any[] = Array.isArray(event.content) ? event.content : [];
     const responseText = contentBlocks
@@ -1426,7 +1503,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   pi.on("message_end", async (event: any, ctx: any) => {
     logHm(`message_end: fired role=${event?.message?.role ?? "?"}`);
     if (!captureEnabled) { logHm(`message_end: capture disabled, skipping`); return; }
-    const creds = loadCreds();
+    let creds = loadCreds();
     if (!creds) { logHm(`message_end: no creds, skipping`); return; }
     const message = event.message ?? null;
     // AgentMessage is UserMessage | AssistantMessage | ToolResultMessage.
@@ -1444,6 +1521,9 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
     if (!text) { logHm(`message_end: assistant message had no text blocks, skipping`); return; }
     const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pi-${Date.now()}`;
     const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
+    const dirRes = applyDirConfig(creds, cwd);
+    if (!dirRes.collect) { logHm(`message_end: capture disabled for cwd=${cwd} via .hivemind`); return; }
+    creds = dirRes.creds;
     try {
       await writeSessionRow(creds, sessionId, "pi", "message_end", cwd, {
         id: crypto.randomUUID(),
@@ -1461,11 +1541,14 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event: any, ctx: any) => {
     logHm(`session_shutdown: fired`);
     if (process.env.HIVEMIND_CAPTURE === "false") return;
-    const creds = loadCreds();
+    let creds = loadCreds();
     if (!creds) { logHm(`session_shutdown: no creds, skipping final summary`); return; }
     const sessionId = ctx?.sessionManager?.getSessionId?.() ?? null;
     if (!sessionId) { logHm(`session_shutdown: no sessionId, skipping final summary`); return; }
     const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd();
+    const dirRes = applyDirConfig(creds, cwd);
+    if (!dirRes.collect) { logHm(`session_shutdown: capture disabled for cwd=${cwd} via .hivemind`); return; }
+    creds = dirRes.creds;
     // Always spawn for "final" — but the lock check inside spawnWikiWorker
     // skips if a periodic worker is mid-flight. Non-fatal either way.
     spawnWikiWorker(creds, sessionId, cwd, "final");
