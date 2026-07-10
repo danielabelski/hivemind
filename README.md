@@ -282,7 +282,7 @@ Disable capture entirely:
 HIVEMIND_CAPTURE=false claude
 ```
 
-Disable capture for a specific directory tree (persistent, travels with the repo) — drop a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
+Disable capture for a specific directory tree (persistent, travels with the repo) by dropping a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
 
 Enable debug logging:
 
@@ -327,7 +327,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 
 ## Per-directory config (`.hivemind`)
 
-The variables above set **one global identity** for the whole machine. A `.hivemind` file lets a specific directory tree override that — either to **route** its traces to a different org/workspace, or to **opt out** of capture entirely.
+The variables above set **one global identity** for the whole machine. A `.hivemind` file lets a specific directory tree override that: either **route** its traces to a different org/workspace, or **opt out** of capture entirely.
 
 Drop a `.hivemind` JSON file at the root of the tree you want to configure:
 
@@ -363,16 +363,16 @@ Two filenames are recognized, mirroring the `.env` / `.env.local` convention eve
 
 | File | Commit it? | For |
 |------|-----------|-----|
-| `.hivemind` | **Yes** — like `.editorconfig` | The repo declaring where *its* traces belong (or that it's off-limits). Teammates who clone inherit it. |
-| `.hivemind.local` | **No** — gitignore it | *Your personal* override or opt-out, not imposed on teammates. Wins over `.hivemind` in the same directory. |
+| `.hivemind` | **Yes** (like `.editorconfig`) | The repo declaring where *its* traces belong (or that it's off-limits). Teammates who clone inherit it. |
+| `.hivemind.local` | **No** (gitignore it) | *Your personal* override or opt-out, not imposed on teammates. Wins over `.hivemind` in the same directory. |
 
-There's nothing to hide: a `.hivemind` can't carry a token (see below), so committing one is safe — it just declares intent. Use `.hivemind.local` only when a choice is yours alone (add it to your repo's `.gitignore`, like `.env.local`).
+There's nothing to hide: a `.hivemind` can't carry a token (see below), so committing one is safe. It just declares intent. Use `.hivemind.local` only when a choice is yours alone (add it to your repo's `.gitignore`, like `.env.local`).
 
-A copy-ready template lives at [`.hivemind.example`](.hivemind.example) — `cp .hivemind.example .hivemind` and edit. (The `.example` file is inert; Hivemind only reads `.hivemind` and `.hivemind.local`.)
+A copy-ready template lives at [`.hivemind.example`](.hivemind.example). Run `cp .hivemind.example .hivemind` and edit. (The `.example` file is inert; Hivemind only reads `.hivemind` and `.hivemind.local`.)
 
 ### How it resolves
 
-When a session starts, Hivemind walks **up** from the working directory — `cwd`, its parent, its grandparent, … — and uses the **first** file it finds (a `.hivemind.local` beats a `.hivemind` in the same directory). Nearest wins; ancestors above it are ignored — this is the `.git`/`.gitconfig` model, **not** `.gitignore`-style merging. There is no inheritance: a leaf file that wants both its parent's org and its own workspace must state both.
+When a session starts, Hivemind walks **up** from the working directory (`cwd`, its parent, its grandparent, and so on) and uses the **first** file it finds (a `.hivemind.local` beats a `.hivemind` in the same directory). Nearest wins; ancestors above it are ignored. This is the `.git`/`.gitconfig` model, **not** `.gitignore`-style merging. There is no inheritance: a leaf file that wants both its parent's org and its own workspace must state both.
 
 ```
 ~/work/.hivemind           { "orgId": "acme-corp" }
@@ -387,10 +387,10 @@ session in ~/work/other/       →  no .hivemind found → global identity
 
 ### Safety: routing is disclosed, not hidden
 
-Because a `.hivemind` travels with a repo, cloning someone's repo could in principle point *your* traces at a different org. Two things keep that safe — without any approval step or ceremony:
+Because a `.hivemind` travels with a repo, cloning someone's repo could in principle point *your* traces at a different org. Two things keep that safe, with no approval step or ceremony:
 
-- **`.hivemind` never contains a token.** Auth stays in `~/.deeplake/credentials.json`, so a routing override can only ever target orgs your existing login **already** authorizes — the API rejects anything else. It can't leak your traces to a stranger's org; at worst it misfiles them into another of *your own* orgs.
-- **Every session tells you where its traces go.** The session-start banner prints the **effective** org/workspace after any `.hivemind` overlay — e.g. `org: acme-corp (workspace: client-work) · routed by ./.hivemind`, or `capture is disabled for this directory` when you've opted out. So a redirect is never silent; if it's not what you want, delete the file or add `.hivemind.local`.
+- **`.hivemind` never contains a token.** Auth stays in `~/.deeplake/credentials.json`, so a routing override can only ever target orgs your existing login **already** authorizes; the API rejects anything else. It can't leak your traces to a stranger's org. At worst it misfiles them into another of *your own* orgs.
+- **Every session tells you where its traces go.** The session-start banner prints the **effective** org/workspace after any `.hivemind` overlay, e.g. `org: acme-corp (workspace: client-work) · routed by ./.hivemind`, or `capture is disabled for this directory` when you've opted out. So a redirect is never silent; if it's not what you want, delete the file or add `.hivemind.local`.
 
 ### Interaction with `org switch` / `workspace switch`
 
@@ -398,7 +398,7 @@ Because a `.hivemind` travels with a repo, cloning someone's repo could in princ
 
 | Location                     | Where traces go                                            |
 |------------------------------|------------------------------------------------------------|
-| Dir with a routing `.hivemind` | The pinned org/workspace — **unaffected** by `org switch`. |
+| Dir with a routing `.hivemind` | The pinned org/workspace, **unaffected** by `org switch`. |
 | Dir with **no** `.hivemind`  | Follows your current global default (i.e. `org switch`).   |
 | Dir with `collect: false`    | Nothing captured, regardless of the global default.        |
 
