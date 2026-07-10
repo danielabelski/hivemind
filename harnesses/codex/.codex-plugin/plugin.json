@@ -20,12 +20,14 @@
     "shortDescription": "Persistent shared memory for AI agents powered by Deeplake",
     "longDescription": "Captures all session activity and provides cross-session, cross-agent memory search via ~/.deeplake/memory/. Memory is stored in Deeplake managed tables and shared across sessions, users, and agents in your organization.",
     "developerName": "Activeloop",
-    "category": "productivity",
+    "category": "Productivity",
     "capabilities": [
       "memory",
       "session-capture",
       "search"
     ],
-    "websiteURL": "https://deeplake.ai"
+    "websiteURL": "https://deeplake.ai",
+    "logo": "./assets/logo.png",
+    "composerIcon": "./assets/icon.png"
   }
 }
