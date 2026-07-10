@@ -103,7 +103,7 @@ export function pickByScopePrecedence<T extends { scope?: string; version: numbe
   let best: T | null = null;
   let bestRank = -1;
   for (const r of rows) {
-    const s = r.scope ?? MAIN_SCOPE;
+    const s = r.scope || MAIN_SCOPE; // empty/undefined scope resolves as main
     // 2 = the reader's own scope, 1 = main fallback, 0 = a foreign branch.
     const rank = s === readerScope ? 2 : s === MAIN_SCOPE ? 1 : 0;
     if (rank === 0) continue; // never surface another branch's overlay

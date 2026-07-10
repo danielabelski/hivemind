@@ -96,7 +96,7 @@ export async function handleDocsVfs(
   else if (!path.endsWith(".md")) dir = path; // a bare directory (e.g. `cat .../docs/src/graph`)
 
   if (dir !== null) {
-    const meta: DocMeta[] = (await listDocMeta(query, tableName, { dirPrefix: dir, project: opts.project })).map((r) => ({
+    const meta: DocMeta[] = (await listDocMeta(query, tableName, { dirPrefix: dir, project: opts.project, readerScope: opts.readerScope })).map((r) => ({
       doc_id: r.doc_id,
       version: r.version,
       updated_at: r.updated_at,
@@ -108,7 +108,7 @@ export async function handleDocsVfs(
       .map((m) => m.doc_id);
     const summaries = new Map<string, string>();
     if (directFiles.length > 0) {
-      for (const d of await listDocsByIds(query, tableName, directFiles, { projectOrLegacy: opts.project })) {
+      for (const d of await listDocsByIds(query, tableName, directFiles, { projectOrLegacy: opts.project, readerScope: opts.readerScope })) {
         summaries.set(d.doc_id, firstDocLine(d.content));
       }
     }

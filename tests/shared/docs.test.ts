@@ -735,6 +735,18 @@ describe("listDocMeta", () => {
 // ── listDocsByIds (filtered read for index summaries + the scale path) ────────
 
 describe("listDocsByIds", () => {
+  it("readerScope resolves per doc_id by branch precedence, never a foreign overlay", async () => {
+    const { query } = mockQuery([() => [
+      fakeRow({ id: "am", doc_id: "a.ts", version: 9, content: "a main", scope: "main" }),
+      fakeRow({ id: "ao", doc_id: "a.ts", version: 1, content: "a overlay", scope: "b:feat" }),
+      fakeRow({ id: "bx", doc_id: "b.ts", version: 5, content: "b other", scope: "b:other" }), // foreign only
+    ]]);
+    const rows = await listDocsByIds(query, TBL, ["a.ts", "b.ts"], { readerScope: "b:feat" });
+    const byId = new Map(rows.map((r) => [r.doc_id, r.content]));
+    expect(byId.get("a.ts")).toBe("a overlay"); // reader's overlay wins over main
+    expect(byId.has("b.ts")).toBe(false);        // foreign overlay hidden
+  });
+
   it("builds a de-duplicated IN list and returns latest-per-doc", async () => {
     const { calls, query } = mockQuery([
       () => [

@@ -405,7 +405,8 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     }
     let row: DocRow | null = null;
     try {
-      row = await getDocLatest(query, tableName, docId);
+      const showCwd = flagValue(args, "--cwd") ?? process.cwd();
+      row = await getDocLatest(query, tableName, docId, { readerScope: currentScope(defaultGit(showCwd)) });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
@@ -482,7 +483,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     try {
       rows = allView
         ? await listDocs(query, tableName, { status, limit })
-        : await listDocs(query, tableName, { status, projectOrLegacy: explicitProject !== undefined ? resolveProjectArg(explicitProject) : headerProject, limit });
+        : await listDocs(query, tableName, { status, projectOrLegacy: explicitProject !== undefined ? resolveProjectArg(explicitProject) : headerProject, limit, readerScope: explicitProject === undefined ? currentScope(defaultGit(flagValue(args, "--cwd") ?? process.cwd())) : undefined });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
