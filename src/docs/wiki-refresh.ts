@@ -30,6 +30,7 @@ import { gateDocEdit } from "./gate.js";
 import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
 import { parseScope, trunkBranch } from "./branch-scope.js";
 import { sourcePushed } from "./fingerprint.js";
+import { promoteMergedOverlays } from "./promote.js";
 import {
   appendFilesIndex,
   generateWikiPages,
@@ -89,7 +90,7 @@ export interface WikiRefreshArgs {
 
 export interface WikiRefreshOutcome {
   doc_id: string;
-  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped" | "held";
+  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped" | "held" | "promoted";
   reasons?: string[];
 }
 
@@ -314,6 +315,17 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   // banner until the code is pushed and the next cycle publishes the overlay.)
   const parsedScope = parseScope(scope);
   const branchName = parsedScope.kind === "branch" ? parsedScope.branch : null;
+
+  // On the trunk, first PROMOTE any branch overlays whose source now matches
+  // main (a merge landed their changes) — reuse the overlay instead of paying to
+  // regenerate. Promoted pages are then skipped by the loop below.
+  const promotedIds = new Set<string>();
+  if (branchName === null) {
+    for (const p of await promoteMergedOverlays(args.query, args.tableName, args.project, args.git, { agent: args.agent, pluginVersion: args.pluginVersion })) {
+      promotedIds.add(p.doc_id);
+      outcomes.push({ doc_id: p.doc_id, action: "promoted", reasons: [`from ${p.fromScope}`] });
+    }
+  }
   // A page is publishable to the shared cloud only when its source is already on
   // origin/<branch>. Checked at the write sites (not for skipped pages) so an
   // unpushed branch holds exactly the pages it would otherwise publish.
@@ -322,6 +334,8 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   for (const group of groups) {
     const docId = wikiDocId(group.key);
     const page = pages.get(docId);
+
+    if (promotedIds.has(docId)) continue; // already promoted from a merged overlay
 
     // New subsystem → fresh page.
     if (!page) {
