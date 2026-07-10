@@ -281,3 +281,35 @@ describe("pi extension — SkillOpt wiring", () => {
     expect(PI_SRC).toContain('ref.lastIndexOf("--")');  // require name--author
   });
 });
+
+// Pi is a standalone extension (no shared-module imports), so it carries an
+// inline mirror of src/dir-config.ts. These guard that the per-directory
+// `.hivemind` wiring (opt-out + routing) is present and applied on every
+// capture path — the gap Emanuele flagged on PR #302.
+describe("pi extension — per-directory .hivemind wiring", () => {
+  it("defines the inline resolver over both filenames", () => {
+    expect(PI_SRC).toContain("function findHivemindDir");
+    expect(PI_SRC).toContain("function applyDirConfig");
+    expect(PI_SRC).toContain('".hivemind.local", ".hivemind"');
+  });
+
+  it("honors env precedence (env > file) in the overlay", () => {
+    expect(PI_SRC).toContain("process.env.HIVEMIND_ORG_ID");
+    expect(PI_SRC).toContain("process.env.HIVEMIND_WORKSPACE_ID");
+  });
+
+  it("gates every capture path on the resolved collect flag", () => {
+    // input / tool_result / message_end / session_shutdown each skip on opt-out.
+    const skips = PI_SRC.match(/capture disabled for cwd=\$\{cwd\} via \.hivemind/g) ?? [];
+    expect(skips.length).toBe(4);
+    // and each reassigns creds to the routed identity after the gate.
+    const reassigns = PI_SRC.match(/creds = dirRes\.creds;/g) ?? [];
+    expect(reassigns.length).toBe(4);
+  });
+
+  it("gates session_start table setup on collect and discloses routing", () => {
+    expect(PI_SRC).toContain("creds && captureEnabled && dirCollect");
+    expect(PI_SRC).toContain("routed by .hivemind");
+    expect(PI_SRC).toContain("capture is disabled for this directory");
+  });
+});
