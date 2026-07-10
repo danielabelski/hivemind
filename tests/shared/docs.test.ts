@@ -251,18 +251,36 @@ describe("upsertDoc", () => {
     expect(calls).toHaveLength(2);
     // The DELETE clears the namespaced id AND the legacy bare-doc_id row, so
     // pre-scope tables converge instead of accumulating a duplicate doc_id.
-    // The legacy clause is constrained to THIS project — another project's
-    // legacy row with the same bare doc_id must survive in a shared table.
-    // The second clause sweeps by doc_id+project: it converges BOTH legacy
-    // bare-id rows AND setDoc's random-UUID rows onto the composite id,
-    // without ever touching another project's rows.
+    // The legacy clause is constrained to THIS project AND THIS scope — another
+    // project's legacy row, or a SIBLING scope (a branch overlay / the canonical
+    // main row) with the same bare doc_id, must survive in a shared table.
     expect(calls[0]).toBe(
-      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (doc_id = 'src/a.ts' AND project = 'p')`,
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (doc_id = 'src/a.ts' AND project = 'p' AND scope = 'main')`,
     );
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
     // id column is the deterministic composite, NOT a random uuid
     expect(calls[1]).toContain(`'p|main|src/a.ts', 'src/a.ts',`);
     expect(calls[1]).toContain(`'p', 'main', 1, `); // project, scope, always version 1
+  });
+
+  it("writing a branch overlay scopes the DELETE — never touches the main row", async () => {
+    // The regression that motivated the scope guard: a branch/user overlay
+    // (scope = u:<user>|b:<branch>) shares (project, doc_id) with the canonical
+    // main row. Without the scope guard, the legacy convergence clause would
+    // delete main when writing the overlay, silently destroying the shared doc.
+    const { calls, query } = mockQuery([() => [], () => []]);
+    await upsertDoc(query, TBL, {
+      doc_id: "src/a.ts", path: "/docs/p/a.ts.md", content: "x", project: "p",
+      scope: "u:alice|b:feature",
+    });
+    // DELETE targets ONLY this overlay's id + same-scope duplicates. The main
+    // row (scope='main') is not in the predicate, so it survives.
+    expect(calls[0]).toBe(
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|u:alice|b:feature|src/a.ts' ` +
+      `OR (doc_id = 'src/a.ts' AND project = 'p' AND scope = 'u:alice|b:feature')`,
+    );
+    expect(calls[0]).not.toContain("scope = 'main'");
+    expect(calls[1]).toContain(`'p', 'u:alice|b:feature', 1, `); // project, overlay scope
   });
 
   it("retry after a timeout re-runs DELETE+INSERT — never forks a second row", async () => {

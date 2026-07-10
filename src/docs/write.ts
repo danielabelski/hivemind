@@ -266,11 +266,16 @@ export async function upsertDoc(
       // Clear any prior/partial row for this id first, then write exactly one.
       // The legacy bare-doc_id id is deleted too so pre-scope tables converge
       // to the namespaced id instead of accumulating a duplicate doc_id row —
-      // but ONLY within this project: in a shared org table another project
-      // can legitimately own a legacy row with the same bare doc_id.
+      // but ONLY within this project AND this scope: in a shared org table
+      // another project can legitimately own a legacy row with the same bare
+      // doc_id, and — critically for branch overlays — a SIBLING scope (e.g.
+      // the canonical `main` row, or another user's branch overlay) for the
+      // same (project, doc_id) must NOT be deleted when we write our scope.
+      // Without the scope guard, writing a branch overlay would wipe main.
       await query(
         `DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}' ` +
-          `OR (doc_id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}')`,
+          `OR (doc_id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}' ` +
+          `AND scope = '${sqlStr(scope)}')`,
       );
       const sql =
         `INSERT INTO "${safe}" ` +
