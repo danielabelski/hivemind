@@ -207,6 +207,52 @@ describe("runWikiRefreshCycle", () => {
     expect(report.status).toBe("incomplete"); // pending publish → cursor not advanced
   });
 
+  // The promotion read has a distinctive column list; its presence in the
+  // captured SQL tells us whether the promotion block ran.
+  const PROMOTE_SELECT = "SELECT id, doc_id, path, content, tier, scope, source_fp";
+
+  it("detached HEAD never promotes overlays into main (CodeRabbit Major)", async () => {
+    const backend = makeBackend({
+      scope: "main",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "HEAD\n"; // DETACHED
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return "";
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "ls-tree") return "100644 blob X\tpkg/core/a.ts\n";
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    const report = await runWikiRefreshCycle(baseArgs(backend, git, { scope: "main" }));
+    // The promotion block must be skipped entirely on a detached HEAD.
+    expect(backend.calls.some((c) => c.includes(PROMOTE_SELECT))).toBe(false);
+    expect(report.outcomes.every((o) => o.action !== "promoted")).toBe(true);
+  });
+
+  it("trunk (not detached) DOES run the promotion block (control for the detached guard)", async () => {
+    const backend = makeBackend({
+      scope: "main",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "main\n"; // ON TRUNK
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return "";
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "ls-tree") return "100644 blob X\tpkg/core/a.ts\n";
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    await runWikiRefreshCycle(baseArgs(backend, git, { scope: "main" }));
+    expect(backend.calls.some((c) => c.includes(PROMOTE_SELECT))).toBe(true);
+  });
+
   it("dirty working tree is held (never documents uncommitted bytes)", async () => {
     const backend = makeBackend({
       scope: "b:feat",

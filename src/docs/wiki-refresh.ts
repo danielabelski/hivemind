@@ -322,12 +322,19 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   // banner until the code is pushed and the next cycle publishes the overlay.)
   const parsedScope = parseScope(scope);
   const branchName = parsedScope.kind === "branch" ? parsedScope.branch : null;
+  // Detached HEAD resolves to `main` scope (branchName === null) but has no
+  // branch identity. It must be computed BEFORE the promotion block below: a
+  // detached checkout points at an arbitrary commit, and promoting branch
+  // overlays into the canonical `main` corpus from it would bypass the branch
+  // gate. So detect it up front and both skip promotion and hold all writes.
+  const detached = branchName === null && currentBranch(args.git) === null;
 
   // On the trunk, first PROMOTE any branch overlays whose source now matches
   // main (a merge landed their changes) — reuse the overlay instead of paying to
-  // regenerate. Promoted pages are then skipped by the loop below.
+  // regenerate. Promoted pages are then skipped by the loop below. NEVER on a
+  // detached HEAD (see above) — it has no branch identity to promote from.
   const promotedIds = new Set<string>();
-  if (branchName === null) {
+  if (branchName === null && !detached) {
     const groupFiles = new Map(groups.map((g) => [wikiDocId(g.key), g.files]));
     for (const p of await promoteMergedOverlays(args.query, args.tableName, args.project, args.git, groupFiles, { agent: args.agent, pluginVersion: args.pluginVersion })) {
       promotedIds.add(p.doc_id);
@@ -338,10 +345,6 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   // (content == committed HEAD, so it never documents uncommitted bytes) AND —
   // on a branch — its source is already on origin/<branch>. Checked at the write
   // sites (not for skipped pages). Returns the hold reason, or null if writable.
-  // Detached HEAD resolves to `main` scope but has no branch identity — writing
-  // a detached commit's docs to the canonical corpus would bypass the branch
-  // gate, so hold everything until on a real branch.
-  const detached = branchName === null && currentBranch(args.git) === null;
   const holdReason = (files: string[]): string | null => {
     if (detached) return "detached HEAD — ambiguous branch identity";
     if (!workingTreeClean(args.git, files)) return "uncommitted changes in member files";
