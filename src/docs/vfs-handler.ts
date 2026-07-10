@@ -121,8 +121,10 @@ export async function handleDocsVfs(
 
   // Highest precedence: THIS machine's private doc for the current branch (a doc
   // built from committed-but-unpushed code, held out of the shared cloud). Only
-  // the owner, on that branch, sees it.
-  if (opts.project && opts.readerScope && opts.readerScope !== MAIN_SCOPE) {
+  // the owner, on that branch, sees it. `project === ""` is a legitimate legacy/
+  // default key, so test for presence (!== undefined), not truthiness — an
+  // empty-string project must still resolve its private docs.
+  if (opts.project !== undefined && opts.readerScope && opts.readerScope !== MAIN_SCOPE) {
     const priv = readPrivateDoc(opts.project, opts.readerScope, docId);
     if (priv) {
       const banner = staleBanner(opts.git, priv.doc_id, priv.content, priv.source_fp);
