@@ -25,6 +25,7 @@ export const SCALAR_TARGETS = [
   "harnesses/openclaw/openclaw.plugin.json",
   "harnesses/openclaw/package.json",
   "harnesses/codex/package.json",
+  "harnesses/codex/.codex-plugin/plugin.json",
 ];
 
 // Marketplace target: has BOTH metadata.version AND every plugins[].version.

@@ -33,7 +33,7 @@ Do NOT jump straight to reading raw JSONL files. Always start with index.md and 
 
 ## Organization Management
 
-Each argument is separate — do NOT quote subcommands together. The auth command is at `$CODEX_PLUGIN_ROOT/bundle/commands/auth-login.js` (or check the session context for the resolved path):
+Each argument is separate — do NOT quote subcommands together. The auth command is at `$PLUGIN_ROOT/bundle/commands/auth-login.js` (or check the session context for the resolved path):
 - `node "<path>/auth-login.js" login` — SSO login
 - `node "<path>/auth-login.js" whoami` — show current user/org
 - `node "<path>/auth-login.js" org list` — list organizations

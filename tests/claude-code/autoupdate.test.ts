@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
-import { autoUpdate } from "../../src/hooks/shared/autoupdate.js";
+import { autoUpdate, isCodexManagedInstall } from "../../src/hooks/shared/autoupdate.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
@@ -54,6 +54,100 @@ afterEach(() => {
   clearFakeHome();
   rmSync(TMP_HOME, { recursive: true, force: true });
   vi.restoreAllMocks();
+});
+
+describe("isCodexManagedInstall — Codex-managed detection", () => {
+  // These paths are real layouts observed on disk (2026-07-10):
+  //   managed:  ~/.codex/plugins/cache/<marketplace>/hivemind/<ref>/bundle
+  //   npm:      ~/.codex/hivemind/bundle
+  // The overriding safety requirement (efenocchi): NEVER report "managed"
+  // for an npm install — a false managed verdict silently freezes updates.
+
+  // --- MUST be detected as managed (skip npm self-update) ---
+  it.each([
+    ["/home/emanuele/.codex/plugins/cache/openai-curated/hivemind/1.2.3/bundle"],
+    ["/home/emanuele/.codex/plugins/cache/openai-curated-remote/hivemind/abc123/bundle"],
+    ["/home/emanuele/.codex/plugins/cache/local/hivemind/local/bundle"],
+    ["/Users/x/.codex/plugins/cache/openai-curated/hivemind/9.9.9/bundle"],
+  ])("managed cache path -> true: %s", (p) => {
+    expect(isCodexManagedInstall(p)).toBe(true);
+  });
+
+  it("managed cache path on Windows (backslashes) -> true", () => {
+    expect(
+      isCodexManagedInstall("C:\\Users\\x\\.codex\\plugins\\cache\\openai-curated\\hivemind\\1.0.0\\bundle"),
+    ).toBe(true);
+  });
+
+  it("honours a non-default CODEX_HOME for the managed cache", () => {
+    expect(
+      isCodexManagedInstall("/opt/codexhome/plugins/cache/openai-curated/hivemind/1/bundle", {
+        CODEX_HOME: "/opt/codexhome",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+  });
+
+  // --- MUST NOT be detected as managed (update MUST still run) ---
+  // This is the false-negative-of-update guard the user is worried about.
+  it.each([
+    ["npm install bundle", "/home/emanuele/.codex/hivemind/bundle"],
+    ["npm install on macOS", "/Users/x/.codex/hivemind/bundle"],
+    ["dev checkout", "/home/emanuele/repo/harnesses/codex/bundle"],
+    ["global npm node_modules", "/usr/lib/node_modules/@deeplake/hivemind/harnesses/codex/bundle"],
+    ["unknown layout", "/opt/whatever/bundle"],
+    ["plugins/cache but NOT under .codex", "/home/x/some-tool/plugins/cache/foo/bundle"],
+    ["home dir literally named plugins cache-ish", "/home/emanuele/.codex/hivemind/bundle/subdir"],
+  ])("not managed -> false (%s)", (_label, p) => {
+    expect(isCodexManagedInstall(p)).toBe(false);
+  });
+
+  it("undefined bundleDir -> false (no crash, update proceeds)", () => {
+    expect(isCodexManagedInstall(undefined)).toBe(false);
+  });
+
+  it("empty CODEX_HOME does not widen the match", () => {
+    expect(
+      isCodexManagedInstall("/home/x/.codex/hivemind/bundle", { CODEX_HOME: "" } as NodeJS.ProcessEnv),
+    ).toBe(false);
+  });
+});
+
+describe("autoUpdate — Codex-managed guard integration", () => {
+  const MANAGED = "/home/emanuele/.codex/plugins/cache/openai-curated/hivemind/1.2.3/bundle";
+  const NPM = "/home/emanuele/.codex/hivemind/bundle";
+
+  it("SKIPS the update on a Codex-managed install (even with valid creds + binary)", async () => {
+    const spawnFn = vi.fn().mockReturnValue({ pid: 1 });
+    await autoUpdate(VALID_CREDS, {
+      agent: "codex", bundleDir: MANAGED, spawn: spawnFn, hivemindBinaryPath: "/u/bin/hivemind",
+    });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it("RUNS the update on an npm install path (the false-skip regression guard)", async () => {
+    const spawnFn = vi.fn().mockReturnValue({ pid: 1 });
+    await autoUpdate(VALID_CREDS, {
+      agent: "codex", bundleDir: NPM, spawn: spawnFn, hivemindBinaryPath: "/u/bin/hivemind",
+    });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("RUNS the update when bundleDir is omitted (other agents unaffected)", async () => {
+    const spawnFn = vi.fn().mockReturnValue({ pid: 1 });
+    await autoUpdate(VALID_CREDS, {
+      agent: "claude", spawn: spawnFn, hivemindBinaryPath: "/u/bin/hivemind",
+    });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("RUNS the update on a dev-checkout bundleDir (not a managed cache)", async () => {
+    const spawnFn = vi.fn().mockReturnValue({ pid: 1 });
+    await autoUpdate(VALID_CREDS, {
+      agent: "codex", bundleDir: "/home/x/repo/harnesses/codex/bundle",
+      spawn: spawnFn, hivemindBinaryPath: "/u/bin/hivemind",
+    });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("autoUpdate — gating", () => {
