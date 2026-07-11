@@ -11,6 +11,7 @@ vi.mock("../../src/docs/stable-read.js", () => ({
 import { runWikiRefreshCycle, runLocalWikiRefresh, DEFAULT_MIN_PERIOD_MS, type WikiRefreshArgs } from "../../src/docs/wiki-refresh.js";
 import { appendFilesIndex, collectWikiAnchors } from "../../src/docs/wiki-generate.js";
 import { docRowId } from "../../src/docs/write.js";
+import { readPrivateDoc } from "../../src/docs/private-store.js";
 import type { GitRunner } from "../../src/docs/candidates.js";
 import type { GraphNode, GraphSnapshot } from "../../src/graph/types.js";
 
@@ -33,14 +34,14 @@ function snap(nodes: GraphNode[]): GraphSnapshot {
  * the modules under test. SELECTs are answered from state; DELETE/INSERT and
  * UPDATE mutate the meta row so lease semantics run for real.
  */
-function makeBackend(opts: { meta?: Record<string, unknown> | null; metaUpdatedAt?: string; pages?: Array<Record<string, unknown>> }) {
+function makeBackend(opts: { meta?: Record<string, unknown> | null; metaUpdatedAt?: string; pages?: Array<Record<string, unknown>>; scope?: string }) {
   const state = {
     meta: opts.meta === undefined ? null : opts.meta,
     metaUpdatedAt: opts.metaUpdatedAt ?? "2026-07-08T00:00:00.000Z",
     pages: opts.pages ?? [],
   };
   const calls: string[] = [];
-  const metaId = docRowId(P, "main", "_meta");
+  const metaId = docRowId(P, opts.scope ?? "main", "_meta");
   const query = vi.fn(async (sql: string) => {
     calls.push(sql);
     const s = sql.trim();
@@ -106,6 +107,173 @@ describe("runWikiRefreshCycle", () => {
     run: async () => "NO_CHANGE", git, owner: "me", now: NOW, sleep: noSleep,
     regenerate: async () => "created",
     ...extra,
+  });
+
+  it("branch first cycle seeds the window from the merge-base with trunk (not full-candidate)", async () => {
+    const backend = makeBackend({
+      scope: "b:feat",
+      meta: { last_refresh_sha: "", claimed_by: null, claimed_at: null, patch_counts: {} }, // fresh branch cursor
+      pages: [
+        pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo."),
+        pageRow("pkg/io", ["pkg/io/b.ts"], "## Purpose\nbar."),
+      ],
+    });
+    const MB = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee";
+    const gitCalls: string[] = [];
+    const git: GitRunner = (args) => {
+      gitCalls.push(args.join(" "));
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "merge-base") return `${MB}\n`;
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n"; // only core changed vs MB
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    const report = await runWikiRefreshCycle(
+      baseArgs(backend, git, { scope: "b:feat", force: true, run: async () => "## Purpose\nfoo v2." }),
+    );
+    // The window is seeded from the merge-base, not treated as full-candidate.
+    expect(gitCalls).toContain("merge-base HEAD origin/main");
+    expect(gitCalls).toContain(`diff --name-only ${MB}..HEAD`);
+    // Only the branch-changed page is a candidate; the untouched page is skipped free.
+    const acted = report.outcomes.map((o) => o.doc_id);
+    expect(acted).toContain("wiki/pkg/core");
+    expect(acted).not.toContain("wiki/pkg/io");
+  });
+
+  it("private: on a branch, a committed-clean UNPUSHED page is written to the local store, not the cloud", async () => {
+    const privDir = mkdtempSync(join(tmpdir(), "wref-priv-"));
+    process.env.HIVEMIND_DOCS_PRIVATE_DIR = privDir;
+    try {
+      const backend = makeBackend({
+        scope: "b:feat",
+        meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+        pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+      });
+      const git: GitRunner = (args) => {
+        if (args[0] === "rev-parse") return `${HEAD}\n`;
+        if (args[0] === "symbolic-ref") return "origin/main\n";
+        if (args[0] === "status") return ""; // committed-clean
+        if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+        if (args[0] === "ls-tree" && args[1] === "HEAD") return "100644 blob NEW\tpkg/core/a.ts\n"; // local commit
+        if (args[0] === "ls-tree" && args[1] === "origin/feat") return null; // never pushed
+        if (args[0] === "diff") return "- old\n+ new\n";
+        return null;
+      };
+      const oneGroup = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts")]);
+      const report = await runWikiRefreshCycle(
+        baseArgs(backend, git, { scope: "b:feat", snap: oneGroup, run: async () => "## Purpose\nfoo v2 (private)." }),
+      );
+      expect(report.outcomes).toEqual([{ doc_id: "wiki/pkg/core", action: "patched" }]);
+      // No cloud write for the page ROW (the _meta lease row references the
+      // doc_id in its patch_counts JSON, so filter on the page's namespaced id).
+      const pageRowId = docRowId(P, "b:feat", "wiki/pkg/core");
+      const pageWrites = backend.calls.filter((c) => /^(INSERT|UPDATE)/i.test(c) && c.includes(pageRowId));
+      expect(pageWrites).toHaveLength(0);
+      // The private doc landed in the local store for (project, branch).
+      const priv = readPrivateDoc(P, "b:feat", "wiki/pkg/core");
+      expect(priv?.content).toContain("foo v2 (private)");
+      // Cursor must NOT advance while a page is pending publish — else after push
+      // (HEAD unchanged) the next cycle short-circuits and never publishes it.
+      expect(report.status).toBe("incomplete");
+      expect((backend.state.meta as { last_refresh_sha: string }).last_refresh_sha).toBe(PREV);
+    } finally {
+      delete process.env.HIVEMIND_DOCS_PRIVATE_DIR;
+      rmSync(privDir, { recursive: true, force: true });
+    }
+  });
+
+  it("private page with no usable diff is HELD, never regenerated to the cloud (codex r3 leak)", async () => {
+    const backend = makeBackend({
+      scope: "b:feat",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    const regenerate = vi.fn(async () => "created" as const); // the CLOUD write seam
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return ""; // clean
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "diff") return null; // per-group diff unavailable → would regenerate
+      if (args[0] === "ls-tree" && args[1] === "HEAD") return "100644 blob NEW\tpkg/core/a.ts\n";
+      if (args[0] === "ls-tree" && args[1] === "origin/feat") return null; // unpushed
+      return null;
+    };
+    const oneGroup = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts")]);
+    const report = await runWikiRefreshCycle(baseArgs(backend, git, { scope: "b:feat", snap: oneGroup, regenerate, run: async () => "x" }));
+    expect(regenerate).not.toHaveBeenCalled(); // NEVER regenerate a private page to cloud
+    expect(report.outcomes[0].action).toBe("held");
+    expect(report.status).toBe("incomplete"); // pending publish → cursor not advanced
+  });
+
+  // The promotion read has a distinctive column list; its presence in the
+  // captured SQL tells us whether the promotion block ran.
+  const PROMOTE_SELECT = "SELECT id, doc_id, path, content, tier, scope, source_fp";
+
+  it("detached HEAD never promotes overlays into main (CodeRabbit Major)", async () => {
+    const backend = makeBackend({
+      scope: "main",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "HEAD\n"; // DETACHED
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return "";
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "ls-tree") return "100644 blob X\tpkg/core/a.ts\n";
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    const report = await runWikiRefreshCycle(baseArgs(backend, git, { scope: "main" }));
+    // The promotion block must be skipped entirely on a detached HEAD.
+    expect(backend.calls.some((c) => c.includes(PROMOTE_SELECT))).toBe(false);
+    expect(report.outcomes.every((o) => o.action !== "promoted")).toBe(true);
+  });
+
+  it("trunk (not detached) DOES run the promotion block (control for the detached guard)", async () => {
+    const backend = makeBackend({
+      scope: "main",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "main\n"; // ON TRUNK
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return "";
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "ls-tree") return "100644 blob X\tpkg/core/a.ts\n";
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    await runWikiRefreshCycle(baseArgs(backend, git, { scope: "main" }));
+    expect(backend.calls.some((c) => c.includes(PROMOTE_SELECT))).toBe(true);
+  });
+
+  it("dirty working tree is held (never documents uncommitted bytes)", async () => {
+    const backend = makeBackend({
+      scope: "b:feat",
+      meta: { last_refresh_sha: PREV, claimed_by: null, claimed_at: null, patch_counts: {} },
+      pages: [pageRow("pkg/core", ["pkg/core/a.ts"], "## Purpose\nfoo.")],
+    });
+    let ran = false;
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse") return `${HEAD}\n`;
+      if (args[0] === "symbolic-ref") return "origin/main\n";
+      if (args[0] === "status") return " M pkg/core/a.ts\n"; // DIRTY
+      if (args[0] === "diff" && args[1] === "--name-only") return "pkg/core/a.ts\n";
+      if (args[0] === "diff") return "- old\n+ new\n";
+      return null;
+    };
+    const oneGroup = snap([node("pkg/core/a.ts:foo:function", "pkg/core/a.ts")]);
+    const report = await runWikiRefreshCycle(
+      baseArgs(backend, git, { scope: "b:feat", snap: oneGroup, run: async () => { ran = true; return "x"; } }),
+    );
+    expect(report.outcomes).toEqual([{ doc_id: "wiki/pkg/core", action: "held", reasons: ["uncommitted changes in member files"] }]);
+    expect(ran).toBe(false);
   });
 
   it("HEAD == last_refresh_sha → up-to-date, no lease taken, no LLM", async () => {

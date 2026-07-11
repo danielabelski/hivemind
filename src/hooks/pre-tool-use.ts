@@ -16,6 +16,8 @@ import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.
 import { handleGraphVfs } from "../graph/vfs-handler.js";
 import { handleDocsVfs } from "../docs/vfs-handler.js";
 import { makeQueryEmbedder } from "../docs/embed.js";
+import { defaultGit } from "../docs/candidates.js";
+import { currentScope } from "../docs/branch-scope.js";
 import { executeCompiledBashCommand } from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -460,7 +462,9 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/")) && !virtualPath.endsWith("/")) {
       const subpath = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
       logFn(`docs vfs: ${subpath || "(root)"}`);
-      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+      const docsCwd = input.cwd ?? process.cwd();
+      const docsGit = defaultGit(docsCwd);
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(docsCwd).key, readerScope: currentScope(docsGit), git: docsGit });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);

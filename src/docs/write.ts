@@ -40,6 +40,8 @@ export interface InsertDocInput {
   project?: string;
   /** Shared view the row belongs to. Default `main` (the canonical truth). */
   scope?: string;
+  /** Serialized source fingerprint (`{file: blob-sha}` JSON). Default `{}`. */
+  source_fp?: string;
   /** Override the `agent` column. Default "manual". */
   agent?: string;
   /** Plugin version that produced the write. Empty string lands the default. */
@@ -94,6 +96,8 @@ export interface EditDocInput {
   path?: string;
   /** New project. Omit to keep the previous project. */
   project?: string;
+  /** New serialized source fingerprint. Omit to leave the column untouched. */
+  source_fp?: string;
   agent?: string;
   plugin_version?: string;
   /** Optional precomputed nomic embedding of `content` (search vector). */
@@ -146,7 +150,7 @@ export async function insertDoc(
 
   const sql =
     `INSERT INTO "${safe}" ` +
-    `(id, doc_id, path, content, anchors, tier, status, project, scope, version, ` +
+    `(id, doc_id, path, content, anchors, tier, status, project, scope, source_fp, version, ` +
     `created_at, updated_at, agent, plugin_version, content_embedding) ` +
     `VALUES (` +
     `'${sqlStr(rowId)}', ` +
@@ -158,6 +162,7 @@ export async function insertDoc(
     `'active', ` +
     `'${sqlStr(input.project ?? "")}', ` +
     `'${sqlStr(input.scope ?? "main")}', ` +
+    `E'${sqlStr(input.source_fp ?? "{}")}', ` +
     `1, ` +
     `'${sqlStr(now)}', ` +
     `'${sqlStr(now)}', ` +
@@ -219,7 +224,7 @@ export async function insertDocResilient(
       // EVERY attempt including the last — otherwise a final-attempt timeout
       // whose write landed reports failure and invites a duplicating retry.
       await sleep(backoff[Math.min(attempt, backoff.length - 1)]);
-      const landed = await getDocLatest(query, tableName, input.doc_id, { project: input.project }).catch(() => null);
+      const landed = await getDocLatest(query, tableName, input.doc_id, { project: input.project, scope: input.scope }).catch(() => null);
       if (landed) return { doc_id: landed.doc_id, version: landed.version };
       if (attempt === retries) break;
     }
@@ -266,20 +271,25 @@ export async function upsertDoc(
       // Clear any prior/partial row for this id first, then write exactly one.
       // The legacy bare-doc_id id is deleted too so pre-scope tables converge
       // to the namespaced id instead of accumulating a duplicate doc_id row —
-      // but ONLY within this project: in a shared org table another project
-      // can legitimately own a legacy row with the same bare doc_id.
+      // but ONLY within this project AND this scope: in a shared org table
+      // another project can legitimately own a legacy row with the same bare
+      // doc_id, and — critically for branch overlays — a SIBLING scope (e.g.
+      // the canonical `main` row, or another user's branch overlay) for the
+      // same (project, doc_id) must NOT be deleted when we write our scope.
+      // Without the scope guard, writing a branch overlay would wipe main.
       await query(
         `DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}' ` +
-          `OR (doc_id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}')`,
+          `OR (doc_id = '${sqlStr(input.doc_id)}' AND project = '${sqlStr(input.project ?? "")}' ` +
+          `AND scope = '${sqlStr(scope)}')`,
       );
       const sql =
         `INSERT INTO "${safe}" ` +
-        `(id, doc_id, path, content, anchors, tier, status, project, scope, version, ` +
+        `(id, doc_id, path, content, anchors, tier, status, project, scope, source_fp, version, ` +
         `created_at, updated_at, agent, plugin_version, content_embedding) ` +
         `VALUES (` +
         `'${sqlStr(id)}', '${sqlStr(input.doc_id)}', '${sqlStr(input.path)}', ` +
         `E'${sqlStr(input.content)}', E'${sqlStr(anchors)}', '${sqlStr(tier)}', ` +
-        `'active', '${sqlStr(input.project ?? "")}', '${sqlStr(scope)}', 1, ` +
+        `'active', '${sqlStr(input.project ?? "")}', '${sqlStr(scope)}', E'${sqlStr(input.source_fp ?? "{}")}', 1, ` +
         `'${sqlStr(now)}', '${sqlStr(now)}', ` +
         `'${sqlStr(input.agent ?? "manual")}', '${sqlStr(input.plugin_version ?? "")}', ` +
         `${embeddingSqlLiteral(input.content_embedding)}` +
@@ -306,12 +316,13 @@ export async function editDoc(
   query: QueryFn,
   tableName: string,
   input: EditDocInput,
-  opts: { project?: string } = {},
+  opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
-  // Optional project SELECTOR (distinct from input.project, the value to
-  // write) — in a shared org table an unscoped read can resolve the same
-  // doc_id to another project's row.
-  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project });
+  // Optional project + scope SELECTOR (distinct from input.project, the value
+  // to write) — in a shared org table an unscoped read can resolve the same
+  // doc_id to another project's row, or (with branch overlays) to a sibling
+  // scope's row. Passing scope confines the edit to one identity.
+  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project, scope: opts.scope });
   if (!previous) {
     throw new Error(`Doc not found: ${input.doc_id}`);
   }
@@ -332,11 +343,12 @@ export async function setDoc(
   query: QueryFn,
   tableName: string,
   input: SetDocInput,
-  opts: { project?: string } = {},
+  opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
-  // Project SELECTOR (shared-table safety): without it the bare doc_id can
-  // resolve to another project's row and this write would version-bump THAT.
-  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project });
+  // Project + scope SELECTOR (shared-table safety): without it the bare doc_id
+  // can resolve to another project's row — or a sibling branch overlay — and
+  // this write would version-bump THAT.
+  const previous = await getDocLatest(query, tableName, input.doc_id, { project: opts.project, scope: opts.scope });
   if (!previous) {
     return insertDoc(query, tableName, {
       doc_id: input.doc_id,
@@ -374,7 +386,7 @@ export async function archiveDoc(
   query: QueryFn,
   tableName: string,
   input: { doc_id: string; agent?: string; plugin_version?: string },
-  opts: { project?: string } = {},
+  opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
   return editDoc(query, tableName, {
     doc_id: input.doc_id,
@@ -434,6 +446,9 @@ async function updateInPlace(
       : next.content !== undefined && next.content !== previous.content
         ? `content_embedding = NULL, `
         : ""}` +
+    // Fingerprint moves with the content: a patch that lands new bytes stamps
+    // the new source state so freshness reflects what the page now describes.
+    `${next.source_fp !== undefined ? `source_fp = E'${sqlStr(next.source_fp)}', ` : ""}` +
     `version = ${nextVersion}, ` +
     `updated_at = '${sqlStr(now)}', ` +
     `agent = '${sqlStr(next.agent ?? "manual")}', ` +

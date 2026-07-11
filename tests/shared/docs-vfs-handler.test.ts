@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // Pass-through the read-stability gate so SQL shapes stay exact (see docs.test.ts).
 vi.mock("../../src/docs/stable-read.js", () => ({
@@ -71,6 +74,55 @@ describe("handleDocsVfs", () => {
     }
     // It resolved by exact doc_id, stripping the .md suffix.
     expect(calls.some((c) => c.includes("WHERE doc_id = 'src/graph/diff.ts'"))).toBe(true);
+  });
+
+  it("prepends a staleness banner when a member file's fingerprint drifted from HEAD", async () => {
+    const { query } = router([], [], [
+      fullRow("src/graph/diff.ts", "# diff\n\nBody.", { source_fp: JSON.stringify({ "src/graph/diff.ts": "oldsha" }) }),
+    ]);
+    const git = (args: string[]) => (args[0] === "ls-tree" ? "100644 blob newsha\tsrc/graph/diff.ts\n" : null);
+    const r = await handleDocsVfs("src/graph/diff.ts.md", query, TBL, { readerScope: "main", git });
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.body).toContain("This page may be stale");
+      expect(r.body).toContain("src/graph/diff.ts"); // names the changed file
+      expect(r.body).toContain("Body."); // still serves the content
+    }
+  });
+
+  it("no banner when the fingerprint still matches HEAD", async () => {
+    const { query } = router([], [], [
+      fullRow("src/graph/diff.ts", "# diff\n\nBody.", { source_fp: JSON.stringify({ "src/graph/diff.ts": "samesha" }) }),
+    ]);
+    const git = (args: string[]) => (args[0] === "ls-tree" ? "100644 blob samesha\tsrc/graph/diff.ts\n" : null);
+    const r = await handleDocsVfs("src/graph/diff.ts.md", query, TBL, { readerScope: "main", git });
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.body).not.toContain("may be stale");
+  });
+
+  it("serves THIS machine's private branch doc ahead of the cloud (and marks it private)", async () => {
+    const privDir = mkdtempSync(join(tmpdir(), "vfs-priv-"));
+    process.env.HIVEMIND_DOCS_PRIVATE_DIR = privDir;
+    try {
+      const { writePrivateDoc } = await import("../../src/docs/private-store.js");
+      writePrivateDoc("p", "b:feat", {
+        doc_id: "src/graph/diff.ts", path: "/docs/p/src/graph/diff.ts.md",
+        content: "# private\n\nMy unpushed doc.", source_fp: `{"src/graph/diff.ts":"h"}`, tier: "fast", updated_at: "t1",
+      });
+      // Cloud has a main row; the private one must win for a b:feat reader.
+      const { query } = router([], [], [fullRow("src/graph/diff.ts", "# cloud main", { scope: "main" })]);
+      const git = (a: string[]) => (a[0] === "ls-tree" ? "100644 blob h\tsrc/graph/diff.ts\n" : null);
+      const r = await handleDocsVfs("src/graph/diff.ts.md", query, TBL, { project: "p", readerScope: "b:feat", git });
+      expect(r.kind).toBe("ok");
+      if (r.kind === "ok") {
+        expect(r.body).toContain("My unpushed doc.");
+        expect(r.body).toContain("visibility: private");
+        expect(r.body).not.toContain("cloud main");
+      }
+    } finally {
+      delete process.env.HIVEMIND_DOCS_PRIVATE_DIR;
+      rmSync(privDir, { recursive: true, force: true });
+    }
   });
 
   it("returns not-found for a leaf whose doc does not exist", async () => {

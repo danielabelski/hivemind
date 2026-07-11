@@ -251,18 +251,36 @@ describe("upsertDoc", () => {
     expect(calls).toHaveLength(2);
     // The DELETE clears the namespaced id AND the legacy bare-doc_id row, so
     // pre-scope tables converge instead of accumulating a duplicate doc_id.
-    // The legacy clause is constrained to THIS project — another project's
-    // legacy row with the same bare doc_id must survive in a shared table.
-    // The second clause sweeps by doc_id+project: it converges BOTH legacy
-    // bare-id rows AND setDoc's random-UUID rows onto the composite id,
-    // without ever touching another project's rows.
+    // The legacy clause is constrained to THIS project AND THIS scope — another
+    // project's legacy row, or a SIBLING scope (a branch overlay / the canonical
+    // main row) with the same bare doc_id, must survive in a shared table.
     expect(calls[0]).toBe(
-      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (doc_id = 'src/a.ts' AND project = 'p')`,
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|main|src/a.ts' OR (doc_id = 'src/a.ts' AND project = 'p' AND scope = 'main')`,
     );
     expect(calls[1]).toMatch(/^INSERT INTO "hivemind_docs"/);
     // id column is the deterministic composite, NOT a random uuid
     expect(calls[1]).toContain(`'p|main|src/a.ts', 'src/a.ts',`);
-    expect(calls[1]).toContain(`'p', 'main', 1, `); // project, scope, always version 1
+    expect(calls[1]).toContain(`'p', 'main', E'{}', 1, `); // project, scope, source_fp, version 1
+  });
+
+  it("writing a branch overlay scopes the DELETE — never touches the main row", async () => {
+    // The regression that motivated the scope guard: a branch/user overlay
+    // (scope = u:<user>|b:<branch>) shares (project, doc_id) with the canonical
+    // main row. Without the scope guard, the legacy convergence clause would
+    // delete main when writing the overlay, silently destroying the shared doc.
+    const { calls, query } = mockQuery([() => [], () => []]);
+    await upsertDoc(query, TBL, {
+      doc_id: "src/a.ts", path: "/docs/p/a.ts.md", content: "x", project: "p",
+      scope: "u:alice|b:feature",
+    });
+    // DELETE targets ONLY this overlay's id + same-scope duplicates. The main
+    // row (scope='main') is not in the predicate, so it survives.
+    expect(calls[0]).toBe(
+      `DELETE FROM "hivemind_docs" WHERE id = 'p|u:alice|b:feature|src/a.ts' ` +
+      `OR (doc_id = 'src/a.ts' AND project = 'p' AND scope = 'u:alice|b:feature')`,
+    );
+    expect(calls[0]).not.toContain("scope = 'main'");
+    expect(calls[1]).toContain(`'p', 'u:alice|b:feature', E'{}', 1, `); // project, overlay scope, source_fp
   });
 
   it("retry after a timeout re-runs DELETE+INSERT — never forks a second row", async () => {
@@ -496,6 +514,26 @@ describe("listDocs", () => {
     expect(rows.map(r => r.doc_id).sort()).toEqual(["A", "B"]);
   });
 
+  it("readerScope resolves each doc to the reader's overlay, else main (branch view)", async () => {
+    const { calls, query } = mockQuery([
+      () => [
+        // page A: main + a b:feat overlay -> reader on b:feat sees the overlay
+        fakeRow({ id: "am", doc_id: "A", version: 9, content: "A main", scope: "main" }),
+        fakeRow({ id: "ao", doc_id: "A", version: 1, content: "A overlay", scope: "b:feat" }),
+        // page B: only main -> falls back to main
+        fakeRow({ id: "bm", doc_id: "B", version: 1, content: "B main", scope: "main" }),
+        // page C: only a FOREIGN branch overlay -> hidden (no row surfaces)
+        fakeRow({ id: "co", doc_id: "C", version: 1, content: "C other", scope: "b:other" }),
+      ],
+    ]);
+    const rows = await listDocs(query, TBL, { readerScope: "b:feat" });
+    const byId = new Map(rows.map(r => [r.doc_id, r.content]));
+    expect(byId.get("A")).toBe("A overlay");
+    expect(byId.get("B")).toBe("B main");
+    expect(byId.has("C")).toBe(false); // foreign overlay never surfaces
+    expect(calls[0]).toContain(", scope, source_fp FROM"); // scope column selected in this mode
+  });
+
   it("union order cannot resurrect a stale version: v1 seen FIRST, v2 still wins", async () => {
     // stableUnionRows returns first-seen order across re-reads — the SQL
     // ORDER BY does not survive it. The latest pick must be by comparison.
@@ -607,6 +645,54 @@ describe("getDocLatest", () => {
     await getDocLatest(query, TBL, "X", { project: "p2" });
     expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2'`);
   });
+
+  it("optional scope selector confines resolution to one identity (branch overlay safety)", async () => {
+    // With branch overlays, the same (project, doc_id) exists at scope 'main'
+    // AND at 'b:<branch>'. A write-resolution read must pin the scope so editing
+    // an overlay never resolves (and then version-bumps) the main row.
+    const { calls, query } = mockQuery([() => []]);
+    await getDocLatest(query, TBL, "X", { project: "p2", scope: "b:feat" });
+    expect(calls[0]).toContain(`doc_id = 'X' AND project = 'p2' AND scope = 'b:feat'`);
+  });
+
+  it("readerScope selects the scope column and returns the reader's overlay over main", async () => {
+    // Read-side precedence: the SELECT must include `scope` (not filter by it —
+    // all candidates are fetched), and the reader on b:feat gets the overlay
+    // even though main has a higher version.
+    const { calls, query } = mockQuery([() => [
+      fakeRow({ id: "m", doc_id: "X", version: 7, content: "MAIN", scope: "main" }),
+      fakeRow({ id: "o", doc_id: "X", version: 1, content: "OVERLAY", scope: "b:feat" }),
+    ]]);
+    const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
+    expect(calls[0]).toContain(", scope, source_fp FROM");   // scope column is selected
+    expect(calls[0]).not.toContain("AND scope =");  // NOT filtered — all scopes fetched
+    expect(row?.content).toBe("OVERLAY");
+  });
+
+  it("readerScope falls back to main when the reader's branch has no overlay", async () => {
+    const { query } = mockQuery([() => [
+      fakeRow({ id: "m", doc_id: "X", version: 3, content: "MAIN", scope: "main" }),
+      fakeRow({ id: "o", doc_id: "X", version: 9, content: "OTHER", scope: "b:other" }),
+    ]]);
+    const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
+    expect(row?.content).toBe("MAIN"); // never another branch's overlay
+  });
+
+  it("readerScope degrades to a scope-less read when the column is missing", async () => {
+    // First SELECT (with scope) throws 'column does not exist'; the catch retries
+    // the scope-less SELECT, and every row reads as main.
+    let call = 0;
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      calls.push(sql);
+      if (call++ === 0 && sql.includes(", scope, source_fp FROM")) throw new Error(`column "scope" does not exist`);
+      return [fakeRow({ doc_id: "X", version: 2, content: "LEGACY" })];
+    });
+    const row = await getDocLatest(query, TBL, "X", { projectOrLegacy: "p", readerScope: "b:feat" });
+    expect(row?.content).toBe("LEGACY");
+    expect(calls[0]).toContain(", scope, source_fp FROM");
+    expect(calls[1]).not.toContain(", scope, source_fp FROM");
+  });
 });
 
 // ── listDocMeta (light index read — no content) ──────────────────────────────
@@ -649,6 +735,18 @@ describe("listDocMeta", () => {
 // ── listDocsByIds (filtered read for index summaries + the scale path) ────────
 
 describe("listDocsByIds", () => {
+  it("readerScope resolves per doc_id by branch precedence, never a foreign overlay", async () => {
+    const { query } = mockQuery([() => [
+      fakeRow({ id: "am", doc_id: "a.ts", version: 9, content: "a main", scope: "main" }),
+      fakeRow({ id: "ao", doc_id: "a.ts", version: 1, content: "a overlay", scope: "b:feat" }),
+      fakeRow({ id: "bx", doc_id: "b.ts", version: 5, content: "b other", scope: "b:other" }), // foreign only
+    ]]);
+    const rows = await listDocsByIds(query, TBL, ["a.ts", "b.ts"], { readerScope: "b:feat" });
+    const byId = new Map(rows.map((r) => [r.doc_id, r.content]));
+    expect(byId.get("a.ts")).toBe("a overlay"); // reader's overlay wins over main
+    expect(byId.has("b.ts")).toBe(false);        // foreign overlay hidden
+  });
+
   it("builds a de-duplicated IN list and returns latest-per-doc", async () => {
     const { calls, query } = mockQuery([
       () => [

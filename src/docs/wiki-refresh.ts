@@ -28,6 +28,10 @@ import { join } from "node:path";
 import { commitRefresh, readRefreshMeta, releaseClaim, tryClaimTurn } from "./meta.js";
 import { gateDocEdit } from "./gate.js";
 import { buildUpdatePrompt, updateWikiPage, DEFAULT_WIKI_MAX_CHANGED_LINES, NO_CHANGE } from "./wiki-update.js";
+import { parseScope, trunkBranch, currentBranch } from "./branch-scope.js";
+import { sourcePushed, workingTreeClean } from "./fingerprint.js";
+import { promoteMergedOverlays } from "./promote.js";
+import { writePrivateDoc, deletePrivateDoc } from "./private-store.js";
 import {
   appendFilesIndex,
   generateWikiPages,
@@ -87,7 +91,7 @@ export interface WikiRefreshArgs {
 
 export interface WikiRefreshOutcome {
   doc_id: string;
-  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped";
+  action: "patched" | "mechanics_refreshed" | "no_change" | "regenerated" | "generated" | "failed" | "skipped" | "held" | "promoted";
   reasons?: string[];
 }
 
@@ -251,15 +255,29 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
   const lastSha = claim.meta.last_refresh_sha;
   const patchCounts = { ...claim.meta.patch_counts };
 
-  // The refresh window. No prior sha (first cycle) or an unreachable sha
-  // (history rewritten) → null = "everything is a candidate", logged.
+  // The refresh window base. Normally the stored cursor. But on a BRANCH's
+  // first cycle (empty cursor), seed it from the merge-base with the trunk so
+  // the window is the branch's OWN changes — otherwise every page would be
+  // regenerated as an overlay identical to main (correct but wasteful).
+  let baseSha = lastSha;
+  if (lastSha === "" && parseScope(scope).kind === "branch") {
+    const trunk = trunkBranch(args.git);
+    const mb = (args.git(["merge-base", "HEAD", `origin/${trunk}`]) ?? args.git(["merge-base", "HEAD", trunk]))?.trim();
+    if (mb) {
+      baseSha = mb;
+      log(`branch first cycle — window from merge-base ${mb.slice(0, 8)}..HEAD`);
+    }
+  }
+
+  // The refresh window. No base sha (first cycle on the trunk) or an unreachable
+  // sha (history rewritten) → null = "everything is a candidate", logged.
   let changed: Set<string> | null = null;
-  if (lastSha !== "") {
-    const out = args.git(["diff", "--name-only", `${lastSha}..HEAD`]);
+  if (baseSha !== "") {
+    const out = args.git(["diff", "--name-only", `${baseSha}..HEAD`]);
     if (out !== null) {
       changed = new Set(out.split("\n").map((l) => l.trim()).filter(Boolean));
     } else {
-      log(`diff ${lastSha}..HEAD unavailable — full-candidate cycle`);
+      log(`diff ${baseSha}..HEAD unavailable — full-candidate cycle`);
     }
   } else {
     log("first refresh cycle — full-candidate cycle");
@@ -280,20 +298,87 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
 
   const groups = selectWikiGroups(args.snap);
   const pages = new Map<string, DocRow>();
-  for (const d of await listDocs(args.query, args.tableName, { project: args.project, status: "active", limit: 100000 })) {
+  // Read the branch's VIEW: on a feature branch `readerScope` resolves each page
+  // to its own overlay where one exists, and to main as the base everywhere
+  // else — so a first patch on the branch copies-on-write from main.
+  for (const d of await listDocs(args.query, args.tableName, { project: args.project, status: "active", limit: 100000, readerScope: scope })) {
     if (d.doc_id.startsWith(WIKI_DOC_PREFIX)) pages.set(d.doc_id, d);
   }
 
   const regenerate = args.regenerate ?? defaultRegenerate(args);
   const outcomes: WikiRefreshOutcome[] = [];
   let failures = 0;
+  // Pages written PRIVATELY (unpushed) have pending "publish on push" work. A
+  // push does NOT move HEAD, so if we advanced the cursor past them the next
+  // cycle would short-circuit as up-to-date and never publish them. Counting
+  // them keeps the cursor behind until they are pushed (then published). (Dirty/
+  // detached holds don't need this: the commit that cleans them moves HEAD.)
+  let pendingPublish = 0;
+
+  // Publish gate: on a branch, only pages whose source is already on
+  // origin/<branch> may be written to the SHARED cloud table. A page built from
+  // an unpushed local commit is HELD — never leaked as a doc describing code the
+  // team can't see. (Readers on the branch fall back to main + the staleness
+  // banner until the code is pushed and the next cycle publishes the overlay.)
+  const parsedScope = parseScope(scope);
+  const branchName = parsedScope.kind === "branch" ? parsedScope.branch : null;
+  // Detached HEAD resolves to `main` scope (branchName === null) but has no
+  // branch identity. It must be computed BEFORE the promotion block below: a
+  // detached checkout points at an arbitrary commit, and promoting branch
+  // overlays into the canonical `main` corpus from it would bypass the branch
+  // gate. So detect it up front and both skip promotion and hold all writes.
+  const detached = branchName === null && currentBranch(args.git) === null;
+
+  // On the trunk, first PROMOTE any branch overlays whose source now matches
+  // main (a merge landed their changes) — reuse the overlay instead of paying to
+  // regenerate. Promoted pages are then skipped by the loop below. NEVER on a
+  // detached HEAD (see above) — it has no branch identity to promote from.
+  const promotedIds = new Set<string>();
+  if (branchName === null && !detached) {
+    const groupFiles = new Map(groups.map((g) => [wikiDocId(g.key), g.files]));
+    for (const p of await promoteMergedOverlays(args.query, args.tableName, args.project, args.git, groupFiles, { agent: args.agent, pluginVersion: args.pluginVersion })) {
+      promotedIds.add(p.doc_id);
+      outcomes.push({ doc_id: p.doc_id, action: "promoted", reasons: [`from ${p.fromScope}`] });
+    }
+  }
+  // A page may be written to the shared cloud only when it is committed-clean
+  // (content == committed HEAD, so it never documents uncommitted bytes) AND —
+  // on a branch — its source is already on origin/<branch>. Checked at the write
+  // sites (not for skipped pages). Returns the hold reason, or null if writable.
+  const holdReason = (files: string[]): string | null => {
+    if (detached) return "detached HEAD — ambiguous branch identity";
+    if (!workingTreeClean(args.git, files)) return "uncommitted changes in member files";
+    return null;
+  };
+  // A committed-clean page on a branch not yet on origin is PRIVATE: written to
+  // the local store, never the shared cloud, until the source is pushed.
+  const isPrivate = (files: string[]): boolean =>
+    branchName !== null && !sourcePushed(args.git, files, branchName);
+  const stampPrivate = (doc: { doc_id: string; path: string; content: string; source_fp: string; tier: "fast" | "slow" }): void =>
+    writePrivateDoc(args.project, scope, { ...doc, updated_at: nowFn().toISOString() });
 
   for (const group of groups) {
     const docId = wikiDocId(group.key);
     const page = pages.get(docId);
 
+    if (promotedIds.has(docId)) continue; // already promoted from a merged overlay
+
     // New subsystem → fresh page.
     if (!page) {
+      const hr = holdReason(group.files);
+      if (hr) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: [hr] });
+        continue;
+      }
+      // A brand-new subsystem authored on an unpushed branch is held from the
+      // cloud (full regeneration writes to the shared table); it publishes once
+      // the source is pushed. (Private materialization covers UPDATES to existing
+      // pages via the patch path below.)
+      if (isPrivate(group.files)) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["new subsystem on an unpushed branch — publishes on push"] });
+        pendingPublish++;
+        continue;
+      }
       const res = await regenerate(group);
       if (res === "skipped") {
         outcomes.push({ doc_id: docId, action: "skipped", reasons: ["below min size — no page wanted"] });
@@ -301,7 +386,7 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       }
       outcomes.push({ doc_id: docId, action: res === "created" ? "generated" : "failed" });
       if (res === "failed") failures++;
-      else patchCounts[docId] = 0;
+      else { patchCounts[docId] = 0; if (branchName) deletePrivateDoc(args.project, scope, docId); }
       continue;
     }
 
@@ -315,9 +400,26 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     const touched = changed === null || group.files.some((f) => changed.has(f));
     if (!touched && !membershipChanged) continue;
 
-    const diff = lastSha === "" ? null : args.git(["diff", `${lastSha}..HEAD`, "--", ...group.files]);
+    const hr = holdReason(group.files);
+    if (hr) {
+      outcomes.push({ doc_id: docId, action: "held", reasons: [hr] });
+      continue;
+    }
+
+    // Whether this page's source is unpushed (→ private, cloud writes forbidden).
+    // Computed BEFORE the regeneration branches so they never leak private
+    // content to the shared cloud via `regenerate()` → generateWikiPages/upsertDoc.
+    const priv = isPrivate(group.files);
+
+    const diff = baseSha === "" ? null : args.git(["diff", `${baseSha}..HEAD`, "--", ...group.files]);
     if (diff === null && !membershipChanged) {
-      // No usable diff to patch from → regenerate rather than guess.
+      // No usable diff to patch from → normally regenerate. But a private page
+      // must NOT be regenerated to the cloud; hold it until pushed.
+      if (priv) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["private page needs regeneration — publishes on push"] });
+        pendingPublish++;
+        continue;
+      }
       const res = await regenerate(group);
       outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: ["no usable diff"] });
       if (res === "failed") failures++;
@@ -329,6 +431,8 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       query: args.query,
       tableName: args.tableName,
       page,
+      scope,
+      privateSink: priv ? stampPrivate : undefined,
       pageKey: group.key,
       files: group.files,
       snap: args.snap,
@@ -344,12 +448,27 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
       agent: args.agent,
       pluginVersion: args.pluginVersion,
     });
+    if (priv) {
+      // Written to the local private store — pending publish once pushed.
+      pendingPublish++;
+    } else if (branchName) {
+      // On the cloud (source pushed) → any pre-push private copy is now obsolete.
+      deletePrivateDoc(args.project, scope, docId);
+    }
 
     if (out.action === "escalate") {
-      const res = await regenerate(group);
-      outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: out.reasons });
-      if (res === "failed") failures++;
-      else patchCounts[docId] = 0;
+      // Over-budget patch → normally full regeneration (which escalate did NOT
+      // write). A private page can't regenerate to the cloud, so it is held and
+      // stays pending (already counted above) until pushed — then it regenerates
+      // to the cloud cleanly.
+      if (priv) {
+        outcomes.push({ doc_id: docId, action: "held", reasons: ["private page over patch budget — regenerates on push"] });
+      } else {
+        const res = await regenerate(group);
+        outcomes.push({ doc_id: docId, action: res === "failed" ? "failed" : "regenerated", reasons: out.reasons });
+        if (res === "failed") failures++;
+        else patchCounts[docId] = 0;
+      }
     } else if (out.action === "failed") {
       outcomes.push({ doc_id: docId, action: "failed", reasons: [out.reason] });
       failures++;
@@ -361,10 +480,13 @@ export async function runWikiRefreshCycle(args: WikiRefreshArgs): Promise<WikiRe
     }
   }
 
-  // Commit point: the sha advances ONLY on a fully clean cycle. Failures leave
-  // it untouched so the next turn redoes the window (idempotent by design).
-  if (failures > 0) {
-    log(`${failures} page(s) failed — sha NOT advanced, next turn redoes the window`);
+  // Commit point: the sha advances ONLY on a fully clean cycle with nothing left
+  // to publish. Failures OR pending-private pages leave it untouched so the next
+  // turn redoes the window (idempotent by design) — critically, so a page that
+  // was private this cycle gets published once its source is pushed (the push
+  // doesn't move HEAD, so an advanced cursor would strand it forever).
+  if (failures > 0 || pendingPublish > 0) {
+    log(`${failures} failed, ${pendingPublish} pending publish — sha NOT advanced, next turn redoes the window`);
     // Free the lease so the retry does not have to wait out the 30-min TTL;
     // the untouched sha makes the redo idempotent.
     await releaseClaim(args.query, args.tableName, args.project, scope, {

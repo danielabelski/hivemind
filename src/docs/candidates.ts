@@ -21,7 +21,7 @@ import type { GraphSnapshot } from "../graph/types.js";
 /** Run `git <args>` in `cwd`; returns stdout, or null on any failure. */
 export type GitRunner = (args: string[]) => string | null;
 
-function defaultGit(cwd: string): GitRunner {
+export function defaultGit(cwd: string): GitRunner {
   return (args) => {
     try {
       return execFileSync("git", ["-C", cwd, ...args], {

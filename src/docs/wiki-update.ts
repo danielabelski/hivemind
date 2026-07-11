@@ -24,7 +24,9 @@
 
 import { gateDocEdit } from "./gate.js";
 import { unwrapModelOutput } from "./refresh-llm.js";
-import { editDoc } from "./write.js";
+import { editDoc, upsertDoc } from "./write.js";
+import { computeFingerprint, serializeFingerprint } from "./fingerprint.js";
+import { defaultGit } from "./candidates.js";
 import { appendFilesIndex, collectWikiAnchors, stripFilesIndex, type RunPromptFn } from "./wiki-generate.js";
 import type { DocEmbedder } from "./embed.js";
 import type { DocRow, QueryFn } from "./read.js";
@@ -106,6 +108,20 @@ export interface WikiUpdateArgs {
   embed?: DocEmbedder;
   agent?: string;
   pluginVersion?: string;
+  /**
+   * The branch identity to WRITE to (`main`, or `b:<branch>`). When it differs
+   * from the resolved `page`'s scope, the patched content is a copy-on-write
+   * overlay for this branch: it is CREATED at the target scope from the (main)
+   * base, never overwriting main. When it matches, the row is patched in place.
+   * Default `main` — legacy in-place behavior.
+   */
+  scope?: string;
+  /**
+   * When set, the patched page is written HERE (the local private store)
+   * instead of the shared cloud table — used for committed-but-unpushed branch
+   * code, which must never reach the cloud. The caller persists it locally.
+   */
+  privateSink?: (doc: { doc_id: string; path: string; content: string; source_fp: string; tier: "fast" | "slow" }) => void;
 }
 
 export type WikiUpdateOutcome =
@@ -176,20 +192,57 @@ export async function updateWikiPage(args: WikiUpdateArgs): Promise<WikiUpdateOu
   }
 
   try {
+    const source_fp = serializeFingerprint(computeFingerprint(defaultGit(args.repoRoot), args.files));
+
+    // Private branch code: persist locally instead of the shared cloud — and do
+    // NOT embed it (the embedder may be a remote service; private branch docs
+    // must never leave this machine).
+    if (args.privateSink) {
+      args.privateSink({ doc_id: args.page.doc_id, path: args.page.path, content: newContent, source_fp, tier: args.page.tier });
+      return noChange
+        ? { action: "mechanics_refreshed", version: args.page.version }
+        : { action: "patched", version: args.page.version, changedLines: gate.changedLines };
+    }
+
     const content_embedding = args.embed ? (await args.embed(newContent)) ?? undefined : undefined;
-    const res = await editDoc(
-      args.query,
-      args.tableName,
-      {
+    const targetScope = args.scope ?? "main";
+    const pageScope = args.page.scope ?? "main";
+    let res: { version: number };
+    if (pageScope === targetScope) {
+      // In-place patch of the row that already exists at this scope (main, or an
+      // existing branch overlay). One UPDATE — the Deeplake coalescing rule.
+      res = await editDoc(
+        args.query,
+        args.tableName,
+        {
+          doc_id: args.page.doc_id,
+          content: newContent,
+          anchors: newAnchors,
+          source_fp,
+          agent: args.agent ?? "docs-wiki-update",
+          plugin_version: args.pluginVersion,
+          content_embedding,
+        },
+        { project: args.page.project, scope: targetScope },
+      );
+    } else {
+      // Copy-on-write: the base is main but we are on a branch — CREATE the
+      // overlay at the target scope (upsert = create-or-replace by fixed id),
+      // never touching the main row it was based on.
+      res = await upsertDoc(args.query, args.tableName, {
         doc_id: args.page.doc_id,
+        path: args.page.path,
         content: newContent,
         anchors: newAnchors,
+        tier: args.page.tier,
+        project: args.page.project,
+        scope: targetScope,
+        source_fp,
         agent: args.agent ?? "docs-wiki-update",
         plugin_version: args.pluginVersion,
         content_embedding,
-      },
-      { project: args.page.project },
-    );
+      });
+    }
     return noChange
       ? { action: "mechanics_refreshed", version: res.version }
       : { action: "patched", version: res.version, changedLines: gate.changedLines };
