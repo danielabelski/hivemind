@@ -90,6 +90,14 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR #307 — feat: mask secrets on capture. The redactor is fully
+        // unit-tested (recall + precision + entropy backstop); lock at 90.
+        "src/hooks/shared/redact.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
         // PR #60 — fix/grep-dual-table-and-normalize.
         // Raised to 90 to surface the red path in the PR coverage comment
         // for metrics that sit between 80 and 90 (e.g. grep-core branches

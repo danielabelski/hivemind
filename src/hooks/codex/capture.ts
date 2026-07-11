@@ -15,6 +15,7 @@
 import { readStdin } from "../../utils/stdin.js";
 import { type Config } from "../../config.js";
 import { resolveCaptureConfig } from "../shared/dir-gate.js";
+import { redactSecrets } from "../shared/redact.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
   }
 
   const sessionPath = buildSessionPath(config, input.session_id);
-  const line = JSON.stringify(entry);
+  const line = redactSecrets(JSON.stringify(entry));
   log(`writing to ${sessionPath}`);
 
   const projectName = projectNameFromCwd(input.cwd);
