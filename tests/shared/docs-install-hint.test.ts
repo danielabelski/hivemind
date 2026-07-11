@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { docsInstallLines } from "../../src/docs/install-hint.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  docsHintShown,
+  docsInstallLines,
+  markDocsHintShown,
+} from "../../src/docs/install-hint.js";
 
 describe("docsInstallLines (install-time docs onboarding)", () => {
   it("explains both enabling and disabling in one block", () => {
@@ -16,5 +23,25 @@ describe("docsInstallLines (install-time docs onboarding)", () => {
     const lines = docsInstallLines();
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.every((l) => typeof l === "string" && l.length > 0)).toBe(true);
+  });
+});
+
+describe("first-install sentinel (show the hint once)", () => {
+  let dir: string;
+  let file: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "docs-hint-"));
+    file = join(dir, ".docs-hint-shown");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("is not shown before the first install, shown after marking", () => {
+    expect(docsHintShown(file)).toBe(false); // first install → show
+    markDocsHintShown(file);
+    expect(docsHintShown(file)).toBe(true); // subsequent installs → quiet
+  });
+
+  it("markDocsHintShown never throws on an unwritable path (best-effort)", () => {
+    expect(() => markDocsHintShown("/proc/nonexistent/x/.docs-hint-shown")).not.toThrow();
   });
 });
