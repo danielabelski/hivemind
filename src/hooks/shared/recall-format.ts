@@ -50,9 +50,9 @@ export interface RecallHit {
   summary?: string;
   description: string;
   lastUpdate: string; // ISO-ish date string from last_update_date
-  /** semantic: cosine 0..1; lexical: count of distinct keywords matched. */
+  /** semantic cosine similarity, 0..1 (higher = closer). */
   score: number;
-  mode: "semantic" | "lexical";
+  mode: "semantic";
 }
 
 /**

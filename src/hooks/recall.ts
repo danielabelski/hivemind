@@ -10,9 +10,10 @@
  * `~/.deeplake/recall-events.jsonl` sink (independent of HIVEMIND_DEBUG) so
  * usage / hit-rate is directly measurable.
  *
- * Search mode: SEMANTIC (cosine) when embeddings are available, else falls back
- * to LEXICAL (ILIKE keyword overlap) — so recall works WITHOUT the embeddings
- * model installed. Each mode has its own precision gate.
+ * Search mode: SEMANTIC (cosine) ONLY. When embeddings are unavailable (or the
+ * query yields no vector), recall is SKIPPED — there is deliberately no lexical
+ * (ILIKE) fallback, which forced unindexed full-table scans on the backend
+ * (seconds-long per prompt) for little precision. Better to return nothing.
  *
  * Design guarantees:
  *   - Precision-biased: skip aggressively; never inject below the bar.
@@ -40,13 +41,11 @@ import { dirname, join } from "node:path";
 import {
   shouldRecall,
   passesThreshold,
-  extractKeywords,
   proactiveRecallDisabled,
   parsePositive,
   RECALL_THRESHOLD,
-  MIN_LEXICAL_OVERLAP,
 } from "./shared/recall-gate.js";
-import { recallTopHit, recallTopHitLexical } from "./shared/recall-query.js";
+import { recallTopHit } from "./shared/recall-query.js";
 import { entrypointPassesOnlyCliGate } from "./shared/capture-gate.js";
 import { formatRecallContext, type RecallHit } from "./shared/recall-format.js";
 import { withDeadline } from "./shared/with-deadline.js";
@@ -103,9 +102,10 @@ function emit(additionalContext: string): void {
 }
 
 /**
- * Find the top hit: semantic when embeddings yield a vector, else lexical.
- * Also falls back to lexical when semantic finds nothing (e.g. summaries not
- * embedded yet). Bounded by withDeadline in main.
+ * Find the top hit: SEMANTIC-ONLY. Embeds the prompt and takes the top cosine
+ * hit that clears the threshold. If embeddings are unavailable, the prompt
+ * yields no vector, or nothing clears the bar, recall is skipped — there is
+ * deliberately no lexical (ILIKE) fallback. Bounded by withDeadline in main.
  */
 async function findHit(
   input: RecallInput,
@@ -132,10 +132,10 @@ async function findHit(
   // Failure-isolated: catch our own I/O errors and report `error` so the caller
   // (and telemetry) never mislabels a backend failure as a deadline timeout.
   try {
-    // Hybrid: prefer a semantic hit that clears the threshold; otherwise fall
-    // through to lexical (exact keyword/identifier match), the same way the grep
-    // path blends both. A below-threshold semantic hit must NOT suppress a good
-    // lexical match (stack traces / exact error names).
+    // SEMANTIC-ONLY: take the top cosine hit that clears the threshold. There is
+    // deliberately NO lexical (ILIKE) fallback — an unindexed keyword scan over
+    // summary+message is a full-table scan on the backend (seconds per prompt),
+    // so if semantic is unavailable or misses we skip rather than fall back.
     let semanticHit: RecallHit | null = null;
     if (SEMANTIC_ENABLED) {
       // Self-heal the shared-deps symlink BEFORE building the EmbedClient.
@@ -143,9 +143,9 @@ async function findHit(
       // `node_modules` symlink that `hivemind embeddings install` created.
       // capture.js repairs this too, but recall and capture are independent
       // async UserPromptSubmit hooks — recall can run first, so without this
-      // the first prompt after an upgrade would silently lose semantic recall
-      // (falling back to lexical/null) even though embeddings are installed.
-      // Best-effort: a failure here just means we degrade to lexical.
+      // the first prompt after an upgrade would silently skip recall entirely
+      // (there is no lexical fallback) even though embeddings are installed.
+      // Best-effort: a failure here just means we skip semantic recall.
       try { ensurePluginNodeModulesLink({ bundleDir: __bundleDir }); } catch { /* best-effort */ }
       // Warm the daemon (spawn + wait for socket, bounded) THEN embed with one
       // retry, so a cold first prompt doesn't lose semantic recall to the
@@ -164,13 +164,7 @@ async function findHit(
       }
     }
 
-    const keywords = extractKeywords(prompt);
-    if (keywords.length >= 2) {
-      const lex = await recallTopHitLexical(q, config.tableName, keywords, opts);
-      if (lex && lex.score >= MIN_LEXICAL_OVERLAP) return { kind: "hit", hit: lex };
-    }
-
-    // Nothing cleared a bar. Surface the below-threshold semantic hit (so
+    // Nothing cleared the bar. Surface the below-threshold semantic hit (so
     // telemetry records 'below') if we had one; otherwise nothing matched.
     return semanticHit ? { kind: "hit", hit: semanticHit } : { kind: "none" };
   } catch (e) {
@@ -182,11 +176,9 @@ async function findHit(
   }
 }
 
-/** Mode-aware relevance gate: cosine threshold for semantic, overlap for lexical. */
+/** Relevance gate: cosine threshold for the (semantic-only) hit. */
 function hitPasses(hit: RecallHit): boolean {
-  return hit.mode === "semantic"
-    ? passesThreshold(hit.score)
-    : hit.score >= MIN_LEXICAL_OVERLAP;
+  return passesThreshold(hit.score);
 }
 
 async function main(): Promise<void> {
@@ -237,7 +229,7 @@ async function main(): Promise<void> {
 
   const hit = res.hit;
   const teammate = hit.author !== config.userName;
-  const bar = hit.mode === "semantic" ? `thr=${RECALL_THRESHOLD}` : `min=${MIN_LEXICAL_OVERLAP}`;
+  const bar = `thr=${RECALL_THRESHOLD}`;
   if (!hitPasses(hit)) {
     log(`searched mode=${hit.mode} hit=below score=${hit.score} ${bar} author=${hit.author}`);
     recordRecallEvent({ event: "below", gate: reason, mode: hit.mode, score: hit.score, author: hit.author, teammate, project: hit.project, session });

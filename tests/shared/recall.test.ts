@@ -15,7 +15,7 @@ import {
   extractSection,
   type RecallHit,
 } from "../../src/hooks/shared/recall-format.js";
-import { recallTopHit, recallTopHitLexical } from "../../src/hooks/shared/recall-query.js";
+import { recallTopHit } from "../../src/hooks/shared/recall-query.js";
 import { withDeadline } from "../../src/hooks/shared/with-deadline.js";
 import { recordRecallEvent } from "../../src/hooks/shared/recall-events.js";
 import { setFakeHome, clearFakeHome } from "./fake-home.js";
@@ -508,42 +508,6 @@ describe("extractKeywords — lexical fallback keyword extraction", () => {
   });
   it("returns few/no keywords for terse input (can't meet the lexical bar)", () => {
     expect(extractKeywords("ok go").length).toBeLessThan(2);
-  });
-});
-
-describe("recallTopHitLexical — ILIKE keyword-overlap fallback", () => {
-  const kw = ["parser", "typeerror"];
-
-  it("builds an overlap-ranked ILIKE query and tags the hit lexical", async () => {
-    let captured = "";
-    const query = async (sql: string) => {
-      captured = sql;
-      return [{ path: "/summaries/levon/s.md", author: "levon", project: "indra", description: "d", last_update_date: "2026-06-18", score: 2 }];
-    };
-    const hit = await recallTopHitLexical(query, "org_memory", kw, { excludePath: "/summaries/me/x.md" });
-    expect(captured).toContain("path LIKE '/summaries/%'"); // summaries only
-    expect(captured).toContain("ILIKE '%parser%'");
-    expect(captured).toContain("ILIKE '%typeerror%'");
-    expect(captured).toContain("CASE WHEN"); // overlap count
-    expect(captured).toContain('FROM "org_memory"');
-    expect(captured).toContain("path <> '/summaries/me/x.md'");
-    // overlap ties are common (small ints) → break deterministically by recency
-    expect(captured).toContain("ORDER BY score DESC, last_update_date DESC, path ASC");
-    expect(hit).toMatchObject({ author: "levon", score: 2, mode: "lexical" });
-  });
-
-  it("returns null when fewer than 2 keywords (precision floor)", async () => {
-    let called = false;
-    const hit = await recallTopHitLexical(async () => { called = true; return []; }, "t", ["only"], {});
-    expect(hit).toBeNull();
-    expect(called).toBe(false);
-  });
-
-  it("applies the project filter when provided", async () => {
-    let captured = "";
-    await recallTopHitLexical(async (sql) => { captured = sql; return []; }, "t", kw, { project: "indra", limit: 5 });
-    expect(captured).toContain("project = 'indra'");
-    expect(captured).toContain("LIMIT 5"); // explicit limit honored (vs default 3)
   });
 });
 

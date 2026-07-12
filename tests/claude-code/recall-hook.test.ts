@@ -4,9 +4,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  * Orchestration tests for src/hooks/recall.ts — the UserPromptSubmit proactive-
  * recall hook. Drives main() end-to-end with mocked boundaries (stdin, config,
  * embeddings, DeeplakeApi, plugin-state, debug log) and asserts the emit/skip
- * decision, semantic↔lexical fallback, mode-aware gating, latency budget, and
- * failure isolation. The pure helpers (gate/format/query/deadline) run for
- * real — only the I/O boundary is mocked.
+ * decision, semantic-only search (no lexical/ILIKE fallback), the cosine gate,
+ * latency budget, and failure isolation. The pure helpers
+ * (gate/format/query/deadline) run for real — only the I/O boundary is mocked.
  *
  * SEMANTIC_ENABLED and RECALL_BUDGET_MS are read at module-eval time, so each
  * case sets env + mocks BEFORE the per-test dynamic import (vi.resetModules).
@@ -78,7 +78,7 @@ beforeEach(() => {
   stdinMock.mockReset().mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid", cwd: "/repo" });
   loadConfigMock.mockReset().mockReturnValue(CONFIG);
   pluginEnabledMock.mockReset().mockReturnValue(true);
-  embeddingsDisabledMock.mockReset().mockReturnValue(true); // default: lexical
+  embeddingsDisabledMock.mockReset().mockReturnValue(false); // default: semantic on (only search mode)
   embedMock.mockReset().mockResolvedValue([0.1, 0.2, 0.3]);
   queryMock.mockReset().mockResolvedValue([]);
   debugLogMock.mockReset();
@@ -146,55 +146,34 @@ describe("recall hook — guards (no search, no emit)", () => {
   });
 });
 
-describe("recall hook — lexical path (no embeddings)", () => {
-  it("injects an attributed block on a lexical hit above the overlap floor", async () => {
+describe("recall hook — no embeddings (semantic-only: skip, never lexical)", () => {
+  it("skips the search entirely when embeddings are disabled — NO ILIKE fallback", async () => {
+    // The lexical (ILIKE) fallback was removed: it forced unindexed full-table
+    // scans on the backend. With embeddings off there is no search mode, so
+    // recall must return nothing WITHOUT ever querying.
+    embeddingsDisabledMock.mockReturnValue(true);
     queryMock.mockResolvedValue([row({ score: 4, author: "levon" })]);
-    const out = await runHook(); // embeddingsDisabled=true → lexical
-    const parsed = parse(out);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
-    expect(parsed.hookSpecificOutput.additionalContext).toContain("HIVEMIND RECALL");
-    expect(parsed.hookSpecificOutput.additionalContext).toContain("levon");
-    // It used the lexical ILIKE query, not the semantic one.
-    expect(queryMock.mock.calls[0][0]).toContain("ILIKE");
-    expect(queryMock.mock.calls[0][0]).not.toContain("<#>");
-    expect(embedMock).not.toHaveBeenCalled();
-    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("injected mode=lexical"));
-    // Always-on telemetry records the injection.
-    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "injected", mode: "lexical", teammate: true }));
-  });
-
-  it("does NOT inject when the lexical overlap is below the floor (records 'none')", async () => {
-    // A too-weak lexical match (overlap 1 < MIN 2) is treated as nothing
-    // relevant — recorded as 'none', not 'below' (which is for scored-but-low
-    // semantic hits).
-    queryMock.mockResolvedValue([row({ score: 1 })]);
     const out = await runHook();
     expect(out).toBeNull();
+    expect(queryMock).not.toHaveBeenCalled(); // no lexical query
+    expect(embedMock).not.toHaveBeenCalled(); // no embedding either
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "none" }));
   });
 
-  it("does not search when the prompt passes the gate but yields fewer than 2 keywords", async () => {
-    // "TypeError?" passes shouldRecall (signal) but extractKeywords → 1 token,
-    // so the lexical path must bail BEFORE querying (exercises keywords<2, not
-    // the gate's too-short branch).
-    stdinMock.mockResolvedValue({ prompt: "TypeError?", session_id: "sid", cwd: "/repo" });
-    const out = await runHook();
-    expect(out).toBeNull();
-    expect(queryMock).not.toHaveBeenCalled();
-  });
-
-  it("excludes the current session's own summary from results", async () => {
-    queryMock.mockResolvedValue([row({ score: 3 })]);
+  it("excludes the current session's own summary from the (semantic) results", async () => {
+    queryMock.mockResolvedValue([row({ score: 0.8 })]);
     await runHook();
     expect(queryMock.mock.calls[0][0]).toContain("path <> '/summaries/sasun/sid.md'");
   });
 
   it("restricts the search to summary rows and does NOT project-scope by cwd basename", async () => {
-    queryMock.mockResolvedValue([row({ score: 3 })]);
+    queryMock.mockResolvedValue([row({ score: 0.8 })]);
     await runHook(); // default fixture cwd = "/repo"
     const sql = queryMock.mock.calls[0][0];
     expect(sql).toContain("path LIKE '/summaries/%'"); // summaries only
     expect(sql).not.toContain("project ="); // no fragile basename scoping
+    expect(sql).toContain("<#>"); // cosine (semantic) query, not ILIKE
+    expect(sql).not.toContain("ILIKE");
   });
 });
 
@@ -229,44 +208,35 @@ describe("recall hook — semantic path (embeddings on)", () => {
     expect(embedMock).toHaveBeenCalled(); // proceeded to embed despite repair failure
   });
 
-  it("records 'below' (no inject) when semantic is below threshold AND lexical also misses", async () => {
+  it("records 'below' (no inject) when the semantic hit is below the cosine threshold", async () => {
     embeddingsDisabledMock.mockReturnValue(false);
-    queryMock.mockResolvedValue([row({ score: 0.2 })]); // semantic below; lexical overlap 0.2 < 2
+    queryMock.mockResolvedValue([row({ score: 0.2 })]); // semantic below threshold
     const out = await runHook();
     expect(out).toBeNull();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("mode=semantic hit=below"));
+    // No lexical retry: only the one semantic query ran.
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(queryMock.mock.calls[0][0]).not.toContain("ILIKE");
   });
 
-  it("HYBRID: a below-threshold semantic hit does not suppress a passing lexical match", async () => {
+  it("skips (no inject) when semantic finds no embedded rows — NO lexical fallback", async () => {
     embeddingsDisabledMock.mockReturnValue(false);
-    queryMock
-      .mockResolvedValueOnce([row({ score: 0.2 })])              // semantic: below threshold
-      .mockResolvedValueOnce([row({ score: 3, author: "levon" })]); // lexical: clears overlap
+    queryMock.mockResolvedValue([]); // semantic: no embedded rows
     const out = await runHook();
-    expect(parse(out).hookSpecificOutput.additionalContext).toContain("levon");
-    expect(queryMock.mock.calls[0][0]).toContain("<#>");   // semantic tried first
-    expect(queryMock.mock.calls[1][0]).toContain("ILIKE"); // then lexical wins
-    expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("injected mode=lexical"));
+    expect(out).toBeNull();
+    expect(queryMock).toHaveBeenCalledTimes(1); // only the semantic query, no ILIKE retry
+    expect(queryMock.mock.calls[0][0]).toContain("<#>");
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "none" }));
   });
 
-  it("falls back to lexical when semantic finds no embedded rows", async () => {
+  it("skips (no query at all) when the embed daemon is unavailable — NO lexical fallback", async () => {
     embeddingsDisabledMock.mockReturnValue(false);
-    queryMock
-      .mockResolvedValueOnce([])                       // semantic: no embedded rows
-      .mockResolvedValueOnce([row({ score: 3 })]);     // lexical: keyword hit
-    const out = await runHook();
-    expect(parse(out).hookSpecificOutput.additionalContext).toContain("HIVEMIND RECALL");
-    expect(queryMock.mock.calls[0][0]).toContain("<#>");   // 1st = semantic
-    expect(queryMock.mock.calls[1][0]).toContain("ILIKE"); // 2nd = lexical
-  });
-
-  it("falls back to lexical when the embed daemon is unavailable", async () => {
-    embeddingsDisabledMock.mockReturnValue(false);
-    embedMock.mockResolvedValue(null); // daemon down
+    embedMock.mockResolvedValue(null); // daemon down → no query vector
     queryMock.mockResolvedValue([row({ score: 3 })]);
     const out = await runHook();
-    expect(parse(out).hookSpecificOutput.additionalContext).toContain("HIVEMIND RECALL");
-    expect(queryMock.mock.calls[0][0]).toContain("ILIKE");
+    expect(out).toBeNull();
+    expect(queryMock).not.toHaveBeenCalled(); // no vector → never query
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ event: "none" }));
   });
 });
 
