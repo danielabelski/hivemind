@@ -102,9 +102,10 @@ function emit(additionalContext: string): void {
 }
 
 /**
- * Find the top hit: semantic when embeddings yield a vector, else lexical.
- * Also falls back to lexical when semantic finds nothing (e.g. summaries not
- * embedded yet). Bounded by withDeadline in main.
+ * Find the top hit: SEMANTIC-ONLY. Embeds the prompt and takes the top cosine
+ * hit that clears the threshold. If embeddings are unavailable, the prompt
+ * yields no vector, or nothing clears the bar, recall is skipped — there is
+ * deliberately no lexical (ILIKE) fallback. Bounded by withDeadline in main.
  */
 async function findHit(
   input: RecallInput,
@@ -142,9 +143,9 @@ async function findHit(
       // `node_modules` symlink that `hivemind embeddings install` created.
       // capture.js repairs this too, but recall and capture are independent
       // async UserPromptSubmit hooks — recall can run first, so without this
-      // the first prompt after an upgrade would silently lose semantic recall
-      // (falling back to lexical/null) even though embeddings are installed.
-      // Best-effort: a failure here just means we degrade to lexical.
+      // the first prompt after an upgrade would silently skip recall entirely
+      // (there is no lexical fallback) even though embeddings are installed.
+      // Best-effort: a failure here just means we skip semantic recall.
       try { ensurePluginNodeModulesLink({ bundleDir: __bundleDir }); } catch { /* best-effort */ }
       // Warm the daemon (spawn + wait for socket, bounded) THEN embed with one
       // retry, so a cold first prompt doesn't lose semantic recall to the
