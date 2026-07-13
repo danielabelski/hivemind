@@ -6,6 +6,7 @@ import {
   docsHintShown,
   docsInstallLines,
   markDocsHintShown,
+  shouldPromptDocsSetup,
 } from "../../src/docs/install-hint.js";
 
 describe("docsInstallLines (install-time docs onboarding)", () => {
@@ -23,6 +24,18 @@ describe("docsInstallLines (install-time docs onboarding)", () => {
     const lines = docsInstallLines();
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.every((l) => typeof l === "string" && l.length > 0)).toBe(true);
+  });
+});
+
+describe("shouldPromptDocsSetup (ask in-repo, else fall back to the hint)", () => {
+  it("prompts only when interactive AND in a git repo AND signed in", () => {
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: true })).toBe(true);
+  });
+
+  it("does not prompt when any precondition is missing", () => {
+    expect(shouldPromptDocsSetup({ interactive: false, inGitRepo: true, loggedIn: true })).toBe(false);
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: false, loggedIn: true })).toBe(false);
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: false })).toBe(false);
   });
 });
 

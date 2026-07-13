@@ -26,6 +26,21 @@ export function docsInstallLines(): string[] {
   ];
 }
 
+/**
+ * Should `hivemind install` actively PROMPT the docs consent flow (the same
+ * one `hivemind docs sync` runs) instead of just printing the hint? Only when
+ * we can ask a human (TTY), we are inside a git repo (docs are per-repo), and
+ * we are signed in (the consent writes to the org registry). Otherwise the
+ * caller falls back to the one-time informational hint.
+ */
+export function shouldPromptDocsSetup(opts: {
+  interactive: boolean;
+  inGitRepo: boolean;
+  loggedIn: boolean;
+}): boolean {
+  return opts.interactive && opts.inGitRepo && opts.loggedIn;
+}
+
 /** Sentinel marking that the install docs hint has been shown once. */
 export function docsHintSentinelPath(): string {
   return process.env.HIVEMIND_DOCS_HINT_FILE ?? join(homedir(), ".deeplake", ".docs-hint-shown");
