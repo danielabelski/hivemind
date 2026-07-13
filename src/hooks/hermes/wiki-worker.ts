@@ -17,6 +17,8 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
+import { readSessionEventCache } from "../session-event-cache.js";
+import { buildSessionPath } from "../../utils/session-path.js";
 import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
@@ -35,6 +37,7 @@ interface WorkerConfig {
   sessionsTable: string;
   sessionId: string;
   userName: string;
+  orgName: string;
   project: string;
   pluginVersion?: string;
   tmpDir: string;
@@ -114,27 +117,55 @@ function cleanup(): void {
 
 async function main(): Promise<void> {
   try {
-    // 1. Fetch session events from sessions table
-    wlog("fetching session events");
-    const rows = await query(
+    // 1. Load session events. Prefer the local per-session event cache the
+    // capture hook appends to as the session runs — it is row-for-row
+    // identical to the sessions-table `message` column but avoids re-scanning
+    // the entire fat `message` column on the backend for THIS session on every
+    // periodic / session-end trigger (the dominant cold-start cost on long
+    // mega-sessions). Falls back to the DB whenever the cache is absent
+    // (session resumed on another machine), empty, or — once the offset is
+    // known — shorter than the offset already summarized.
+    const dbFetch = () => query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
+
+    let usedLocalCache = false;
+    let rows: Record<string, unknown>[];
+    const cachedLines = readSessionEventCache(cfg.sessionId);
+    if (cachedLines && cachedLines.length > 0) {
+      rows = cachedLines.map(message => ({ message }));
+      usedLocalCache = true;
+      wlog(`loaded ${rows.length} events from local cache`);
+    } else {
+      wlog("fetching session events");
+      rows = await dbFetch();
+    }
 
     if (rows.length === 0) {
       wlog("no session events found — exiting");
       return;
     }
 
-    const jsonlLines = rows.length;
+    let jsonlLines = rows.length;
 
-    const pathRows = await query(
-      `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
-    );
-    const jsonlServerPath = pathRows.length > 0
-      ? pathRows[0].path as string
-      : `/sessions/unknown/${cfg.sessionId}.jsonl`;
+    // Derive the server path locally when using the cache (avoids a second
+    // self-session `SELECT DISTINCT path` scan); the DB branch keeps its lookup.
+    let jsonlServerPath: string;
+    if (usedLocalCache) {
+      jsonlServerPath = buildSessionPath(
+        { userName: cfg.userName, orgName: cfg.orgName, workspaceId: cfg.workspaceId },
+        cfg.sessionId,
+      );
+    } else {
+      const pathRows = await query(
+        `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
+        `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
+      );
+      jsonlServerPath = pathRows.length > 0
+        ? pathRows[0].path as string
+        : `/sessions/unknown/${cfg.sessionId}.jsonl`;
+    }
 
     // 2. Determine how many rows were already summarized (resumed session).
     // The sidecar count is authoritative: finalizeSummary writes it after every
@@ -174,6 +205,15 @@ async function main(): Promise<void> {
     } else {
       const sidecarCount = readState(cfg.sessionId)?.lastSummaryCount ?? 0;
       if (sidecarCount > prevOffset) prevOffset = sidecarCount;
+    }
+
+    // Safety net: a local cache shorter than the summarized offset is an
+    // incomplete copy (session resumed on another machine) — re-load the full
+    // session from the DB so no genuinely-new rows get sliced to nothing.
+    if (usedLocalCache && rows.length < prevOffset) {
+      wlog(`local cache (${rows.length}) < summarized offset (${prevOffset}) — refetching from DB`);
+      rows = await dbFetch();
+      jsonlLines = rows.length;
     }
 
     // Feed the agent only the rows added since the last summary. Reprocessing

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,11 @@ const readStateMock = vi.fn();
 const uploadSummaryMock = vi.fn();
 const execFileSyncMock = vi.fn();
 const embedSummaryMock = vi.fn();
+const readCacheMock = vi.fn();
 
+vi.mock("../../src/hooks/session-event-cache.js", () => ({
+  readSessionEventCache: (...a: any[]) => readCacheMock(...a),
+}));
 vi.mock("../../src/hooks/summary-state.js", () => ({
   finalizeSummary: (...a: any[]) => finalizeSummaryMock(...a),
   releaseLock: (...a: any[]) => releaseLockMock(...a),
@@ -52,6 +56,7 @@ const defaultConfig = () => ({
   sessionsTable: "sessions",
   sessionId: "sid-hermes",
   userName: "alice",
+  orgName: "org",
   project: "proj",
   tmpDir,
   hermesBin: "/fake/hermes",
@@ -99,6 +104,7 @@ beforeEach(() => {
   uploadSummaryMock.mockReset().mockResolvedValue({ path: "insert", summaryLength: 80, descLength: 15, sql: "..." });
   embedSummaryMock.mockReset().mockResolvedValue([0.1, 0.2, 0.3]);
   execFileSyncMock.mockReset();
+  readCacheMock.mockReset().mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -166,5 +172,57 @@ describe("hermes wiki-worker — behavior", () => {
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(releaseLockMock).toHaveBeenCalledWith("sid-hermes");
+  });
+
+  it("reads events from the local cache and issues NO self-session SELECTs", async () => {
+    readCacheMock.mockReturnValue(
+      Array.from({ length: 4 }, (_, i) => JSON.stringify({ type: "user_message", content: `cache ${i}` })),
+    );
+    const sqls: string[] = [];
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      sqls.push(sql);
+      if (sql.startsWith("SELECT summary FROM")) return jsonResp({ columns: ["summary"], rows: [] });
+      return jsonResp({ columns: [], rows: [] });
+    });
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      writeFileSync(args[1].match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nok\n");
+      return Buffer.from("");
+    });
+
+    await runWorker();
+
+    expect(sqls.some(s => s.startsWith("SELECT message, creation_date"))).toBe(false);
+    expect(sqls.some(s => s.startsWith("SELECT DISTINCT path"))).toBe(false);
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("loaded 4 events from local cache");
+    const prompt = execFileSyncMock.mock.calls[0][1][1] as string;
+    expect(prompt).toContain("SRC=/sessions/alice/alice_org_default_sid-hermes.jsonl");
+    expect(prompt).toContain("LINES=4");
+    expect(finalizeSummaryMock).toHaveBeenCalledWith("sid-hermes", 4);
+  });
+
+  it("falls back to the DB SELECT when the local cache is absent", async () => {
+    readCacheMock.mockReturnValue(null);
+    const sqls: string[] = [];
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      sqls.push(sql);
+      if (sql.startsWith("SELECT message, creation_date")) {
+        return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "db" }), "2026-04-20T00:00:00Z"]] });
+      }
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/sessions/alice/db.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) return jsonResp({ columns: ["summary"], rows: [] });
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      writeFileSync(args[1].match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nok\n");
+      return Buffer.from("");
+    });
+
+    await runWorker();
+
+    expect(sqls.some(s => s.startsWith("SELECT message, creation_date"))).toBe(true);
+    expect(sqls.some(s => s.startsWith("SELECT DISTINCT path"))).toBe(true);
   });
 });
