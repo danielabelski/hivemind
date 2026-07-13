@@ -102,6 +102,50 @@ describe("virtual-table-query", () => {
     expect(content).toBe("[user] hello\n[assistant] hi");
   });
 
+  it("surfaces an empty-body notice when session rows exist but every message is empty", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/sessions/a.jsonl", content: "", source_order: 1 },
+        { path: "/sessions/a.jsonl", content: "", source_order: 1 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+
+    // Not a silent 0-byte read: the file exists (has rows) but no readable body.
+    expect(content).not.toBe("");
+    expect(content).toContain("2 stored rows");
+    expect(content).toContain("message body is empty");
+  });
+
+  it("surfaces an empty-body notice when session message columns are NULL (dropped by type guard)", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/sessions/a.jsonl", content: null, source_order: 1 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+
+    // Previously this returned null → caller rendered "No such file" even though
+    // `ls` lists the path. Now it reports the row exists with no readable body.
+    expect(content).toContain("1 stored row");
+    expect(content).toContain("message body is empty");
+  });
+
+  it("keeps only non-empty turns when a session mixes empty and real messages", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/sessions/a.jsonl", content: "", source_order: 1 },
+        { path: "/sessions/a.jsonl", content: "{\"type\":\"user_message\",\"content\":\"hello\"}", source_order: 1 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+
+    expect(content).toBe("[user] hello");
+  });
+
   it("reads multiple exact paths in a single query and synthesizes /index.md when needed", async () => {
     const api = {
       query: vi.fn()

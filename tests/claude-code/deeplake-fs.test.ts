@@ -790,6 +790,73 @@ describe("prefetch", () => {
   });
 });
 
+// ── Session reads: bodyless rows must not read as silent empty files ─────────
+describe("readFile: session bodies", () => {
+  function makeSessionsFs(messages: unknown[]) {
+    const path = "/sessions/alice/a.json";
+    const client = {
+      ensureTable: vi.fn().mockResolvedValue(undefined),
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT path, size_bytes, mime_type")) return [];
+        if (sql.includes("SELECT path, MAX(size_bytes) as total_size")) {
+          // size_bytes is populated even when the body is empty — this is the
+          // exact "ls shows a size, cat shows nothing" split being tested.
+          return [{ path, total_size: 30295 }];
+        }
+        if (sql.includes("SELECT message FROM")) {
+          return messages.map((message) => ({ message }));
+        }
+        return [];
+      }),
+    };
+    return { path, client };
+  }
+
+  it("returns an empty-body notice (not 0 bytes) when all message rows are NULL", async () => {
+    const { path, client } = makeSessionsFs([null, null]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const text = await fs.readFile(path);
+
+    expect(text).not.toBe("");
+    expect(text).toContain("2 stored rows");
+    expect(text).toContain("message body is empty");
+  });
+
+  it("does not leak the literal string 'null' or 'undefined' into content", async () => {
+    const { path, client } = makeSessionsFs([null, undefined]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const text = await fs.readFile(path);
+
+    expect(text).not.toContain("null");
+    expect(text).not.toContain("undefined");
+  });
+
+  it("readFileBuffer also emits the notice for empty-string bodies", async () => {
+    const { path, client } = makeSessionsFs(["", ""]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const buf = await fs.readFileBuffer(path);
+
+    expect(Buffer.from(buf).toString("utf-8")).toContain("message body is empty");
+  });
+
+  it("keeps only real turns when a session mixes empty and populated bodies", async () => {
+    const { path, client } = makeSessionsFs([
+      "",
+      "{\"type\":\"user_message\",\"content\":\"hello\"}",
+      null,
+      "{\"type\":\"assistant_message\",\"content\":\"hi\"}",
+    ]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const text = await fs.readFile(path);
+
+    expect(text).toBe("[user] hello\n[assistant] hi");
+  });
+});
+
 // ── Upsert: id stability & dates ─────────────────────────────────────────────
 describe("flush upsert", () => {
   it("INSERT for new file sets id, creation_date and last_update_date", async () => {
