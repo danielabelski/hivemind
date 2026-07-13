@@ -17,6 +17,8 @@ import { deeplakeClientHeader } from "../utils/client-header.js";
 
 const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock, readState } from "./summary-state.js";
+import { readSessionEventCache } from "./session-event-cache.js";
+import { buildSessionPath } from "../utils/session-path.js";
 import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "./wiki-offset.js";
 import { uploadSummary } from "./upload-summary.js";
 import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
@@ -31,6 +33,7 @@ interface WorkerConfig {
   sessionsTable: string;
   sessionId: string;
   userName: string;
+  orgName: string;
   project: string;
   agent?: string;
   pluginVersion?: string;
@@ -131,20 +134,44 @@ function cleanup(): void {
 
 async function main(): Promise<void> {
   try {
-    // 1. Fetch session events from sessions table, reconstruct JSONL.
-    // Retry on an empty result: the async capture writes (or Deeplake read
-    // consistency) may simply be lagging behind SessionEnd under load.
-    wlog("fetching session events");
-    const fetchEvents = () => query(
+    // 1. Load session events and reconstruct JSONL.
+    //
+    // Prefer the local per-session event cache the capture hook appends to as
+    // the session runs: it is row-for-row identical to the sessions-table
+    // `message` column, but reading it avoids re-scanning the entire fat
+    // `message` column on the backend for THIS session on every periodic /
+    // session-end trigger — the dominant cold-start cost on long
+    // "mega-sessions" (e.g. 15k rows / 72 MB re-materialized at ~2s each). The
+    // DB is still the source of truth: fall back to it whenever the cache is
+    // absent (session resumed on another machine), empty, or — checked once
+    // the offset is known — shorter than the offset already summarized.
+    const dbFetch = () => query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
-    let rows = await fetchEvents();
-    for (let attempt = 1; rows.length === 0 && attempt <= EVENT_FETCH_RETRIES; attempt++) {
-      const delay = EVENT_FETCH_BACKOFF_MS * attempt;
-      wlog(`no events yet — retry ${attempt}/${EVENT_FETCH_RETRIES} in ${delay}ms`);
-      await sleep(delay);
-      rows = await fetchEvents();
+    // Retry on an empty result: the async capture writes (or Deeplake read
+    // consistency) may simply be lagging behind SessionEnd under load.
+    const dbFetchWithRetry = async (): Promise<Record<string, unknown>[]> => {
+      let r = await dbFetch();
+      for (let attempt = 1; r.length === 0 && attempt <= EVENT_FETCH_RETRIES; attempt++) {
+        const delay = EVENT_FETCH_BACKOFF_MS * attempt;
+        wlog(`no events yet — retry ${attempt}/${EVENT_FETCH_RETRIES} in ${delay}ms`);
+        await sleep(delay);
+        r = await dbFetch();
+      }
+      return r;
+    };
+
+    let usedLocalCache = false;
+    let rows: Record<string, unknown>[];
+    const cachedLines = readSessionEventCache(cfg.sessionId);
+    if (cachedLines && cachedLines.length > 0) {
+      rows = cachedLines.map(message => ({ message }));
+      usedLocalCache = true;
+      wlog(`loaded ${rows.length} events from local cache`);
+    } else {
+      wlog("fetching session events");
+      rows = await dbFetchWithRetry();
     }
 
     if (rows.length === 0) {
@@ -165,16 +192,28 @@ async function main(): Promise<void> {
       return;
     }
 
-    const jsonlLines = rows.length;
+    let jsonlLines = rows.length;
 
-    // Derive the server path
-    const pathRows = await query(
-      `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
-    );
-    const jsonlServerPath = pathRows.length > 0
-      ? pathRows[0].path as string
-      : `/sessions/unknown/${cfg.sessionId}.jsonl`;
+    // Derive the server path. When the events came from the local cache we've
+    // already avoided the backend round-trip, so reproduce the canonical path
+    // locally rather than paying a second `SELECT DISTINCT path` scan of the
+    // same self-session (observed at ~1.1s on the 72 MB mega-session). The DB
+    // branch keeps its lookup for sessions whose path predates this code.
+    let jsonlServerPath: string;
+    if (usedLocalCache) {
+      jsonlServerPath = buildSessionPath(
+        { userName: cfg.userName, orgName: cfg.orgName, workspaceId: cfg.workspaceId },
+        cfg.sessionId,
+      );
+    } else {
+      const pathRows = await query(
+        `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
+        `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
+      );
+      jsonlServerPath = pathRows.length > 0
+        ? pathRows[0].path as string
+        : `/sessions/unknown/${cfg.sessionId}.jsonl`;
+    }
 
     // 2. Determine how many rows were already summarized (resumed session).
     // The sidecar count is authoritative: finalizeSummary writes it after every
@@ -214,6 +253,17 @@ async function main(): Promise<void> {
     } else {
       const sidecarCount = readState(cfg.sessionId)?.lastSummaryCount ?? 0;
       if (sidecarCount > prevOffset) prevOffset = sidecarCount;
+    }
+
+    // Safety net for the local-cache path: if the cache holds fewer rows than
+    // the offset already summarized, it is an incomplete copy (e.g. the
+    // session was resumed on a different machine that captured the earlier
+    // rows). Slicing by `prevOffset` would then drop every genuinely-new row
+    // to nothing, so re-load the full session from the DB instead.
+    if (usedLocalCache && rows.length < prevOffset) {
+      wlog(`local cache (${rows.length}) < summarized offset (${prevOffset}) — refetching from DB`);
+      rows = await dbFetchWithRetry();
+      jsonlLines = rows.length;
     }
 
     // Feed claude only the rows added since the last summary. Reprocessing the

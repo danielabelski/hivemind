@@ -24,6 +24,7 @@ import {
   ensureSessionOwner,
 } from "./summary-state.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { appendSessionEvent } from "./session-event-cache.js";
 import { tryStopCounterTrigger } from "../skillify/triggers.js";
 import { reactSkillOpt } from "./shared/skillopt-hook.js";
 import { EmbedClient } from "../embeddings/client.js";
@@ -183,6 +184,13 @@ async function main(): Promise<void> {
   }
 
   log("capture ok → cloud");
+
+  // Mirror the event into the local per-session cache (row-for-row identical
+  // to the `message` column just INSERTed). The wiki-worker reads this instead
+  // of re-scanning the entire fat `message` column for the current session on
+  // every periodic / session-end summary trigger. Best-effort; DB stays the
+  // source of truth. Only reached after a successful INSERT above.
+  appendSessionEvent(input.session_id, line);
 
   // Commit-driven KPI auto-extract is disabled for now — the
   // fire-and-forget sub-agent spawned per `git commit` (see
