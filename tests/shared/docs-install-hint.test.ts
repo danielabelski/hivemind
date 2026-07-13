@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -41,7 +41,13 @@ describe("first-install sentinel (show the hint once)", () => {
     expect(docsHintShown(file)).toBe(true); // subsequent installs → quiet
   });
 
-  it("markDocsHintShown never throws on an unwritable path (best-effort)", () => {
-    expect(() => markDocsHintShown("/proc/nonexistent/x/.docs-hint-shown")).not.toThrow();
+  it("markDocsHintShown never throws when the path is unwritable (best-effort)", () => {
+    // Point at a path whose parent is a FILE, not a directory: mkdirSync
+    // fails fast with ENOTDIR and the best-effort catch must swallow it.
+    // (Do NOT use a /proc/<missing> path — recursive mkdirSync walks up a
+    // non-existent procfs chain and hangs, which once froze the whole suite.)
+    const blocker = join(dir, "not-a-dir");
+    writeFileSync(blocker, "x");
+    expect(() => markDocsHintShown(join(blocker, "child", ".docs-hint-shown"))).not.toThrow();
   });
 });
