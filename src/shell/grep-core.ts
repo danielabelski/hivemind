@@ -175,6 +175,26 @@ function formatToolCall(obj: any): string {
   return `[tool:${obj?.tool_name ?? "?"}]\ninput: ${formatToolInput(obj?.tool_input)}\nresponse: ${formatToolResponse(obj?.tool_response, obj?.tool_input, obj?.tool_name)}`;
 }
 
+/**
+ * Diagnostic emitted when a session path resolves to real rows whose message
+ * bodies are all empty/null. A captured event is never legitimately empty
+ * (capture.ts always writes a populated JSON entry), so an empty reconstruction
+ * is always a pathology — the row carries a non-zero `size_bytes` (so `ls`/stat
+ * shows a size) but no readable body. Returning this notice instead of a
+ * silently-empty file is the difference between "the transcript body is gone"
+ * and "this file is genuinely empty" — the exact ambiguity that made the mirror
+ * look populated when it wasn't.
+ */
+export function emptySessionBodyNotice(rowCount: number): string {
+  const plural = rowCount === 1 ? "row" : "rows";
+  return (
+    `[hivemind: this session has ${rowCount} stored ${plural} but the message ` +
+    `body is empty — capture recorded metadata (size only) without content, so ` +
+    `the transcript body is unavailable. This is not an empty file; there is ` +
+    `nothing to read here.]`
+  );
+}
+
 export function normalizeContent(path: string, raw: string): string {
   // Any unknown shape falls through to `raw` below. This function never
   // returns null/empty — if the result would be trivially empty (e.g.

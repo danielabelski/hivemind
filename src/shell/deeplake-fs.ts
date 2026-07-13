@@ -7,7 +7,7 @@ import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, BufferEncoding,
 } from "just-bash";
-import { normalizeContent } from "./grep-core.js";
+import { normalizeContent, emptySessionBodyNotice } from "./grep-core.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
@@ -58,7 +58,13 @@ export function guessMime(filename: string): string {
 }
 
 function normalizeSessionMessage(path: string, message: unknown): string {
+  // A NULL/undefined message column must coerce to "" — not the JS value
+  // `undefined` (JSON.stringify(undefined) === undefined) which would leak into
+  // the joined output, and not the literal "null" text (JSON.stringify(null)).
+  if (message === null || message === undefined) return "";
   const raw = typeof message === "string" ? message : JSON.stringify(message);
+  // JSON.stringify can still return undefined for non-serializable values.
+  if (typeof raw !== "string") return "";
   return normalizeContent(path, raw);
 }
 
@@ -73,7 +79,13 @@ function resolveEmbedDaemonPath(): string {
 }
 
 function joinSessionMessages(path: string, messages: unknown[]): string {
-  return messages.map((message) => normalizeSessionMessage(path, message)).join("\n");
+  // Drop empty parts so bodyless rows don't turn into phantom blank lines (and
+  // so an all-empty session reconstructs to "" — the caller's cue to emit the
+  // empty-body notice rather than a silently-empty file).
+  return messages
+    .map((message) => normalizeSessionMessage(path, message))
+    .filter((part) => part.length > 0)
+    .join("\n");
 }
 
 function fsErr(code: string, msg: string, path: string): Error {
@@ -680,15 +692,16 @@ export class DeeplakeFs implements IFileSystem {
       const rows = await this.client.query(
         `SELECT path, message, creation_date FROM "${this.sessionsTable}" WHERE path IN (${inList}) ORDER BY path, creation_date ASC`
       );
-      const grouped = new Map<string, string[]>();
+      const grouped = new Map<string, unknown[]>();
       for (const row of rows) {
         const p = row["path"] as string;
         const current = grouped.get(p) ?? [];
-        current.push(normalizeSessionMessage(p, row["message"]));
+        current.push(row["message"]);
         grouped.set(p, current);
       }
-      for (const [p, parts] of grouped) {
-        this.files.set(p, Buffer.from(parts.join("\n"), "utf-8"));
+      for (const [p, messages] of grouped) {
+        const text = joinSessionMessages(p, messages);
+        this.files.set(p, Buffer.from(text || emptySessionBodyNotice(messages.length), "utf-8"));
       }
     }
   }
@@ -715,7 +728,7 @@ export class DeeplakeFs implements IFileSystem {
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
       const text = joinSessionMessages(p, rows.map((row) => row["message"]));
-      const buf = Buffer.from(text, "utf-8");
+      const buf = Buffer.from(text || emptySessionBodyNotice(rows.length), "utf-8");
       this.files.set(p, buf);
       return buf;
     }
@@ -782,7 +795,7 @@ export class DeeplakeFs implements IFileSystem {
         `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = joinSessionMessages(p, rows.map((row) => row["message"]));
+      const text = joinSessionMessages(p, rows.map((row) => row["message"])) || emptySessionBodyNotice(rows.length);
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return text;
