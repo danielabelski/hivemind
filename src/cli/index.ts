@@ -405,21 +405,58 @@ async function runInstallAll(args: string[]): Promise<void> {
   // Preflight (dynamic import + git probe) is guarded too: a failure here must
   // not stop install — treat it as "not in a repo" so we fall back to the hint.
   let inGitRepo = false;
+  let repoRoot = docsCwd;
   try {
     const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
-    inGitRepo = tryGitTopLevel(docsCwd) !== null;
+    const top = tryGitTopLevel(docsCwd);
+    inGitRepo = top !== null;
+    repoRoot = top ?? docsCwd;
   } catch { /* probe unavailable → fall back to the hint */ }
+  // Home-repo guard: if the resolved git root IS the user's home directory
+  // (common with a dotfiles repo), do NOT offer to document it — that would
+  // pull the entire home into a wiki. Fall back to the hint instead.
+  const { homedir } = await import("node:os");
   const promptDocs = shouldPromptDocsSetup({
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     inGitRepo,
     loggedIn: isLoggedIn(),
+    atHome: repoRoot === homedir(),
   });
   if (promptDocs) {
     log("");
     log("Docs (optional): set up documentation for this repository.");
+    // Mirror the async half of `hivemind graph init`: build the graph inline
+    // (fast, NO LLM), ask consent, then spawn the wiki generation DETACHED so
+    // a large repo's first run (many LLM calls) never blocks install. (Was:
+    // `docs sync`, which generated inline and hung install for minutes.)
     try {
-      const { runDocsCommand } = await import("../commands/docs.js");
-      await runDocsCommand(["sync", "--cwd", docsCwd]);
+      const { loadConfig } = await import("../config.js");
+      const cfg = loadConfig();
+      if (cfg) {
+        const { runBuildCommand } = await import("../commands/graph.js");
+        await runBuildCommand(["--cwd", repoRoot, "--trigger", "manual"]);
+        const { runDocsOnboarding } = await import("../docs/onboarding.js");
+        const { deriveProjectKey } = await import("../utils/repo-identity.js");
+        const { loadCurrentSnapshot } = await import("../graph/load-current.js");
+        const { spawnDetachedNodeWorker } = await import("../utils/spawn-detached.js");
+        const result = await runDocsOnboarding({
+          root: repoRoot,
+          isGitRepo: true,
+          orgId: cfg.orgId,
+          orgName: cfg.orgName,
+          project: deriveProjectKey(repoRoot).key,
+          snap: loadCurrentSnapshot(repoRoot),
+        });
+        if (result.generate) {
+          const cliEntry = process.argv[1];
+          if (cliEntry) {
+            spawnDetachedNodeWorker(cliEntry, ["docs", "wiki", "--cwd", repoRoot]);
+            log("Generating wiki docs in the background — check with: hivemind docs list");
+          } else {
+            log("Run `hivemind docs wiki` to generate the corpus.");
+          }
+        }
+      }
     } catch (err) {
       warn(`docs setup skipped: ${err instanceof Error ? err.message : String(err)}`);
     }

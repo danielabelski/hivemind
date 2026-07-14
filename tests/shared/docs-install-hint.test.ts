@@ -37,6 +37,12 @@ describe("shouldPromptDocsSetup (ask in-repo, else fall back to the hint)", () =
     expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: false, loggedIn: true })).toBe(false);
     expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: false })).toBe(false);
   });
+
+  it("does not prompt when the git root is the user's home (dotfiles repo)", () => {
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: true, atHome: true })).toBe(false);
+    // atHome omitted/false keeps the normal behavior.
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: true, atHome: false })).toBe(true);
+  });
 });
 
 describe("first-install sentinel (show the hint once)", () => {
