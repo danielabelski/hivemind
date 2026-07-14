@@ -47,7 +47,8 @@ import {
   type DocTier,
   type DocAnchor,
 } from "../docs/index.js";
-import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt, makeHostPageRunPrompt } from "../docs/refresh-llm.js";
+import { makeHostGenerate, makeHostGenerateDoc, makeHostBatchGenerateDoc, makeHostRunPrompt, makeHostPageRunPrompt, detectAvailableAgents, knownDocsAgents } from "../docs/refresh-llm.js";
+import { getDocsLlmAgent, setDocsLlmAgent } from "../user-config.js";
 import { generateDocs, selectTargets, type GenScope } from "../docs/generate.js";
 import { generateWikiPages, selectWikiGroups, wikiDocId, wikiGroupEligible, WIKI_DOC_PREFIX } from "../docs/wiki-generate.js";
 import { pullDocs } from "../docs/pull.js";
@@ -92,6 +93,10 @@ Everyday:
   hivemind docs auto on|off [--cwd <dir>]
       Turn automatic per-commit sync on/off for THIS repo on THIS org.
       Enabling with no corpus asks for explicit confirmation (LLM cost).
+  hivemind docs agent [claude|codex|pi|cursor]
+      Show or set which host CLI authors the docs (persisted globally).
+      No arg → show current + installed. Overridable per-run with
+      HIVEMIND_DOCS_LLM_AGENT.
   hivemind docs show <doc-id>
 
 Advanced / plumbing:
@@ -349,6 +354,32 @@ export async function runDocsCommand(args: string[]): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(USAGE);
+    return;
+  }
+
+  // `agent` is a local-config command — no org creds needed, so handle it
+  // before requireConfig().
+  if (sub === "agent") {
+    const name = args[1];
+    const installed = detectAvailableAgents();
+    if (!name) {
+      const cur = getDocsLlmAgent();
+      console.log(`Docs LLM agent: ${cur ?? `auto (${installed[0] ?? "none installed"})`}`);
+      console.log(`Installed on PATH: ${installed.join(", ") || "none"}`);
+      console.log(`Set with: hivemind docs agent <${knownDocsAgents().join("|")}>  (or HIVEMIND_DOCS_LLM_BIN for any other CLI)`);
+      return;
+    }
+    const lname = name.toLowerCase();
+    if (!knownDocsAgents().includes(lname)) {
+      console.error(`Unknown agent "${name}". Known: ${knownDocsAgents().join(", ")}. For any other CLI use HIVEMIND_DOCS_LLM_BIN.`);
+      process.exit(1);
+      throw new Error("unreachable");
+    }
+    if (!installed.includes(lname)) {
+      console.error(`Warning: "${lname}" is not installed on PATH — doc generation will fail until it is.`);
+    }
+    setDocsLlmAgent(lname);
+    console.log(`Docs LLM agent set to: ${lname}. Change with: hivemind docs agent <name>.`);
     return;
   }
 

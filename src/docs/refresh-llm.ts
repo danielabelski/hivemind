@@ -20,6 +20,7 @@ import {
   type ClaudeInvocation,
 } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
+import { getDocsLlmAgent } from "../user-config.js";
 import { buildRefreshPrompt, type GenerateFn } from "./refresh.js";
 import {
   buildGeneratePrompt,
@@ -138,6 +139,21 @@ function tryResolveCliBin(bin: string): string | null {
   }
 }
 
+/** Registry agent names, in detection priority order. */
+export function knownDocsAgents(): string[] {
+  return ["claude", "codex", "pi", "cursor"];
+}
+
+/**
+ * The registry agents whose CLI is actually installed on PATH, in priority
+ * order. `[0]` is what `detectHostAgent()` would pick with no override.
+ */
+export function detectAvailableAgents(
+  resolve: (bin: string) => string | null = tryResolveCliBin,
+): string[] {
+  return knownDocsAgents().filter((name) => resolve(REGISTRY[name]({}).bin) !== null);
+}
+
 /**
  * PAGE-AUTHORING spec: the wiki audit showed final-page writing is where
  * accuracy is won or lost, while note-taking survives the cheap model. So the
@@ -197,9 +213,10 @@ export function resolveDocLlmSpec(env: NodeJS.ProcessEnv = process.env): DocLlmS
       build: (b, p) => (viaStdin ? buildStdinPromptInvocation(b, flags, p) : buildTrailingPromptInvocation(b, flags, p)),
     };
   }
-  // Explicit selection wins; otherwise detect from what is installed —
-  // "on claude code it is claude, on codex it is codex", with no env needed.
-  const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? detectHostAgent()).toLowerCase();
+  // Precedence: env override wins (one-off), then the persisted config choice
+  // (`hivemind docs agent <name>` / onboarding), then auto-detect from what is
+  // installed — "on claude code it is claude, on codex it is codex".
+  const agent = (env.HIVEMIND_DOCS_LLM_AGENT ?? getDocsLlmAgent() ?? detectHostAgent()).toLowerCase();
   const spec = REGISTRY[agent]?.(env);
   if (!spec) {
     throw new Error(
