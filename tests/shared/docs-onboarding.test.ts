@@ -31,7 +31,11 @@ describe("runDocsOnboarding (the one consent moment — fail-closed everywhere)"
   });
   afterEach(() => { delete process.env.HIVEMIND_DOCS_AUTO_FILE; rmSync(dir, { recursive: true, force: true }); });
 
-  const base = { root: "/work/repo", isGitRepo: true, orgId: "org-a", orgName: "acme", project: "proj-1", snap: SNAP };
+  // detectAgents: () => [] opts these tests out of the (separate) "which agent
+  // writes the docs?" question — that gate is covered in docs-llm-agent.test.ts.
+  // Without this, a test host with >1 agent CLI installed would see the extra
+  // question consume an answer meant for the auto prompt.
+  const base = { root: "/work/repo", isGitRepo: true, orgId: "org-a", orgName: "acme", project: "proj-1", snap: SNAP, detectAgents: () => [] };
 
   it("yes + yes: real page estimate shown, registry entry written for (org, project)", async () => {
     const t = io(["y", "yes"]);
