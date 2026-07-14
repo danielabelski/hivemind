@@ -16,6 +16,7 @@ import {
   _resetUserConfigForTesting,
 } from "../../src/user-config.js";
 import { runDocsOnboarding, type OnboardingIo } from "../../src/docs/onboarding.js";
+import { runDocsCommand } from "../../src/commands/docs.js";
 
 // ── Resolution precedence: env > config > auto-detect ────────────────────────
 
@@ -199,5 +200,57 @@ describe("runDocsOnboarding — agent question gate", () => {
     });
     expect(asked.some((q) => /Which agent/.test(q))).toBe(false);
     expect(setAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ── `hivemind docs agent` command (runs before requireConfig — no creds) ─────
+
+describe("runDocsCommand agent — show / set / validate", () => {
+  let dir: string;
+  let logs: string[];
+  let errs: string[];
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "docs-agent-cmd-"));
+    _setConfigPathForTesting(() => join(dir, "config.json"));
+    logs = [];
+    errs = [];
+    logSpy = vi.spyOn(console, "log").mockImplementation((m?: unknown) => { logs.push(String(m)); });
+    errSpy = vi.spyOn(console, "error").mockImplementation((m?: unknown) => { errs.push(String(m)); });
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((): never => { throw new Error("process.exit"); }) as never);
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    exitSpy.mockRestore();
+    _resetUserConfigForTesting();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("no arg → shows current (auto when unset) + installed + how to set", async () => {
+    await runDocsCommand(["agent"]);
+    expect(logs.join("\n")).toMatch(/Docs LLM agent:/);
+    expect(logs.join("\n")).toMatch(/Set with: hivemind docs agent/);
+  });
+
+  it("no arg after a pin → shows the pinned agent", async () => {
+    setDocsLlmAgent("codex");
+    await runDocsCommand(["agent"]);
+    expect(logs.join("\n")).toContain("Docs LLM agent: codex");
+  });
+
+  it("set a known agent → persists it", async () => {
+    await runDocsCommand(["agent", "Codex"]); // case-insensitive
+    expect(getDocsLlmAgent()).toBe("codex");
+    expect(logs.join("\n")).toContain("Docs LLM agent set to: codex");
+  });
+
+  it("unknown agent → error + non-zero exit, nothing persisted", async () => {
+    await expect(runDocsCommand(["agent", "bogus"])).rejects.toThrow("process.exit");
+    expect(errs.join("\n")).toMatch(/Unknown agent/);
+    expect(getDocsLlmAgent()).toBeUndefined();
   });
 });
