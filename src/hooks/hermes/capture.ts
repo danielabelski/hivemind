@@ -36,6 +36,7 @@ import {
   releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnHermesWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { appendSessionEvent } from "../session-event-cache.js";
 import { tryStopCounterTrigger } from "../../skillify/triggers.js";
 import type { Config } from "../../config.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
@@ -163,6 +164,12 @@ async function main(): Promise<void> {
   }
 
   log("capture ok → cloud");
+
+  // Mirror the event into the local per-session cache (row-for-row identical
+  // to the `message` column just INSERTed) so the wiki-worker reads it instead
+  // of re-scanning the fat `message` column. Best-effort; only after a
+  // successful INSERT above.
+  appendSessionEvent(sessionId, line);
 
   // SkillOpt: a pre_llm_call prompt is the user's reaction to a recently-used org skill.
   // Swallowed; no-op unless a judgment window is open for this session.

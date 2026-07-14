@@ -14,6 +14,7 @@ import { resolveDirConfig } from "../dir-config.js";
 import { log as _log } from "../utils/debug.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryAcquireLock, releaseLock, markSessionEnded } from "./summary-state.js";
+import { pruneStaleSessionEventCaches } from "./session-event-cache.js";
 import { forceSessionEndTrigger } from "../skillify/triggers.js";
 import { parseTranscript } from "../notifications/transcript-parser.js";
 import { appendUsageRecord } from "../notifications/usage-tracker.js";
@@ -66,6 +67,10 @@ async function main(): Promise<void> {
   // treating it as live and may surface it immediately (without waiting for
   // the activity window to lapse). Independent of the wiki-worker lock below.
   markSessionEnded(sessionId);
+
+  // Housekeeping: drop long-dead per-session event caches (14-day TTL). This
+  // session's own cache has a fresh mtime and is left intact for the worker.
+  try { pruneStaleSessionEventCaches(); } catch { /* best-effort */ }
 
   const base = loadConfig();
   if (!base) { log("no config"); return; }

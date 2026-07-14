@@ -112,6 +112,7 @@ export function spawnWikiWorker(opts: SpawnOptions): void {
     sessionsTable: config.sessionsTableName,
     sessionId,
     userName: config.userName,
+    orgName: config.orgName,
     project: projectName,
     agent: opts.agent ?? "claude_code",
     pluginVersion,

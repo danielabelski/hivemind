@@ -105,6 +105,7 @@ export function spawnHermesWikiWorker(opts: SpawnOptions): void {
     sessionsTable: config.sessionsTableName,
     sessionId,
     userName: config.userName,
+    orgName: config.orgName,
     project: projectName,
     pluginVersion,
     tmpDir,
