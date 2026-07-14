@@ -20,6 +20,8 @@
 import { createInterface } from "node:readline";
 import { setAuto } from "./auto-registry.js";
 import { selectWikiGroups } from "./wiki-generate.js";
+import { detectAvailableAgents } from "./refresh-llm.js";
+import { getDocsLlmAgent, setDocsLlmAgent } from "../user-config.js";
 import type { GraphSnapshot } from "../graph/types.js";
 
 export interface OnboardingIo {
@@ -58,6 +60,12 @@ export interface OnboardingArgs {
   /** Current snapshot, for the honest page estimate. Null → estimate unknown. */
   snap: GraphSnapshot | null;
   io?: OnboardingIo;
+  /** Installed host agents (injectable for tests). Default: real detection. */
+  detectAgents?: () => string[];
+  /** Read the persisted docs agent (injectable). Default: config.json. */
+  getAgent?: () => string | undefined;
+  /** Persist the chosen docs agent (injectable). Default: config.json. */
+  setAgent?: (agent: string) => void;
 }
 
 export interface OnboardingResult {
@@ -94,6 +102,24 @@ export async function runDocsOnboarding(args: OnboardingArgs): Promise<Onboardin
     io.say("Skipped. Generate later with: hivemind docs wiki");
     io.say(STATUS_HINT);
     return { generate: false, auto: false, asked: true };
+  }
+
+  // Agent choice: only worth asking when more than one host CLI is installed
+  // AND nothing is pinned yet. One agent → no choice; already pinned → respect
+  // it silently. The chosen agent is persisted globally in config.json.
+  const getAgent = args.getAgent ?? getDocsLlmAgent;
+  const setAgent = args.setAgent ?? setDocsLlmAgent;
+  const detectAgents = args.detectAgents ?? detectAvailableAgents;
+  if (!getAgent()) {
+    const available = detectAgents();
+    if (available.length > 1) {
+      const raw = (await io.ask(
+        `Which agent should write the docs? [${available.join("/")}] (default: ${available[0]}) `,
+      )).trim().toLowerCase();
+      const chosen = available.includes(raw) ? raw : available[0];
+      setAgent(chosen);
+      io.say(`Docs will be authored by: ${chosen}. Change with: hivemind docs agent <name>`);
+    }
   }
 
   const autoAnswer = await io.ask(
