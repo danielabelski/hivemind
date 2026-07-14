@@ -210,6 +210,30 @@ describe("capture hook — event-type branches", () => {
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringMatching(/^tool=Bash session=sid-2$/));
   });
 
+  it("tool_call: masks secrets in the tool input/response before insert + embed", async () => {
+    // Split literal so GitHub push protection doesn't flag this fixture.
+    const secretToken = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const secretPw = "s3cr3tP4ssword";
+    stdinMock.mockResolvedValue({
+      session_id: "sid-secret",
+      cwd: "/p",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "tu-2",
+      tool_input: { command: `git remote set-url origin https://${secretToken}@github.com/o/r` },
+      tool_response: { stdout: `PGPASSWORD=${secretPw} psql -h db` },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    // Neither the raw token nor the password reaches the stored row...
+    expect(sql).not.toContain(secretToken);
+    expect(sql).not.toContain(secretPw);
+    // ...but the masked, type-hinted form is present. capture.ts derives the
+    // embedding from this same redacted `line`, so the secret is never embedded.
+    expect(sql).toContain("ghp_********");
+    expect(sql).toContain("PGPASSWORD=********");
+  });
+
   it("assistant_message without agent_transcript_path", async () => {
     stdinMock.mockResolvedValue({
       session_id: "sid-3",

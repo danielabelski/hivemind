@@ -10,6 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { redactSecrets } from "./shared/redact.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -124,7 +125,9 @@ export function isFinalizedSummaryText(text: unknown): boolean {
  * See module docstring for the rationale.
  */
 export async function uploadSummary(query: QueryFn, params: UploadParams): Promise<UploadResult> {
-  const { tableName, vpath, fname, userName, project, agent, text } = params;
+  const { tableName, vpath, fname, userName, project, agent } = params;
+  // Mask any secret a summary may have quoted before it's stored/indexed.
+  const text = redactSecrets(params.text);
   const ts = params.ts ?? new Date().toISOString();
   const desc = extractDescription(text);
   const sizeBytes = Buffer.byteLength(text);

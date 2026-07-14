@@ -18,6 +18,7 @@ import { deeplakeClientHeader } from "../utils/client-header.js";
 const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock, readState } from "./summary-state.js";
 import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "./wiki-offset.js";
+import { redactSecrets } from "./shared/redact.js";
 import { uploadSummary } from "./upload-summary.js";
 import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
@@ -284,7 +285,7 @@ async function main(): Promise<void> {
       if (raw.trim()) {
         // Stamp the offset ourselves so the persisted summary is authoritative
         // and never depends on the LLM echoing the bookkeeping line.
-        const text = stampOffset(raw, jsonlLines);
+        const text = redactSecrets(stampOffset(raw, jsonlLines));
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         // Embed the summary so it ranks in the semantic retrieval branch.

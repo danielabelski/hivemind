@@ -66,6 +66,7 @@ import { readVirtualPathContent } from "../../../src/hooks/virtual-table-query.j
 // message_embedding (today's behavior, preserved on every failure mode).
 import { tryEmbedStandalone, _setSpawnImpl } from "../../../src/embeddings/standalone-embed-client.js";
 import { embeddingSqlLiteral } from "../../../src/embeddings/sql.js";
+import { redactSecrets } from "../../../src/hooks/shared/redact.js";
 // Resolve sibling skillify-worker.js path at runtime via import.meta.url. The
 // openclaw plugin is bundled to harnesses/openclaw/dist/index.js, then installed to
 // ~/.openclaw/extensions/hivemind/dist/index.js by install-openclaw.ts. The
@@ -1521,7 +1522,8 @@ export default definePluginEntry({
               content: text,
               timestamp: ts,
             };
-            const line = JSON.stringify(entry);
+            // Mask secrets before the payload is embedded or stored.
+            const line = redactSecrets(JSON.stringify(entry));
             // For JSONB: only escape single quotes, keep JSON structure intact
             const jsonForSql = line.replace(/'/g, "''");
 
