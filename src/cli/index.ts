@@ -402,10 +402,16 @@ async function runInstallAll(args: string[]): Promise<void> {
   // can't prompt, fall back to the one-time informational hint. A docs hiccup
   // must never break install, so the delegation is guarded.
   const docsCwd = process.cwd();
-  const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
+  // Preflight (dynamic import + git probe) is guarded too: a failure here must
+  // not stop install — treat it as "not in a repo" so we fall back to the hint.
+  let inGitRepo = false;
+  try {
+    const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
+    inGitRepo = tryGitTopLevel(docsCwd) !== null;
+  } catch { /* probe unavailable → fall back to the hint */ }
   const promptDocs = shouldPromptDocsSetup({
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-    inGitRepo: tryGitTopLevel(docsCwd) !== null,
+    inGitRepo,
     loggedIn: isLoggedIn(),
   });
   if (promptDocs) {
@@ -415,7 +421,7 @@ async function runInstallAll(args: string[]): Promise<void> {
       const { runDocsCommand } = await import("../commands/docs.js");
       await runDocsCommand(["sync", "--cwd", docsCwd]);
     } catch (err) {
-      warn(`docs setup skipped: ${(err as Error).message}`);
+      warn(`docs setup skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else if (!docsHintShown()) {
     log("");
