@@ -17,13 +17,13 @@
 import { readStdin } from "../../utils/stdin.js";
 import { resolveCaptureConfig } from "../shared/dir-gate.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingSqlLiteral } from "../../embeddings/sql.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
+import { buildDirectSessionInsertSql } from "../shared/session-insert-sql.js";
 import { ensurePluginNodeModulesLink } from "../../embeddings/self-heal.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -144,10 +144,20 @@ async function main(): Promise<void> {
     : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
 
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'hermes', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
+  const insertSql = buildDirectSessionInsertSql(sessionsTable, {
+    id: crypto.randomUUID(),
+    sessionPath,
+    filename,
+    jsonForSql,
+    embeddingSql,
+    userName: config.userName,
+    sizeBytes: Buffer.byteLength(line, "utf-8"),
+    projectName,
+    description: event,
+    agent: "hermes",
+    pluginVersion: PLUGIN_VERSION,
+    timestamp: ts,
+  });
 
   try {
     await api.query(insertSql);
