@@ -14,7 +14,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /** Lines describing docs enable/disable, for the install summary. */
 export function docsInstallLines(): string[] {
@@ -29,16 +29,32 @@ export function docsInstallLines(): string[] {
 /**
  * Should `hivemind install` actively PROMPT the docs consent flow (the same
  * one `hivemind docs sync` runs) instead of just printing the hint? Only when
- * we can ask a human (TTY), we are inside a git repo (docs are per-repo), and
- * we are signed in (the consent writes to the org registry). Otherwise the
- * caller falls back to the one-time informational hint.
+ * we can ask a human (TTY), we are inside a git repo (docs are per-repo), we
+ * are signed in (the consent writes to the org registry), and the resolved git
+ * root is NOT the user's home directory. The home guard matters because a
+ * dotfiles repo makes `git rev-parse --show-toplevel` resolve to `~` from any
+ * subdirectory — offering to document the whole home is never what the user
+ * wants. Otherwise the caller falls back to the one-time informational hint.
  */
+/**
+ * Is the resolved git root the user's home directory? Compared through
+ * `path.resolve` on BOTH sides so it holds cross-platform: Git's
+ * `--show-toplevel` yields forward slashes even on Windows (`C:/Users/x`)
+ * while `os.homedir()` yields native separators (`C:\Users\x`) — a raw `===`
+ * would miss the match and let the home guard through.
+ */
+export function isHomeRoot(gitRoot: string, home: string): boolean {
+  return resolve(gitRoot) === resolve(home);
+}
+
 export function shouldPromptDocsSetup(opts: {
   interactive: boolean;
   inGitRepo: boolean;
   loggedIn: boolean;
+  /** True when the resolved git root is the user's $HOME (dotfiles repo). */
+  atHome?: boolean;
 }): boolean {
-  return opts.interactive && opts.inGitRepo && opts.loggedIn;
+  return opts.interactive && opts.inGitRepo && opts.loggedIn && !opts.atHome;
 }
 
 /** Sentinel marking that the install docs hint has been shown once. */

@@ -7,6 +7,7 @@ import {
   docsInstallLines,
   markDocsHintShown,
   shouldPromptDocsSetup,
+  isHomeRoot,
 } from "../../src/docs/install-hint.js";
 
 describe("docsInstallLines (install-time docs onboarding)", () => {
@@ -36,6 +37,23 @@ describe("shouldPromptDocsSetup (ask in-repo, else fall back to the hint)", () =
     expect(shouldPromptDocsSetup({ interactive: false, inGitRepo: true, loggedIn: true })).toBe(false);
     expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: false, loggedIn: true })).toBe(false);
     expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: false })).toBe(false);
+  });
+
+  it("does not prompt when the git root is the user's home (dotfiles repo)", () => {
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: true, atHome: true })).toBe(false);
+    // atHome omitted/false keeps the normal behavior.
+    expect(shouldPromptDocsSetup({ interactive: true, inGitRepo: true, loggedIn: true, atHome: false })).toBe(true);
+  });
+});
+
+describe("isHomeRoot (cross-platform home comparison)", () => {
+  it("matches equivalent paths through path.resolve (trailing slash, .., etc.)", () => {
+    expect(isHomeRoot("/home/x", "/home/x")).toBe(true);
+    expect(isHomeRoot("/home/x/", "/home/x")).toBe(true);
+    expect(isHomeRoot("/home/y/../x", "/home/x")).toBe(true);
+  });
+  it("does not match a subdirectory of home", () => {
+    expect(isHomeRoot("/home/x/project", "/home/x")).toBe(false);
   });
 });
 
