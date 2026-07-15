@@ -14,7 +14,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /** Lines describing docs enable/disable, for the install summary. */
 export function docsInstallLines(): string[] {
@@ -36,6 +36,17 @@ export function docsInstallLines(): string[] {
  * subdirectory — offering to document the whole home is never what the user
  * wants. Otherwise the caller falls back to the one-time informational hint.
  */
+/**
+ * Is the resolved git root the user's home directory? Compared through
+ * `path.resolve` on BOTH sides so it holds cross-platform: Git's
+ * `--show-toplevel` yields forward slashes even on Windows (`C:/Users/x`)
+ * while `os.homedir()` yields native separators (`C:\Users\x`) — a raw `===`
+ * would miss the match and let the home guard through.
+ */
+export function isHomeRoot(gitRoot: string, home: string): boolean {
+  return resolve(gitRoot) === resolve(home);
+}
+
 export function shouldPromptDocsSetup(opts: {
   interactive: boolean;
   inGitRepo: boolean;

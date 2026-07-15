@@ -33,7 +33,7 @@ import { runFlushMemory } from "../commands/flush-memory.js";
 import { maybeAutoBackfillMemory } from "../skillify/spawn-backfill-memory-worker.js";
 import { confirm, detectPlatforms, allPlatformIds, log, promptLine, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
-import { docsInstallLines, docsHintShown, markDocsHintShown, shouldPromptDocsSetup } from "../docs/install-hint.js";
+import { docsInstallLines, docsHintShown, markDocsHintShown } from "../docs/install-hint.js";
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
@@ -396,75 +396,55 @@ async function runInstallAll(args: string[]): Promise<void> {
     log("Mining your past sessions for team memory in the background — sign in, then run `hivemind memory flush` to push.");
   }
 
-  // Docs onboarding. Inside a git repo (and able to prompt) run the SAME
-  // consent flow as `hivemind docs sync` — it asks "generate now?" then, on
-  // yes, "keep in sync on every commit?" (auto). Outside a repo, or when we
-  // can't prompt, fall back to the one-time informational hint. A docs hiccup
-  // must never break install, so the delegation is guarded.
-  const docsCwd = process.cwd();
-  // Preflight (dynamic import + git probe) is guarded too: a failure here must
-  // not stop install — treat it as "not in a repo" so we fall back to the hint.
-  let inGitRepo = false;
-  let repoRoot = docsCwd;
-  try {
-    const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
-    const top = tryGitTopLevel(docsCwd);
-    inGitRepo = top !== null;
-    repoRoot = top ?? docsCwd;
-  } catch { /* probe unavailable → fall back to the hint */ }
-  // Home-repo guard: if the resolved git root IS the user's home directory
-  // (common with a dotfiles repo), do NOT offer to document it — that would
-  // pull the entire home into a wiki. Fall back to the hint instead.
+  // Docs onboarding at install — extracted to src/docs/install-docs.ts so the
+  // decision + detached-worker spawn are unit-tested. Everything effectful is
+  // injected here; a docs hiccup must never break install (guarded inside).
   const { homedir } = await import("node:os");
-  const promptDocs = shouldPromptDocsSetup({
+  const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
+  const { loadConfig } = await import("../config.js");
+  const { spawnDetachedNodeWorker } = await import("../utils/spawn-detached.js");
+  const { isAutoEnabled } = await import("../docs/auto-registry.js");
+  const { deriveProjectKey } = await import("../utils/repo-identity.js");
+  const { runInstallDocsOnboarding } = await import("../docs/install-docs.js");
+  await runInstallDocsOnboarding({
+    cwd: process.cwd(),
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-    inGitRepo,
     loggedIn: isLoggedIn(),
-    atHome: repoRoot === homedir(),
+    home: homedir(),
+    gitTopLevel: (cwd) => tryGitTopLevel(cwd),
+    loadCfg: () => loadConfig(),
+    autoEnabled: (orgId, root) => isAutoEnabled(orgId, deriveProjectKey(root).key),
+    // Build inline (fast, no LLM) so the wiki worker has a snapshot + the
+    // page estimate is real. Heavy graph deps stay lazy.
+    buildGraph: async (root) => {
+      const { runBuildCommand } = await import("../commands/graph.js");
+      await runBuildCommand(["--cwd", root, "--trigger", "manual"]);
+    },
+    onboard: async ({ root, orgId, orgName }) => {
+      const { runDocsOnboarding } = await import("../docs/onboarding.js");
+      const { deriveProjectKey } = await import("../utils/repo-identity.js");
+      const { loadCurrentSnapshot } = await import("../graph/load-current.js");
+      return runDocsOnboarding({
+        root, isGitRepo: true, orgId, orgName,
+        project: deriveProjectKey(root).key,
+        snap: loadCurrentSnapshot(root),
+      });
+    },
+    spawn: (workerArgs) => {
+      const cliEntry = process.argv[1];
+      if (!cliEntry) return false;
+      spawnDetachedNodeWorker(cliEntry, workerArgs);
+      return true;
+    },
+    showHint: () => {
+      if (docsHintShown()) return;
+      log("");
+      for (const line of docsInstallLines()) log(line);
+      markDocsHintShown();
+    },
+    log,
+    warn,
   });
-  if (promptDocs) {
-    log("");
-    log("Docs (optional): set up documentation for this repository.");
-    // Mirror the async half of `hivemind graph init`: build the graph inline
-    // (fast, NO LLM), ask consent, then spawn the wiki generation DETACHED so
-    // a large repo's first run (many LLM calls) never blocks install. (Was:
-    // `docs sync`, which generated inline and hung install for minutes.)
-    try {
-      const { loadConfig } = await import("../config.js");
-      const cfg = loadConfig();
-      if (cfg) {
-        const { runBuildCommand } = await import("../commands/graph.js");
-        await runBuildCommand(["--cwd", repoRoot, "--trigger", "manual"]);
-        const { runDocsOnboarding } = await import("../docs/onboarding.js");
-        const { deriveProjectKey } = await import("../utils/repo-identity.js");
-        const { loadCurrentSnapshot } = await import("../graph/load-current.js");
-        const { spawnDetachedNodeWorker } = await import("../utils/spawn-detached.js");
-        const result = await runDocsOnboarding({
-          root: repoRoot,
-          isGitRepo: true,
-          orgId: cfg.orgId,
-          orgName: cfg.orgName,
-          project: deriveProjectKey(repoRoot).key,
-          snap: loadCurrentSnapshot(repoRoot),
-        });
-        if (result.generate) {
-          const cliEntry = process.argv[1];
-          if (cliEntry) {
-            spawnDetachedNodeWorker(cliEntry, ["docs", "wiki", "--cwd", repoRoot]);
-            log("Generating wiki docs in the background — check with: hivemind docs list");
-          } else {
-            log("Run `hivemind docs wiki` to generate the corpus.");
-          }
-        }
-      }
-    } catch (err) {
-      warn(`docs setup skipped: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  } else if (!docsHintShown()) {
-    log("");
-    for (const line of docsInstallLines()) log(line);
-    markDocsHintShown();
-  }
 
   log("");
   log("Done. Restart each assistant to activate hooks.");
