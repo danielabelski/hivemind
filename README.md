@@ -451,6 +451,19 @@ Hivemind builds a live graph of your codebase from the same traces it captures: 
 
 Above: the Hivemind codebase rendered through its own graph feature.
 
+## Code docs (wiki)
+
+From that graph, Hivemind can generate natural-language documentation for a repo — one page per file, plus narrative wiki pages per subsystem — and keep it fresh on every commit. Agents read it (`~/.deeplake/memory/docs/`) to orient before touching code.
+
+```bash
+hivemind docs sync              # generate/refresh docs for this repo (asks first)
+hivemind docs list              # status: enabled? pages? in sync with HEAD?
+hivemind docs auto on|off       # keep docs fresh automatically on each commit
+hivemind docs agent [name]      # which host CLI writes the docs (claude|codex|pi|cursor)
+```
+
+Generation shells out to a host agent's own CLI (`claude -p`, `codex exec`, …) — no separate API key — and runs **in the background**, so it never blocks. `hivemind install` inside a git repo offers to set this up for you. The agent is resolved as `HIVEMIND_DOCS_LLM_AGENT` (env) > `docs.llmAgent` (config) > auto-detect; per-file docs use a cheap model, wiki pages a stronger one.
+
 ## Rules (cross-agent team principles)
 
 Hivemind **shares team rules across every agent in the org**, injected at SessionStart so every claude-code / cursor / hermes session starts knowing them. For personal or team work items with progress tracking, use [Goals + KPIs](#goals--kpis) (VFS-backed) instead.
