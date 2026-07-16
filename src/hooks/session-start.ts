@@ -333,13 +333,19 @@ async function main(): Promise<void> {
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay), so a
   // directory that routes elsewhere (or opts out) is never silent.
   const effConfig = dirRes?.config ?? baseConfig;
-  const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
+  // NOT gated on `dirRes.collect`: the identity overlay now applies to reads
+  // whether or not capture is on, so a `collect:false` directory can still be
+  // routed — and must say so.
+  const routed = !!(dirRes?.found && baseConfig &&
     (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
   const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
   const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
+  // `routed` covers reads AND capture — both resolve through the same overlay —
+  // so the disclosure must never imply one moved without the other.
+  const routedNote = routed ? ` · routed by ${dirRes?.found?.path}` : "";
   const identityLine = dirRes && !dirRes.collect
-    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
-    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
+    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search uses org: ${effOrg} (workspace: ${effWs})${routedNote}`
+    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routedNote}`;
   const baseContext = creds?.token
     ? `${resolvedContext}\n\n${identityLine}${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;

@@ -103,8 +103,18 @@ export interface ResolvedDirConfig {
 
 /**
  * Overlay the nearest `.hivemind` onto `base` for a session in `cwd`.
- * `collect: false` suppresses capture; org/workspace fields (when present)
- * redirect it. Omitted fields fall back to the global identity in `base`.
+ *
+ * The two concerns are INDEPENDENT:
+ *   - `orgId` / `workspaceId` are IDENTITY — they apply to reads (memory
+ *     search, recall, the VFS) as well as capture. Omitted fields fall back to
+ *     the global identity in `base`.
+ *   - `collect` is the CAPTURE switch — writes only. It never suppresses the
+ *     identity overlay, so `{ "collect": false, "workspaceId": "x" }` reads
+ *     from `x` while writing nothing. (Reads are still authorized by the
+ *     caller's existing token; the API rejects anything it doesn't grant.)
+ *
+ * Callers on the capture path must therefore gate on `collect`; callers on a
+ * read path use `config` unconditionally.
  *
  * Precedence follows the conventional `env > config-file > stored-creds` order:
  * an explicitly-set `HIVEMIND_ORG_ID` / `HIVEMIND_WORKSPACE_ID` LOCKS that field
@@ -125,9 +135,6 @@ export function resolveDirConfig(
   const found = findDirConfig(cwd);
   if (!found) return { config: base, collect: true, found: null };
 
-  if (found.raw.collect === false) {
-    return { config: base, collect: false, found };
-  }
   const orgLocked = !!(envOverride ? envOverride.HIVEMIND_ORG_ID : process.env.HIVEMIND_ORG_ID);
   const wsLocked = !!(envOverride ? envOverride.HIVEMIND_WORKSPACE_ID : process.env.HIVEMIND_WORKSPACE_ID);
   const config: Config = {
@@ -136,5 +143,5 @@ export function resolveDirConfig(
     orgName: orgLocked ? base.orgName : (found.raw.orgName ?? found.raw.orgId ?? base.orgName),
     workspaceId: wsLocked ? base.workspaceId : (found.raw.workspaceId ?? base.workspaceId),
   };
-  return { config, collect: true, found };
+  return { config, collect: found.raw.collect !== false, found };
 }
