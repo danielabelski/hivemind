@@ -327,7 +327,9 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 
 ## Per-directory config (`.hivemind`)
 
-The variables above set **one global identity** for the whole machine. A `.hivemind` file lets a specific directory tree override that: either **route** its traces to a different org/workspace, or **opt out** of capture entirely.
+The variables above set **one global identity** for the whole machine. A `.hivemind` file lets a specific directory tree override that: either **route** it to a different org/workspace, or **opt out** of capture entirely.
+
+Routing is symmetric — a routed directory both writes its traces to that workspace **and reads memory from it**. Sessions started under it search, recall, and browse `~/.deeplake/memory` in the routed workspace, and `hivemind whoami` reports it.
 
 Drop a `.hivemind` JSON file at the root of the tree you want to configure:
 
@@ -341,21 +343,28 @@ Drop a `.hivemind` JSON file at the root of the tree you want to configure:
 
 | Field         | Effect                                                                        |
 |---------------|-------------------------------------------------------------------------------|
-| `orgId`       | Route captured traces from this tree to this org.                             |
+| `orgId`       | Route this tree to this org — captured traces **and** memory reads.           |
 | `workspaceId` | Route to this workspace.                                                       |
-| `collect`     | `false` → **never** capture traces from this tree.                            |
+| `collect`     | `false` → **never** capture traces from this tree. Reads still route.          |
 
 Any field may be omitted; omitted fields fall back to your global identity.
 
-**Two common recipes:**
+`orgId` / `workspaceId` are **identity** (they apply to reads and writes alike); `collect` is a **capture switch** (writes only). The two are independent, which is what makes the read-only recipe below work.
+
+**Three common recipes:**
 
 ```jsonc
-// route this repo's traces to a client org/workspace
+// route this repo to a client org/workspace — reads and writes both land there
 { "orgId": "acme-corp", "workspaceId": "client-work" }
 
 // never collect traces from this folder (e.g. a personal or sensitive repo)
 { "collect": false }
+
+// read a shared workspace's memory, but never write to it
+{ "workspaceId": "client-work", "collect": false }
 ```
+
+Routing never carries a token — auth stays in `~/.deeplake/credentials.json`, so a `.hivemind` only ever takes effect against orgs your existing login already authorizes. An `HIVEMIND_ORG_ID` / `HIVEMIND_WORKSPACE_ID` set in your environment **wins over** a `.hivemind` for that field; `hivemind whoami` discloses which one is in effect.
 
 ### Committed vs local
 

@@ -7,6 +7,7 @@ import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { armSkillOptOnSkillUse } from "./shared/skillopt-hook.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike } from "../utils/sql.js";
@@ -266,7 +267,7 @@ interface ClaudePreToolDeps {
 
 export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreToolDeps = {}): Promise<ClaudePreToolDecision | null> {
   const {
-    config = loadConfig(),
+    config: baseConfig = loadConfig(),
     createApi = (table, activeConfig) => new DeeplakeApi(
       activeConfig.token,
       activeConfig.apiUrl,
@@ -322,7 +323,13 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   // unreachable. Do NOT return null here — that hands the original command to
   // the host shell. Return the retry guidance instead so the command never
   // touches the real filesystem.
-  if (!config) return buildRetryGuidanceDecision(input.tool_name);
+  if (!baseConfig) return buildRetryGuidanceDecision(input.tool_name);
+
+  // Reads are routed by the nearest `.hivemind` exactly like capture is: a
+  // directory pinned to another org/workspace must SEE that workspace's memory,
+  // not the global one. `collect` is a capture switch and deliberately does not
+  // gate reads (see src/dir-config.ts).
+  const config = resolveDirConfig(baseConfig, input.cwd ?? process.cwd()).config;
 
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";

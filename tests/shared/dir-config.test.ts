@@ -133,7 +133,7 @@ describe("resolveDirConfig", () => {
     expect(res.config.workspaceId).toBe("client-work");
   });
 
-  it("suppresses capture on collect:false without altering the config", () => {
+  it("suppresses capture on collect:false, leaving a bare config untouched", () => {
     write(dir("proj"), ".hivemind", { collect: false });
     const res = resolveDirConfig(base(), dir("proj"));
     expect(res.collect).toBe(false);
@@ -141,10 +141,15 @@ describe("resolveDirConfig", () => {
     expect(res.found?.path).toBe(join(root, "proj", ".hivemind"));
   });
 
-  it("collect:false wins even when org/workspace are also present", () => {
-    write(dir("proj"), ".hivemind", { orgId: "acme", collect: false });
+  it("collect:false suppresses capture but still applies the identity overlay", () => {
+    // `collect` governs WRITES only. org/workspace are identity and must still
+    // route reads — otherwise `{collect:false, orgId:...}` would silently drop
+    // orgId on the floor. "Read this workspace, never write to it" is valid.
+    write(dir("proj"), ".hivemind", { orgId: "acme", workspaceId: "client-work", collect: false });
     const res = resolveDirConfig(base(), dir("proj"));
     expect(res.collect).toBe(false);
+    expect(res.config.orgId).toBe("acme");
+    expect(res.config.workspaceId).toBe("client-work");
   });
 });
 
