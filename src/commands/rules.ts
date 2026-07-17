@@ -22,7 +22,7 @@
  * (see ./rules-module commit).
  */
 
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { getVersion } from "../cli/version.js";
 import {
@@ -52,8 +52,8 @@ function logUsageAndExit(code = 1): never {
   throw new Error("unreachable");
 }
 
-function requireConfig(): ReturnType<typeof loadConfig> & object {
-  const cfg = loadConfig();
+function requireConfig(): ReturnType<typeof loadRoutedConfig> & object {
+  const cfg = loadRoutedConfig();
   if (!cfg) {
     console.error("Not logged in. Run `hivemind login` first.");
     process.exit(2);
@@ -62,7 +62,7 @@ function requireConfig(): ReturnType<typeof loadConfig> & object {
   return cfg;
 }
 
-function makeApi(cfg: NonNullable<ReturnType<typeof loadConfig>>): DeeplakeApi {
+function makeApi(cfg: NonNullable<ReturnType<typeof loadRoutedConfig>>): DeeplakeApi {
   return new DeeplakeApi(
     cfg.token,
     cfg.apiUrl,

@@ -25,7 +25,8 @@
  * exactly equivalent to `hivemind skillify pull --all-users --to global`.
  */
 
-import { loadConfig, type Config } from "../config.js";
+import { type Config } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { runPull, type QueryFn } from "./pull.js";
 import { log as _log } from "../utils/debug.js";
@@ -80,8 +81,12 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
   }
 
   // Not logged in → silent skip (no nag).
-  const loadFn = deps.loadConfigFn ?? loadConfig;
-  const config = loadFn();
+  // Real callers get the routed config (nearest `.hivemind` for the session
+  // cwd); tests inject their own loadConfigFn. No inline default fn so the
+  // real path stays a plain call, not an extra uncovered closure.
+  const config = deps.loadConfigFn
+    ? deps.loadConfigFn()
+    : loadRoutedConfig(deps.cwd ?? process.cwd());
   if (!config) {
     log("skipped: not logged in");
     return { pulled: 0, skipped: true, reason: "not-logged-in" };

@@ -18,7 +18,7 @@ import * as z from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadCredentials } from "../commands/auth.js";
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
@@ -40,7 +40,7 @@ function getContext(): ServerContext | { error: string } {
   if (!creds?.token) {
     return { error: "Not authenticated. Run `hivemind login` to sign in to Deeplake." };
   }
-  const config = loadConfig();
+  const config = loadRoutedConfig();
   if (!config) {
     return { error: "Hivemind config could not be loaded — credentials present but invalid." };
   }

@@ -28,7 +28,7 @@
 
 import { readStdin } from "../../utils/stdin.js";
 import { deriveProjectKey } from "../../utils/repo-identity.js";
-import { loadConfig } from "../../config.js";
+import { loadRoutedConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const config = loadConfig();
+  const config = loadRoutedConfig(input.cwd ?? process.cwd());
   if (!config) {
     log("no config — falling through to Cursor's bash");
     return;

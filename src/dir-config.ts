@@ -29,7 +29,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { Config } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 
 /** Committed (shared) and local (personal, gitignored) filenames, local first. */
 export const DIR_CONFIG_FILENAMES = [".hivemind.local", ".hivemind"] as const;
@@ -144,4 +144,28 @@ export function resolveDirConfig(
     workspaceId: wsLocked ? base.workspaceId : (found.raw.workspaceId ?? base.workspaceId),
   };
   return { config, collect: found.raw.collect !== false, found };
+}
+
+/**
+ * THE single entry point for a workspace-scoped Config.
+ *
+ * Any code path that builds a `DeeplakeApi` against per-directory workspace data
+ * — CLI commands (goals, rules, skills), memory read/write hooks, recall — MUST
+ * get its config from here, never from a bare `loadConfig()`. It folds the
+ * nearest `.hivemind` (and the `HIVEMIND_*` env locks, via resolveDirConfig)
+ * into one place, so routing can never again be half-wired across call sites.
+ *
+ * Drop-in for `loadConfig()`: same `Config | null` shape, `cwd` defaults to the
+ * process cwd (correct for every CLI command). Hooks that carry an explicit
+ * session cwd pass it in. `collect` is intentionally NOT surfaced here — it
+ * gates capture only; callers on the capture path use `resolveDirConfig`
+ * directly so they can honor the opt-out.
+ *
+ * The guard in tests/shared/dir-config-single-source.test.ts enforces that
+ * workspace-touching modules call this and not `loadConfig()`.
+ */
+export function loadRoutedConfig(cwd: string = process.cwd()): Config | null {
+  const base = loadConfig();
+  if (!base) return null;
+  return resolveDirConfig(base, cwd).config;
 }
