@@ -30,6 +30,7 @@ import { runPull, type PullSummary } from "../skillify/pull.js";
 import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { runMineLocal } from "./mine-local.js";
 import { renderSubcommandUsageBlock } from "../cli/skillify-spec.js";
@@ -221,7 +222,7 @@ async function pullSkills(args: string[]): Promise<void> {
   else if (userOne) users = [userOne];
   else if (usersMany) users = usersMany.split(",").map(s => s.trim()).filter(Boolean);
 
-  const config = loadConfig();
+  const config = loadRoutedConfig();
   if (!config) {
     console.error("Not logged in. Run: hivemind login");
     process.exit(1);
@@ -285,7 +286,7 @@ async function pushSkills(args: string[]): Promise<void> {
     throw new Error("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
   }
 
-  const config = loadConfig();
+  const config = loadRoutedConfig();
   if (!config) {
     throw new Error("Not logged in. Run: hivemind login");
   }

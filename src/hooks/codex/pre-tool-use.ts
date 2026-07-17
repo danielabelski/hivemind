@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
@@ -120,7 +121,7 @@ export async function processCodexPreToolUse(
   deps: CodexPreToolDeps = {},
 ): Promise<CodexPreToolDecision> {
   const {
-    config = loadConfig(),
+    config: baseConfig = loadConfig(),
     createApi = (table, activeConfig) => new DeeplakeApi(
       activeConfig.token,
       activeConfig.apiUrl,
@@ -147,6 +148,12 @@ export async function processCodexPreToolUse(
     tryGraphReadFn = tryGraphRead,
     logFn = log,
   } = deps;
+
+  // Route memory reads/writes through the nearest `.hivemind`, like capture —
+  // a directory pinned to another workspace must read/write THAT workspace, not
+  // the global one. Applied to the injected/default base alike (a no-op when no
+  // `.hivemind` applies). See src/dir-config.ts.
+  const config = baseConfig ? resolveDirConfig(baseConfig, input.cwd ?? process.cwd()).config : baseConfig;
 
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
