@@ -166,6 +166,30 @@ describe("parseCodexTurnMeta", () => {
     expect(meta?.token_usage_total).toEqual({ input_tokens: 100, output_tokens: 10, total_tokens: 110 });
   });
 
+  it("resets model + effort per turn, falling back to the hook model when a context omits them", () => {
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "medium"),
+      codexTokenCount({ input_tokens: 9, output_tokens: 1, total_tokens: 10 }, { input_tokens: 9, output_tokens: 1, total_tokens: 10 }),
+      { type: "turn_context", payload: {} }, // new turn with no model/effort
+    ]);
+    const meta = parseCodexTurnMeta(file, "hook-model");
+    expect(meta?.model).toBe("hook-model"); // not the stale gpt-5.5
+    expect(meta?.reasoning_effort).toBeUndefined(); // not the stale "medium"
+  });
+
+  it("rejects negative / fractional token counts", () => {
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "low"),
+      codexTokenCount(
+        { input_tokens: -5, output_tokens: 3.5, total_tokens: 10 },
+        { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      ),
+    ]);
+    const meta = parseCodexTurnMeta(file, "fb");
+    // input_tokens (negative) and output_tokens (fractional) dropped; total kept.
+    expect(meta?.token_usage).toEqual({ total_tokens: 10 });
+  });
+
   it("survives a bare null JSONL line (best-effort contract)", () => {
     const file = join(TEMP_DIR, "transcript.jsonl");
     const lines = [

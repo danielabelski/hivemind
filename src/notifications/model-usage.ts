@@ -59,8 +59,9 @@ export interface TraceModelMeta {
   token_usage_total?: NormalizedUsage;
 }
 
+/** Token counts are non-negative integers; reject anything else before it reaches an aggregate. */
 function toNum(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
 }
 
 /** Copy only the numeric fields that are actually present, so absent keys stay absent. */
@@ -202,12 +203,14 @@ export function parseCodexTurnMeta(
       const p = entry.payload;
       if (!p) continue;
       if (entry.type === "turn_context") {
-        if (typeof p.model === "string") model = p.model;
-        if (typeof p.effort === "string") reasoningEffort = p.effort;
-        // A new turn context starts a new turn (possibly a new model). The
-        // previous turn's per-turn usage no longer applies; clear it so we
-        // never attach stale tokens to the new model. `total` is a session-wide
-        // cumulative and is intentionally preserved across turns.
+        // A new turn context starts a new turn (possibly a new model/effort).
+        // Reset both to this turn's values — falling back to the hook model
+        // when the context omits one — so a later turn never inherits an
+        // earlier turn's model or effort. The previous turn's per-turn usage is
+        // cleared for the same reason; `total` is a session-wide cumulative and
+        // is intentionally preserved across turns.
+        model = typeof p.model === "string" ? p.model : fallbackModel;
+        reasoningEffort = typeof p.effort === "string" ? p.effort : undefined;
         last = undefined;
       } else if (p.type === "token_count" && p.info) {
         if (p.info.last_token_usage) last = normalizeCodexUsage(p.info.last_token_usage);
