@@ -10,6 +10,8 @@ import {
   listSkills,
   resolveSkillsRoot,
   assertValidSkillName,
+  capSkillName,
+  MAX_SKILL_NAME_LEN,
 } from "../../src/skillify/skill-writer.js";
 
 let projectRoot: string;
@@ -72,6 +74,30 @@ describe("writeNewSkill", () => {
     });
     expect(existsSync(join(skillsRoot, "n"))).toBe(true);
     expect(existsSync(result.path)).toBe(true);
+  });
+
+  it("length-caps an over-long name and returns the canonical name", () => {
+    const long = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const result = writeNewSkill({
+      skillsRoot, name: long, description: "", body: VALID_BODY, sourceSessions: [], agent: "x",
+    });
+    // result.name is the capped on-disk name (what callers must record) …
+    expect(result.name.length).toBeLessThanOrEqual(64);
+    expect(result.name).toBe(capSkillName(long));
+    // … the dir + frontmatter use it, not the raw name.
+    expect(existsSync(join(skillsRoot, result.name, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(skillsRoot, long))).toBe(false);
+    const fm = readFileSync(join(skillsRoot, result.name, "SKILL.md"), "utf-8");
+    expect(fm).toContain(`name: ${result.name}`);
+  });
+
+  it("validates the RAW name before capping — rejects an invalid truncated-away tail", () => {
+    // First chars form a valid slug; the tail (dropped by capping) hides `..`.
+    // Validating the capped prefix would miss it — writeNewSkill must see raw.
+    const evil = "a".repeat(60) + "-b/../../x";
+    expect(() =>
+      writeNewSkill({ skillsRoot, name: evil, description: "", body: VALID_BODY, sourceSessions: [], agent: "x" })
+    ).toThrow(/path separator|kebab-case/);
   });
 });
 
@@ -347,9 +373,77 @@ describe("assertValidSkillName (path-traversal guard)", () => {
     expect(() => assertValidSkillName(42 as any)).toThrow(/empty/);
   });
 
-  it("rejects names longer than 100 chars", () => {
+  it("rejects names longer than 100 chars (path-safety ceiling, not the loader limit)", () => {
+    // assertValidSkillName is a path-safety validator with a generous ceiling
+    // so it can vet a long remote name's characters before capSkillName trims
+    // the length. The 64-char loader limit is capSkillName's job, not this one.
     expect(() => assertValidSkillName("a".repeat(101))).toThrow(/too long/);
     expect(() => assertValidSkillName("a".repeat(100))).not.toThrow();
+    // A legacy 65-100 char name must still validate (push/merge look it up).
+    expect(() => assertValidSkillName("a".repeat(80))).not.toThrow();
+  });
+});
+
+describe("capSkillName (64-char frontmatter-name ceiling)", () => {
+  const HASH_SUFFIX = /-[a-z0-9]{5}$/;
+
+  it("leaves short names untouched", () => {
+    expect(capSkillName("my-skill")).toBe("my-skill");
+    expect(capSkillName("a".repeat(MAX_SKILL_NAME_LEN))).toHaveLength(MAX_SKILL_NAME_LEN);
+  });
+
+  it("truncates a >64 name to <=64 with a hyphen-aligned prefix + hash suffix", () => {
+    const long = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    expect(long.length).toBeGreaterThan(MAX_SKILL_NAME_LEN);
+    const capped = capSkillName(long);
+    expect(capped.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(capped).toMatch(HASH_SUFFIX);
+    // The prefix before the hash is a hyphen-delimited prefix of the original.
+    const prefix = capped.replace(HASH_SUFFIX, "");
+    expect(long.startsWith(prefix)).toBe(true);
+    expect(long[prefix.length]).toBe("-");
+  });
+
+  it("is idempotent — re-capping a capped name is a no-op", () => {
+    const long = "pg-incident-tactical-relief-insufficient-structural-root-phased-fix";
+    const capped = capSkillName(long);
+    expect(capSkillName(capped)).toBe(capped);
+  });
+
+  it("gives distinct results to two long names sharing a prefix (no collision)", () => {
+    // Same prefix through the hyphen boundary, different tail — must NOT collapse
+    // onto one identity (which would overwrite/version-confuse the two skills).
+    const base = "aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-jjjj-kkkk-llll";
+    const a = capSkillName(`${base}-alpha-one-tail`);
+    const b = capSkillName(`${base}-alpha-two-tail`);
+    expect(a).not.toBe(b);
+    expect(a.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(b.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+  });
+
+  it("disambiguates names differing only in the last char (low-order hash digits)", () => {
+    // djb2 makes `…-0` and `…-1` differ by 1 in the final hash; a hash that
+    // kept the HIGH-order base-36 digits would slice that difference away and
+    // collide. The suffix must come from the low-order digits.
+    const base = "seg-".repeat(16); // 64 chars, > ceiling once a tail is added
+    const a = capSkillName(`${base}alpha0`);
+    const b = capSkillName(`${base}alpha1`);
+    expect(a.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(b.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(a).not.toBe(b);
+  });
+
+  it("produces a result that still passes assertValidSkillName", () => {
+    const long = "a-" + "b".repeat(200);
+    const capped = capSkillName(long);
+    expect(() => assertValidSkillName(capped)).not.toThrow();
+    expect(capped.endsWith("-")).toBe(false);
+  });
+
+  it("hard-truncates a hyphenless name that overflows", () => {
+    const capped = capSkillName("x".repeat(200));
+    expect(capped.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(capped.length).toBeGreaterThan(0);
   });
 
   it("rejects uppercase / underscores / spaces / dots", () => {
