@@ -50,9 +50,11 @@ export interface TraceModelMeta {
   /** Usage for the most recent turn. */
   token_usage?: NormalizedUsage;
   /**
-   * Cumulative session usage (Codex `total_token_usage`). Present only for
-   * agents that report a running total; a per-model session rollup for those
-   * agents is `MAX(total_tokens)` per (session, model), not `SUM`.
+   * Cumulative session usage (Codex `total_token_usage`). This is a
+   * whole-session running total spanning every model used, NOT per-model — a
+   * session total is `MAX(total_tokens)` per session. For per-model totals,
+   * sum the per-turn `token_usage`, deduping by `turn_id` (each Codex turn's
+   * tool events share one snapshot).
    */
   token_usage_total?: NormalizedUsage;
 }
@@ -125,6 +127,7 @@ export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | n
     } catch {
       continue;
     }
+    if (!entry || typeof entry !== "object") continue; // e.g. a bare `null` line
     const msg = entry.message;
     if (entry.type !== "assistant" || !msg || !msg.usage) continue;
     return {
@@ -195,11 +198,17 @@ export function parseCodexTurnMeta(
       } catch {
         continue;
       }
+      if (!entry || typeof entry !== "object") continue; // e.g. a bare `null` line
       const p = entry.payload;
       if (!p) continue;
       if (entry.type === "turn_context") {
         if (typeof p.model === "string") model = p.model;
         if (typeof p.effort === "string") reasoningEffort = p.effort;
+        // A new turn context starts a new turn (possibly a new model). The
+        // previous turn's per-turn usage no longer applies; clear it so we
+        // never attach stale tokens to the new model. `total` is a session-wide
+        // cumulative and is intentionally preserved across turns.
+        last = undefined;
       } else if (p.type === "token_count" && p.info) {
         if (p.info.last_token_usage) last = normalizeCodexUsage(p.info.last_token_usage);
         if (p.info.total_token_usage) total = normalizeCodexUsage(p.info.total_token_usage);

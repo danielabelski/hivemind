@@ -92,6 +92,7 @@ describe("parseClaudeTurnMeta", () => {
     const file = join(TEMP_DIR, "transcript.jsonl");
     const lines = [
       "not json",
+      "null", // valid JSON but not an object — must not throw
       JSON.stringify({ type: "assistant", message: { model: "claude-opus-4-8", role: "assistant" } }),
       JSON.stringify(claudeAssistantLine("claude-opus-4-8", { input_tokens: 1, output_tokens: 1 })),
     ];
@@ -143,6 +144,39 @@ describe("parseCodexTurnMeta", () => {
       reasoning_output_tokens: 160,
       total_tokens: 216408,
     });
+  });
+
+  it("does not attach a prior turn's usage to a new turn_context (model change)", () => {
+    // Turn A completes with a token_count, then turn B opens with a new model
+    // BEFORE its own token_count arrives (the UserPromptSubmit at turn start).
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "medium"),
+      codexTokenCount(
+        { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+        { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      ),
+      codexTurnContext("gpt-5.6-sol", "high"),
+    ]);
+    const meta = parseCodexTurnMeta(file, "fb");
+    expect(meta?.model).toBe("gpt-5.6-sol");
+    expect(meta?.reasoning_effort).toBe("high");
+    // Turn A's tokens must NOT be attributed to turn B's model.
+    expect(meta?.token_usage).toBeUndefined();
+    // Session cumulative is preserved across the turn boundary.
+    expect(meta?.token_usage_total).toEqual({ input_tokens: 100, output_tokens: 10, total_tokens: 110 });
+  });
+
+  it("survives a bare null JSONL line (best-effort contract)", () => {
+    const file = join(TEMP_DIR, "transcript.jsonl");
+    const lines = [
+      "null",
+      JSON.stringify(codexTurnContext("gpt-5.5", "low")),
+      JSON.stringify(codexTokenCount({ input_tokens: 3, output_tokens: 1, total_tokens: 4 }, { input_tokens: 3, output_tokens: 1, total_tokens: 4 })),
+    ];
+    writeFileSync(file, lines.join("\n") + "\n", "utf-8");
+    const meta = parseCodexTurnMeta(file, "fb");
+    expect(meta?.model).toBe("gpt-5.5");
+    expect(meta?.token_usage?.total_tokens).toBe(4);
   });
 
   it("keeps payload model when the rollout has token counts but no turn_context", () => {

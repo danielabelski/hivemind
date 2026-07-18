@@ -87,8 +87,11 @@ async function main(): Promise<void> {
   const ts = new Date().toISOString();
   // Reasoning effort + token usage aren't in the hook payload — read them from
   // the rollout transcript (turn_context + token_count). `token_usage` is the
-  // latest turn; `token_usage_total` is the running session total (roll up per
-  // model with MAX, not SUM). Best-effort; falls back to the payload model.
+  // latest turn (scoped to the current model); `token_usage_total` is the
+  // whole-session cumulative across every model. Codex has no assistant event,
+  // so this rides on every user/tool row — `turn_id` (in meta) lets a per-model
+  // rollup dedupe the shared per-turn snapshot. Best-effort; falls back to the
+  // payload model.
   const modelMeta = parseCodexTurnMeta(input.transcript_path, input.model);
   const meta = {
     session_id: input.session_id,
