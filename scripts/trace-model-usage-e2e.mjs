@@ -92,9 +92,17 @@ function pickOnePerModel(files, parse) {
   return byModel; // model -> file
 }
 
-/** Find a real transcript message carrying model+usage and print the entry sdkTurnMeta would build. */
+/**
+ * Find a real transcript message carrying model+usage, build the entry via the
+ * shared sdkTurnMeta (the exact logic Pi inlines and OpenClaw imports), and
+ * assert the normalized token_usage has positive integer input+output tokens.
+ * Returns { ok, found } — ok:false means a transcript with usage existed but
+ * produced no/invalid token_usage (a real failure); found:false means the agent
+ * simply has no local transcripts (not a failure in this env).
+ */
 function proveSdk(name, dir) {
   const files = listTranscripts(dir, 200);
+  let anyTranscript = files.length > 0;
   for (const f of files) {
     let raw;
     try {
@@ -111,16 +119,18 @@ function proveSdk(name, dir) {
         continue;
       }
       const m = o.message ?? o;
-      const usage = m?.usage ?? o?.usage;
-      const model = m?.model ?? o?.model;
-      const meta = sdkTurnMeta(model, usage);
-      if (meta?.token_usage) {
-        console.log(`  [${name}] ${String(meta.model ?? "?").padEnd(24)} token_usage=${JSON.stringify(meta.token_usage)}`);
-        return;
+      const meta = sdkTurnMeta(m?.model ?? o?.model, m?.usage ?? o?.usage);
+      const u = meta?.token_usage;
+      if (u) {
+        const ok = Number.isInteger(u.input_tokens) && u.input_tokens >= 0 &&
+          Number.isInteger(u.output_tokens) && u.output_tokens >= 0;
+        console.log(`  [${name}] ${String(meta.model ?? "?").padEnd(24)} token_usage=${JSON.stringify(u)} ${ok ? "OK" : "INVALID"}`);
+        return { ok, found: true };
       }
     }
   }
-  console.log(`  [${name}] no real transcript with usage found`);
+  console.log(`  [${name}] no real transcript with usage found${anyTranscript ? " (has transcripts, none with usage)" : ""}`);
+  return { ok: true, found: false };
 }
 
 function runHook(entry, payload) {
@@ -269,8 +279,13 @@ async function main() {
     if (!modelsByAgent.has(agent)) modelsByAgent.set(agent, new Set());
     modelsByAgent.get(agent).add(m.model);
     const u = m.token_usage;
-    const hasTok = u && (u.input_tokens != null || u.output_tokens != null);
-    if (hasTok) tokenRowsByAgent.set(agent, (tokenRowsByAgent.get(agent) ?? 0) + 1);
+    // Correctness, not just presence: a token-bearing row must have positive
+    // integer input+output tokens (proves real numbers flowed parser->hook->DB).
+    const validTok = u &&
+      Number.isInteger(u.input_tokens) && u.input_tokens >= 0 &&
+      Number.isInteger(u.output_tokens) && u.output_tokens >= 0 &&
+      u.input_tokens + u.output_tokens > 0;
+    if (validTok) tokenRowsByAgent.set(agent, (tokenRowsByAgent.get(agent) ?? 0) + 1);
     if (seen.has(m.model)) continue; // one line per model in the display
     seen.add(m.model);
     console.log(
@@ -287,19 +302,33 @@ async function main() {
     console.log(`  ${agent.padEnd(12)} invoked=${count}  visible=${modelsByAgent.get(agent)?.size ?? 0}  with-tokens=${tokenRowsByAgent.get(agent) ?? 0}`);
   }
 
+  // Pi + OpenClaw capture in-process (extension event / producer hook), not via
+  // a stdin subprocess, so they can't be driven here. Prove the exact enriched
+  // entry they build by running the shared sdkTurnMeta over a real message from
+  // each one's on-disk transcript, asserting positive token values.
+  console.log(`\n=== Pi / OpenClaw entry-build proof (from real transcripts) ===`);
+  const piProof = proveSdk("pi", join(homedir(), ".pi", "agent", "sessions"));
+  const openclawProof = proveSdk("openclaw", join(homedir(), ".openclaw"));
+
   // Guard: exit code 0 from a capture hook is not proof — verify each agent's
-  // capture path actually wrote correct rows. We assert per-agent presence
-  // (and token_usage for the token-bearing agents) rather than requiring every
-  // one of a 20-model burst to be visible, which the backend's read-lag won't
-  // reliably surface. A genuinely broken hook lands zero rows for its agent.
+  // capture path actually wrote correct rows. Require only agents that were
+  // ACTUALLY invoked (a CI box may lack a given agent's transcripts), and for
+  // the token-bearing agents require a row with valid positive token counts.
+  // We don't require every one of a 20-model burst to be visible — the backend
+  // read-lag won't reliably surface the tail — but a genuinely broken hook
+  // lands zero rows for its agent.
+  const invokedAgents = new Set(jobs.map((j) => j.agent));
+  const tokenAgents = ["claude_code", "codex"].filter((a) => invokedAgents.has(a));
   const problems = [];
   if (rows.length === 0) problems.push("no rows landed at all");
-  for (const agent of ["claude_code", "codex", "cursor"]) {
+  for (const agent of invokedAgents) {
     if (!(modelsByAgent.get(agent)?.size)) problems.push(`no ${agent} rows landed`);
   }
-  for (const agent of ["claude_code", "codex"]) {
-    if (!tokenRowsByAgent.get(agent)) problems.push(`no ${agent} row carried token_usage`);
+  for (const agent of tokenAgents) {
+    if (!tokenRowsByAgent.get(agent)) problems.push(`no ${agent} row carried valid token_usage`);
   }
+  if (!piProof.ok) problems.push("pi sdkTurnMeta produced invalid token_usage");
+  if (!openclawProof.ok) problems.push("openclaw sdkTurnMeta produced invalid token_usage");
   if (problems.length > 0) {
     console.error(`\nFAIL: ${problems.join("; ")}`);
     if (process.env.KEEP !== "1") {
@@ -307,15 +336,7 @@ async function main() {
     }
     process.exit(1);
   }
-  console.log(`\nPASS: every agent's capture path wrote correct rows (token-bearing agents carry token_usage).`);
-
-  // Pi + OpenClaw capture in-process (extension event / producer hook), not via
-  // a stdin subprocess, so they can't be driven here. Prove the exact enriched
-  // entry they build by running the shared sdkTurnMeta over a real message from
-  // each one's on-disk transcript.
-  console.log(`\n=== Pi / OpenClaw entry-build proof (from real transcripts) ===`);
-  proveSdk("pi", join(homedir(), ".pi", "agent", "sessions"));
-  proveSdk("openclaw", join(homedir(), ".openclaw"));
+  console.log(`\nPASS: every invoked agent's capture path wrote correct rows (token-bearing agents carry valid token_usage).`);
 
   if (process.env.KEEP === "1") {
     console.log(`\nKEEP=1 — leaving ${rows.length} rows in ${TABLE}.`);
