@@ -59,11 +59,16 @@ function looksLikeSecret(tok: string): boolean {
   if (/^[0-9a-f]+$/i.test(tok)) return false; // hex hash / git SHA / md5
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tok)) return false; // UUID
   // Provider model identifiers (e.g. claude-haiku-4-5-20251001, gpt-5.6-sol,
-  // gemini-3-flash-preview, anthropic/claude-sonnet-4) — a long dated slug can
-  // otherwise trip the entropy check. These are captured into every trace row's
-  // `model` field, so shredding them would break per-model usage rollups.
+  // gemini-3-flash-preview) — a long dated slug can otherwise trip the entropy
+  // check, and these are captured into every trace row's `model` field, so
+  // shredding them would break per-model usage rollups. Deliberately narrow:
+  // lowercase only (real ids are lowercase; random keys mix case) and each
+  // dot/dash segment capped at 12 chars, so a high-entropy secret wearing a
+  // model prefix (`gpt-AbCd…30chars`) can never satisfy it. Slash-separated ids
+  // never reach here — the entropy rule's charset excludes `/`, so it splits
+  // `anthropic/claude-…` before this is called.
   if (
-    /^(?:[a-z][a-z0-9-]*\/)?(?:claude|gpt|o[1-9]|gemini|gemma|codex|text-embedding|dall-e|whisper|grok|deepseek|kimi|llama|mistral|mixtral|qwen|phi)[a-z0-9._/-]*$/i.test(
+    /^(?:claude|gpt|o[1-9]|gemini|gemma|codex|text-embedding|dall-e|whisper|grok|deepseek|kimi|llama|mistral|mixtral|qwen|phi)(?:[._-][a-z0-9]{1,12})*$/.test(
       tok,
     )
   )

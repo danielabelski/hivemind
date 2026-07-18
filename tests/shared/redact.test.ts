@@ -235,6 +235,20 @@ describe("redactSecrets — high-entropy backstop", () => {
       expect(redactSecrets(JSON.stringify({ model: m }))).toContain(m);
     }
   });
+
+  it("STILL masks a high-entropy secret that wears a model-name prefix", () => {
+    // The model-id exemption must not become a bypass: a random key with a
+    // `gpt-`/`claude-` prefix has an over-long, mixed-case segment and must
+    // still be redacted.
+    for (const s of [
+      "gpt-AbCdEfGhIjKlMnOpQrStUvWxYz123456",
+      "claude-Zk9QW3mLpX7vNbR2tYcH8dFgJsK4uE1a",
+      "gpt-abcdefghijklmnopqrstuvwxyz0123456789",
+    ]) {
+      expect(redactSecrets(`token=${s}`)).toContain(MASK);
+      expect(redactSecrets(`token=${s}`)).not.toContain(s);
+    }
+  });
 });
 
 describe("redactSecrets — idempotency & multi-secret", () => {
