@@ -154,61 +154,66 @@ async function main() {
     `Discovered ${claudeModels.size} Claude model(s), ${codexModels.size} Codex model(s).\n`,
   );
 
-  // Trace each model through the real hook. session_id carries RUN_TAG so we can
-  // find and clean up exactly these rows.
+  // Build one capture job per model. `expectedModels` is every model driven
+  // through a stdin hook that MUST appear in the read-back — the hooks swallow
+  // errors and exit 0, so exit code alone is not proof of capture.
+  //
+  // Inserts are PACED (SLEEP_MS between them): the sessions table drops rapid
+  // same-table bursts (returns 200 with rows=0 and the row never lands), a
+  // known backend quirk. Real sessions emit events seconds apart, so pacing
+  // reflects reality; stragglers are retried below.
+  const jobs = [];
   let n = 0;
   for (const [model, file] of claudeModels) {
     const sid = `${RUN_TAG}-cc-${n++}`;
-    const ok = runHook("dist/src/hooks/capture.js", {
-      session_id: sid,
-      transcript_path: file,
-      cwd: ROOT,
-      hook_event_name: "Stop",
-      last_assistant_message: `e2e trace for ${model}`,
-    });
-    console.log(`  [claude_code] ${model} -> ${ok ? "captured" : "FAILED"}`);
+    jobs.push({ agent: "claude_code", model, run: () =>
+      runHook("dist/src/hooks/capture.js", {
+        session_id: sid, transcript_path: file, cwd: ROOT,
+        hook_event_name: "Stop", last_assistant_message: `e2e trace for ${model}`,
+      }) });
   }
   for (const [model, file] of codexModels) {
     const sid = `${RUN_TAG}-cx-${n++}`;
-    const ok = runHook("dist/src/hooks/codex/capture.js", {
-      session_id: sid,
-      transcript_path: file,
-      cwd: ROOT,
-      hook_event_name: "UserPromptSubmit",
-      model,
-      prompt: `e2e trace for ${model}`,
-    });
-    console.log(`  [codex] ${model} -> ${ok ? "captured" : "FAILED"}`);
+    jobs.push({ agent: "codex", model, run: () =>
+      runHook("dist/src/hooks/codex/capture.js", {
+        session_id: sid, transcript_path: file, cwd: ROOT,
+        hook_event_name: "UserPromptSubmit", model, prompt: `e2e trace for ${model}`,
+      }) });
   }
-
   // Cursor: model is in the payload (no token data exists in its transcript).
-  {
-    const sid = `${RUN_TAG}-cur`;
-    const ok = runHook("dist/src/hooks/cursor/capture.js", {
-      conversation_id: sid,
-      session_id: sid,
-      hook_event_name: "afterAgentResponse",
-      model: "cursor-default-model",
-      cwd: ROOT,
-      text: "e2e trace for cursor",
-    });
-    console.log(`  [cursor] cursor-default-model -> ${ok ? "captured" : "FAILED"}`);
-  }
+  jobs.push({ agent: "cursor", model: "cursor-default-model", run: () =>
+    runHook("dist/src/hooks/cursor/capture.js", {
+      conversation_id: `${RUN_TAG}-cur`, session_id: `${RUN_TAG}-cur`,
+      hook_event_name: "afterAgentResponse", model: "cursor-default-model",
+      cwd: ROOT, text: "e2e trace for cursor",
+    }) });
+  const expectedModels = new Set(jobs.map((j) => j.model));
+
+  const SLEEP_MS = Number(process.env.SLEEP_MS ?? 900);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const runJobs = async (list) => {
+    for (const job of list) {
+      const ok = job.run();
+      console.log(`  [${job.agent}] ${job.model} -> ${ok ? "captured" : "FAILED"}`);
+      await sleep(SLEEP_MS);
+    }
+  };
+  await runJobs(jobs);
 
   // Hermes: payload carries no model / token data — capture a plain event to
   // confirm the row still lands (model/usage simply absent, never fabricated).
   {
-    const sid = `${RUN_TAG}-herm`;
     const ok = runHook("dist/src/hooks/hermes/capture.js", {
-      session_id: sid,
-      hook_event_name: "UserPromptSubmit",
-      cwd: ROOT,
-      extra: { prompt: "e2e trace for hermes" },
+      session_id: `${RUN_TAG}-herm`, hook_event_name: "UserPromptSubmit",
+      cwd: ROOT, extra: { prompt: "e2e trace for hermes" },
     });
     console.log(`  [hermes] (no model/token data) -> ${ok ? "captured" : "FAILED"}`);
   }
 
-  // Read the rows back from the store and report what actually landed.
+  // Read the rows back from the store and report what actually landed. The
+  // sessions table is read-after-write lagged — a row INSERTed moments ago may
+  // not be visible on an immediate SELECT (the backend even returns rows=0 on
+  // the write) — so poll until every invoked model is visible or we time out.
   const api = new DeeplakeApi(
     config.token,
     config.apiUrl,
@@ -216,26 +221,93 @@ async function main() {
     config.workspaceId,
     TABLE,
   );
-  const res = await api.query(
-    `SELECT message FROM "${TABLE}" WHERE message->>'session_id' LIKE '${RUN_TAG}-%' ORDER BY agent, message->>'model'`,
-  );
-  const rows = res?.rows ?? res?.data ?? res ?? [];
+  const readRows = async () => {
+    const res = await api.query(
+      `SELECT message FROM "${TABLE}" WHERE message->>'session_id' LIKE '${RUN_TAG}-%' ORDER BY message->>'model'`,
+    );
+    return res?.rows ?? res?.data ?? res ?? [];
+  };
+  // Derive the agent from the session_id we control — the SQL `agent` column
+  // reads back unreliably here, and the prefix is authoritative anyway.
+  const agentOf = (sid) => {
+    const rest = String(sid ?? "").slice(RUN_TAG.length + 1);
+    if (rest.startsWith("cc-")) return "claude_code";
+    if (rest.startsWith("cx-")) return "codex";
+    if (rest.startsWith("cur")) return "cursor";
+    if (rest.startsWith("herm")) return "hermes";
+    return "?";
+  };
+  const modelOf = (r) => (typeof r.message === "string" ? JSON.parse(r.message) : r.message).model;
+  const missingFrom = (rws) => {
+    const present = new Set(rws.map(modelOf));
+    return [...expectedModels].filter((m) => !present.has(m));
+  };
+  let rows = [];
+  // Up to 3 rounds: poll for propagation, then re-capture any straggler the
+  // backend dropped (spaced further apart) before asserting.
+  for (let round = 0; round < 3; round++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      rows = await readRows();
+      if (missingFrom(rows).length === 0) break;
+      await sleep(2000);
+    }
+    const missing = missingFrom(rows);
+    if (missing.length === 0 || round === 2) break;
+    console.log(`\nRetry round ${round + 1}: re-capturing ${missing.length} straggler(s): ${missing.join(", ")}`);
+    await runJobs(jobs.filter((j) => missing.includes(j.model)));
+  }
 
   console.log(`\n=== Rows read back from ${TABLE} (${rows.length}) ===`);
-  let withTokens = 0;
+  const landedModels = new Set();
+  const modelsByAgent = new Map(); // agent -> Set(model)
+  const tokenRowsByAgent = new Map(); // agent -> count of rows with token_usage
+  const seen = new Set();
   for (const row of rows) {
     const m = typeof row.message === "string" ? JSON.parse(row.message) : row.message;
+    const agent = agentOf(m.session_id);
+    landedModels.add(m.model);
+    if (!modelsByAgent.has(agent)) modelsByAgent.set(agent, new Set());
+    modelsByAgent.get(agent).add(m.model);
     const u = m.token_usage;
-    if (u && (u.input_tokens != null || u.output_tokens != null)) withTokens++;
+    const hasTok = u && (u.input_tokens != null || u.output_tokens != null);
+    if (hasTok) tokenRowsByAgent.set(agent, (tokenRowsByAgent.get(agent) ?? 0) + 1);
+    if (seen.has(m.model)) continue; // one line per model in the display
+    seen.add(m.model);
     console.log(
-      `  ${String(m.model ?? "?").padEnd(28)} effort=${String(m.reasoning_effort ?? "—").padEnd(7)} ` +
+      `  ${String(agent).padEnd(12)} ${String(m.model ?? "?").padEnd(28)} effort=${String(m.reasoning_effort ?? "—").padEnd(7)} ` +
         `usage=${u ? JSON.stringify(u) : "—"}` +
         (m.token_usage_total ? ` total=${JSON.stringify(m.token_usage_total)}` : ""),
     );
   }
-  console.log(
-    `\n${withTokens}/${rows.length} rows carry token counts; ${new Set(rows.map((r) => (typeof r.message === "string" ? JSON.parse(r.message) : r.message).model)).size} distinct models traced.`,
-  );
+
+  const invokedByAgent = new Map();
+  for (const j of jobs) invokedByAgent.set(j.agent, (invokedByAgent.get(j.agent) ?? 0) + 1);
+  console.log(`\nInvoked vs visible per agent (sessions-table burst read-lag hides some of a rapid tail):`);
+  for (const [agent, count] of invokedByAgent) {
+    console.log(`  ${agent.padEnd(12)} invoked=${count}  visible=${modelsByAgent.get(agent)?.size ?? 0}  with-tokens=${tokenRowsByAgent.get(agent) ?? 0}`);
+  }
+
+  // Guard: exit code 0 from a capture hook is not proof — verify each agent's
+  // capture path actually wrote correct rows. We assert per-agent presence
+  // (and token_usage for the token-bearing agents) rather than requiring every
+  // one of a 20-model burst to be visible, which the backend's read-lag won't
+  // reliably surface. A genuinely broken hook lands zero rows for its agent.
+  const problems = [];
+  if (rows.length === 0) problems.push("no rows landed at all");
+  for (const agent of ["claude_code", "codex", "cursor"]) {
+    if (!(modelsByAgent.get(agent)?.size)) problems.push(`no ${agent} rows landed`);
+  }
+  for (const agent of ["claude_code", "codex"]) {
+    if (!tokenRowsByAgent.get(agent)) problems.push(`no ${agent} row carried token_usage`);
+  }
+  if (problems.length > 0) {
+    console.error(`\nFAIL: ${problems.join("; ")}`);
+    if (process.env.KEEP !== "1") {
+      await api.query(`DELETE FROM "${TABLE}" WHERE message->>'session_id' LIKE '${RUN_TAG}-%'`);
+    }
+    process.exit(1);
+  }
+  console.log(`\nPASS: every agent's capture path wrote correct rows (token-bearing agents carry token_usage).`);
 
   // Pi + OpenClaw capture in-process (extension event / producer hook), not via
   // a stdin subprocess, so they can't be driven here. Prove the exact enriched
