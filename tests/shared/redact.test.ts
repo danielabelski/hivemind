@@ -220,6 +220,21 @@ describe("redactSecrets — high-entropy backstop", () => {
   it("does NOT mask a long decimal number", () => {
     expect(redactSecrets("count=123456789012345678901234567890")).toContain("123456789012345678901234567890");
   });
+
+  it("does NOT mask provider model identifiers (stored in trace rows)", () => {
+    // These are captured into every trace row's `model` field; masking a long
+    // dated slug would break per-model token rollups.
+    for (const m of [
+      "claude-haiku-4-5-20251001",
+      "claude-opus-4-8",
+      "claude-3-5-sonnet-20241022",
+      "gpt-5.6-sol",
+      "gemini-3-flash-preview",
+      "anthropic/claude-sonnet-4",
+    ]) {
+      expect(redactSecrets(JSON.stringify({ model: m }))).toContain(m);
+    }
+  });
 });
 
 describe("redactSecrets — idempotency & multi-secret", () => {

@@ -58,6 +58,16 @@ function looksLikeSecret(tok: string): boolean {
   if (/^\d+$/.test(tok)) return false; // pure number
   if (/^[0-9a-f]+$/i.test(tok)) return false; // hex hash / git SHA / md5
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tok)) return false; // UUID
+  // Provider model identifiers (e.g. claude-haiku-4-5-20251001, gpt-5.6-sol,
+  // gemini-3-flash-preview, anthropic/claude-sonnet-4) — a long dated slug can
+  // otherwise trip the entropy check. These are captured into every trace row's
+  // `model` field, so shredding them would break per-model usage rollups.
+  if (
+    /^(?:[a-z][a-z0-9-]*\/)?(?:claude|gpt|o[1-9]|gemini|gemma|codex|text-embedding|dall-e|whisper|grok|deepseek|kimi|llama|mistral|mixtral|qwen|phi)[a-z0-9._/-]*$/i.test(
+      tok,
+    )
+  )
+    return false;
   // Require a mix of character classes — random keys blend cases/digits, while
   // English words, dotted versions and snake_case identifiers do not.
   const classes =
