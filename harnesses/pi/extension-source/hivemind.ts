@@ -149,6 +149,30 @@ function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boo
   return { creds: { ...withEnv, orgId, orgName, workspaceId }, collect: true, routed };
 }
 
+// Inline copy of normalizeSdkUsage / sdkTurnMeta (shared version lives in
+// src/notifications/model-usage.ts, but pi extensions ship as raw .ts with no
+// shared-module imports — kept in lockstep with that file). Maps the pi/SDK
+// usage object {input, output, cacheRead, cacheWrite, totalTokens} onto the
+// normalized token_usage keys used across every agent's trace rows.
+function piModelMeta(message: any): { model?: string; token_usage?: Record<string, number> } {
+  const out: { model?: string; token_usage?: Record<string, number> } = {};
+  if (typeof message?.model === "string" && message.model) out.model = message.model;
+  const u = message?.usage;
+  if (u && typeof u === "object") {
+    const t: Record<string, number> = {};
+    const put = (k: string, v: unknown) => {
+      if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) t[k] = v;
+    };
+    put("input_tokens", u.input);
+    put("output_tokens", u.output);
+    put("cache_read_tokens", u.cacheRead);
+    put("cache_creation_tokens", u.cacheWrite);
+    put("total_tokens", u.totalTokens);
+    if (Object.keys(t).length > 0) out.token_usage = t;
+  }
+  return out;
+}
+
 // Inline copies of decodeJwtPayload + healDriftedOrgToken (the shared helpers
 // live in src/commands/auth.ts, but pi extensions ship as raw .ts with no
 // shared-module imports — kept in lockstep with that file).
@@ -1531,6 +1555,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         session_id: sessionId,
         content: text,
         timestamp: new Date().toISOString(),
+        ...piModelMeta(message),
       });
     } catch (e: any) {
       logHm(`message_end: writeSessionRow swallowed: ${e?.message ?? e}`);
