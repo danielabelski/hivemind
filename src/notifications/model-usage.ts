@@ -84,6 +84,52 @@ function readLines(path: string): string[] | null {
 }
 
 // ---------------------------------------------------------------------------
+// Pi / OpenClaw (shared SDK usage shape)
+// ---------------------------------------------------------------------------
+
+interface SdkUsage {
+  input?: unknown;
+  output?: unknown;
+  cacheRead?: unknown;
+  cacheWrite?: unknown;
+  totalTokens?: unknown;
+}
+
+/**
+ * Normalize the Pi / OpenClaw SDK usage object
+ * (`{ input, output, cacheRead, cacheWrite, totalTokens }`) onto
+ * {@link NormalizedUsage}. Returns undefined when nothing usable is present, so
+ * callers can spread it without emitting an empty object.
+ */
+export function normalizeSdkUsage(usage: unknown): NormalizedUsage | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as SdkUsage;
+  const out: NormalizedUsage = {};
+  assign(out, "input_tokens", u.input);
+  assign(out, "output_tokens", u.output);
+  assign(out, "cache_read_tokens", u.cacheRead);
+  assign(out, "cache_creation_tokens", u.cacheWrite);
+  assign(out, "total_tokens", u.totalTokens);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Build the trace enrichment for an in-process SDK turn (Pi / OpenClaw), where
+ * the model and usage arrive on the message object rather than a transcript
+ * file. Returns undefined when neither is present. These runtimes expose no
+ * reasoning-effort field, so it is left unset.
+ */
+export function sdkTurnMeta(model: unknown, usage: unknown): TraceModelMeta | undefined {
+  const token_usage = normalizeSdkUsage(usage);
+  const hasModel = typeof model === "string" && model.length > 0;
+  if (!hasModel && !token_usage) return undefined;
+  const meta: TraceModelMeta = {};
+  if (hasModel) meta.model = model as string;
+  if (token_usage) meta.token_usage = token_usage;
+  return meta;
+}
+
+// ---------------------------------------------------------------------------
 // Claude Code
 // ---------------------------------------------------------------------------
 

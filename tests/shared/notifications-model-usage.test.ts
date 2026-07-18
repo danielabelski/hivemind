@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   parseClaudeTurnMeta,
   parseCodexTurnMeta,
+  normalizeSdkUsage,
+  sdkTurnMeta,
 } from "../../src/notifications/model-usage.js";
 
 let TEMP_DIR = "";
@@ -214,5 +216,52 @@ describe("parseCodexTurnMeta", () => {
     expect(meta?.model).toBe("gpt-5.6-sol");
     expect(meta?.reasoning_effort).toBeUndefined();
     expect(meta?.token_usage?.total_tokens).toBe(7);
+  });
+});
+
+describe("normalizeSdkUsage / sdkTurnMeta (Pi + OpenClaw)", () => {
+  it("normalizes the real Pi usage shape", () => {
+    // From a real ~/.pi transcript: {input, output, cacheRead, cacheWrite, totalTokens, cost}.
+    const u = { input: 12456, output: 15, cacheRead: 0, cacheWrite: 0, totalTokens: 12471, cost: { total: 0.06 } };
+    expect(normalizeSdkUsage(u)).toEqual({
+      input_tokens: 12456,
+      output_tokens: 15,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      total_tokens: 12471,
+    });
+  });
+
+  it("normalizes the real OpenClaw usage shape and maps cacheWrite -> cache_creation", () => {
+    const u = { input: 28621, output: 806, cacheRead: 4, cacheWrite: 9, totalTokens: 29427 };
+    expect(normalizeSdkUsage(u)).toEqual({
+      input_tokens: 28621,
+      output_tokens: 806,
+      cache_read_tokens: 4,
+      cache_creation_tokens: 9,
+      total_tokens: 29427,
+    });
+  });
+
+  it("returns undefined for empty / invalid usage", () => {
+    expect(normalizeSdkUsage(undefined)).toBeUndefined();
+    expect(normalizeSdkUsage({})).toBeUndefined();
+    // Negative + fractional both rejected -> no valid keys -> undefined.
+    expect(normalizeSdkUsage({ input: -1, output: 2.5 })).toBeUndefined();
+  });
+
+  it("builds sdkTurnMeta with model + token_usage, no reasoning effort", () => {
+    const meta = sdkTurnMeta("gpt-5.5", { input: 10, output: 3, totalTokens: 13 });
+    expect(meta).toEqual({ model: "gpt-5.5", token_usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 } });
+    expect(meta).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("returns undefined when neither model nor usage is present", () => {
+    expect(sdkTurnMeta(undefined, undefined)).toBeUndefined();
+    expect(sdkTurnMeta("", {})).toBeUndefined();
+  });
+
+  it("keeps model even when usage is absent", () => {
+    expect(sdkTurnMeta("claude-via-openclaw", null)).toEqual({ model: "claude-via-openclaw" });
   });
 });
