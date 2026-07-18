@@ -1,4 +1,4 @@
-import { copyFileSync, chmodSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { userInfo } from "node:os";
 import { join } from "node:path";
@@ -68,6 +68,111 @@ export function isSharedDepsInstalled(sharedNodeModules: string = SHARED_NODE_MO
   return existsSync(join(sharedNodeModules, TRANSFORMERS_PKG));
 }
 
+/**
+ * The code-graph feature resolves `tree-sitter` (+ language grammars) at
+ * runtime from the SAME shared `embed-deps/node_modules` that the graph-on-stop
+ * hook symlinks to. `ensureSharedDeps` only installs @huggingface/transformers
+ * there, so on a real agent install tree-sitter is absent and the graph never
+ * auto-builds (the hook degrades to a graceful skip). This provisions the
+ * parsers where the hook looks.
+ *
+ * tree-sitter is a NATIVE module: symlinking the package dir alone is not
+ * enough (it needs its own node-gyp-build / node-addon-api siblings resolved),
+ * so we run a scoped `npm install` and let npm lay down the full tree.
+ */
+export function isGraphDepsInstalled(
+  sharedNodeModules: string = SHARED_NODE_MODULES,
+  specs: string[] = treeSitterSpecs(),
+): boolean {
+  // Require EVERY requested parser to be present — not just `tree-sitter` — so
+  // an interrupted or partial install counts as "needs (re)install" rather
+  // than being skipped as done. `<name>@<range>` → dir name is the part before
+  // the (unscoped) version separator.
+  if (specs.length === 0) return false;
+  return specs.every((s) => existsSync(join(sharedNodeModules, s.slice(0, s.lastIndexOf("@")))));
+}
+
+/**
+ * Build `<name>@<range>` specs for every tree-sitter* entry in the package's
+ * own optionalDependencies. Reading them from package.json (rather than a
+ * hardcoded list) keeps the embed-deps versions in lockstep with what the
+ * bundles were built against — no drift, no ABI mismatch. Exported for tests.
+ */
+export function treeSitterSpecs(pkgJsonPath: string = join(pkgRoot(), "package.json")): string[] {
+  let opt: Record<string, string> = {};
+  try {
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+    opt = pkg.optionalDependencies ?? {};
+  } catch { return []; }
+  return Object.keys(opt)
+    .filter((n) => n === "tree-sitter" || n.startsWith("tree-sitter-"))
+    .sort()
+    .map((n) => `${n}@${opt[n]}`);
+}
+
+/**
+ * Install the tree-sitter parsers into the shared embed-deps dir. Idempotent
+ * (a specs-hash marker + a per-package presence check skip the re-download,
+ * and catch version bumps / partial installs) and best-effort: any failure is
+ * logged and swallowed so it never aborts the caller — the graph stays
+ * disabled but nothing else breaks, and the graph-on-stop hook degrades
+ * gracefully rather than crashing.
+ *
+ * Two-phase native provisioning: `npm install --ignore-scripts` first, so a
+ * platform without a prebuild (arm64 / Node 24) doesn't fail the download,
+ * THEN scripts/ensure-tree-sitter.mjs always runs — it validates the bindings
+ * load and compiles from source where no prebuild exists (a fast no-op on
+ * healthy prebuilt installs). Running the heal unconditionally repairs a
+ * previously interrupted or ABI-mismatched install.
+ *
+ * Decoupled from the ~600 MB embeddings download: this installs ONLY the
+ * parsers (tens of MB), so the code graph can work without semantic search.
+ */
+export function ensureGraphDeps(): void {
+  try {
+    const specs = treeSitterSpecs();
+    if (specs.length === 0) {
+      warn(`  Graph          no tree-sitter optionalDependencies found in package.json — skipping`);
+      return;
+    }
+    ensureDir(SHARED_DIR);
+    // Create a package.json if none exists yet (user never ran embeddings
+    // install). Don't clobber an existing one — it may already declare
+    // transformers; `npm install <specs>` merges the parsers alongside.
+    const pkgPath = join(SHARED_DIR, "package.json");
+    if (!existsSync(pkgPath)) {
+      writeJson(pkgPath, { name: "hivemind-embed-deps", version: "1.0.0", private: true, dependencies: {} });
+    }
+    // Skip the (re)download only when the exact spec set was installed before
+    // AND every package is still present. The marker also catches version
+    // bumps: a changed spec set forces a reinstall.
+    const marker = join(SHARED_DIR, ".graph-deps");
+    const wantKey = specs.join("\n");
+    const haveKey = existsSync(marker) ? readFileSync(marker, "utf8") : "";
+    if (haveKey !== wantKey || !isGraphDepsInstalled(SHARED_NODE_MODULES, specs)) {
+      log(`  Graph          installing tree-sitter parsers into ${SHARED_DIR} (code-graph; ~tens of MB)`);
+      // --ignore-scripts: fetch the packages without the native build that
+      // fails on platforms lacking a prebuild; the heal below does the build.
+      execFileSync("npm", ["install", ...specs, "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund", "--ignore-scripts"], {
+        cwd: SHARED_DIR,
+        stdio: "inherit",
+      });
+      writeFileSync(marker, wantKey);
+    } else {
+      log(`  Graph          tree-sitter parsers already present at ${SHARED_DIR}`);
+    }
+    // ALWAYS heal: validates bindings load + compiles from source where no
+    // prebuild exists (arm64 / Node 24). Fast no-op on healthy prebuilt
+    // installs; repairs an interrupted or ABI-mismatched one.
+    const heal = join(pkgRoot(), "scripts", "ensure-tree-sitter.mjs");
+    if (existsSync(heal)) {
+      execFileSync(process.execPath, [heal], { cwd: SHARED_DIR, stdio: "inherit" });
+    }
+  } catch (err) {
+    warn(`  Graph          tree-sitter provisioning failed (${err instanceof Error ? err.message : String(err)}); code graph stays disabled — everything else works`);
+  }
+}
+
 function isSymlinkToSharedDeps(linkPath: string, sharedNodeModules: string): boolean {
   if (!existsSync(linkPath)) return false;
   try {
@@ -107,11 +212,17 @@ function ensureSharedDeps(): void {
     log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
     log(`                 (~600 MB; first install only — every agent will share this)`);
     ensureDir(SHARED_DIR);
-    writeJson(join(SHARED_DIR, "package.json"), {
+    // Merge, don't clobber: ensureGraphDeps may have already declared the
+    // tree-sitter parsers here. Overwriting with transformers-only would drop
+    // that declaration and let a subsequent reconcile prune the parsers.
+    const pkgPath = join(SHARED_DIR, "package.json");
+    let existing: { dependencies?: Record<string, string> } = {};
+    try { existing = JSON.parse(readFileSync(pkgPath, "utf8")); } catch { /* none yet */ }
+    writeJson(pkgPath, {
       name: "hivemind-embed-deps",
       version: "1.0.0",
       private: true,
-      dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
+      dependencies: { ...(existing.dependencies ?? {}), [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
     });
     execFileSync("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
       cwd: SHARED_DIR,
@@ -170,6 +281,10 @@ function linkAgent(install: AgentInstall): void {
  */
 export function installEmbeddings(): void {
   ensureSharedDeps();
+  // Provision the code-graph parsers into the same shared dir so the
+  // graph-on-stop hook (which symlinks here) can auto-build the graph.
+  // Best-effort — a native-build failure never aborts the embeddings install.
+  ensureGraphDeps();
   const installs = findHivemindInstalls();
   if (installs.length === 0) {
     warn("  Embeddings     no hivemind installs detected — run `hivemind install` first");
