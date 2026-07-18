@@ -607,6 +607,35 @@ describe("runPull", () => {
     expect(collider?.destination).toContain("collision");
   });
 
+  it("detects a cap collision ACROSS separate pulls via the persisted raw name", async () => {
+    // These two distinct over-long names hash to the same capped dir. Pulled in
+    // separate invocations (e.g. `--skill`), the manifest's persisted rawName
+    // must let the second recognise the destination as another skill's and skip
+    // it — not overwrite the first.
+    const a = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz16634";
+    const b = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz400000";
+
+    const run1 = await runPull({
+      query: makeMockQuery([sampleRow({ name: a, author: "al", version: 1 })]).fn,
+      tableName: "skills", install: "project", cwd: projectRoot, users: [], dryRun: false, force: false,
+    });
+    expect(run1.wrote).toBe(1);
+    const dir = readdirSync(projectSkillsRoot)[0];
+    const contentAfterRun1 = readFileSync(join(projectSkillsRoot, dir, "SKILL.md"), "utf-8");
+
+    // Second, separate pull of the colliding name — even with --force.
+    const run2 = await runPull({
+      query: makeMockQuery([sampleRow({ name: b, author: "al", version: 9 })]).fn,
+      tableName: "skills", install: "project", cwd: projectRoot, users: [], dryRun: false, force: true,
+    });
+    expect(run2.wrote).toBe(0);
+    expect(run2.skipped).toBe(1);
+    expect(run2.entries[0].destination).toContain("collision");
+    // First skill's file is untouched.
+    expect(readdirSync(projectSkillsRoot)).toHaveLength(1);
+    expect(readFileSync(join(projectSkillsRoot, dir, "SKILL.md"), "utf-8")).toBe(contentAfterRun1);
+  });
+
   it("rejects an over-long name whose truncated-away tail carries traversal syntax", async () => {
     // First 64 chars are a valid slug; the discarded tail hides `..`. Capping
     // before validating would admit it — validation must see the RAW name.

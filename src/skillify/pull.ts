@@ -579,13 +579,19 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     const dirName = `${name}--${author}`;
 
     // Two distinct over-long names can cap to the same destination (capping is
-    // a lossy hash). The first row to claim a destination wins; skip any later
-    // collider so we never silently overwrite one skill's file with another's.
-    const claimant = claimedDirs.get(dirName);
-    if (claimant !== undefined && claimant !== rawName) {
+    // a lossy hash). Detect collisions both within this run (claimedDirs) AND
+    // across runs: the manifest persists the raw claimant of an existing capped
+    // install, so a later filtered pull (e.g. `--skill`) of a different raw name
+    // that caps to the same identity is caught. The first raw name to claim a
+    // destination wins; skip any later collider — even under --force — so we
+    // never silently overwrite one skill's file with another's.
+    const persistedOwner = entriesForRoot(loadManifest(), opts.install, root)
+      .find(e => e.dirName === dirName)?.rawName;
+    const owner = claimedDirs.get(dirName) ?? persistedOwner;
+    if (owner !== undefined && owner !== rawName) {
       summary.entries.push({
         name: rawName, remoteVersion: Number(row.version ?? 1), localVersion: null,
-        action: "skipped", destination: `(name collision with '${claimant}' — skipped)`,
+        action: "skipped", destination: `(name collision with '${owner}' — skipped)`,
         author, sourceAgent: String(row.source_agent ?? ""),
       });
       summary.skipped++;
@@ -634,8 +640,15 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
       // rewritten to the capped one — instead of overwriting from remote.
       // Only an older stale copy (or --force) is replaced by the remote row.
       if (staleFile && staleVersion !== null && staleVersion >= remoteVersion && !(opts.force ?? false)) {
-        const migrated = readFileSync(staleFile, "utf-8").replace(/^name:.*$/m, `name: ${name}`);
-        writeFileSync(skillFile, migrated);
+        // Read defensively: if the stale file vanished since its version was
+        // read (a benign FS race), fall back to installing the remote row
+        // rather than throwing out of the pull.
+        try {
+          const migrated = readFileSync(staleFile, "utf-8").replace(/^name:.*$/m, `name: ${name}`);
+          writeFileSync(skillFile, migrated);
+        } catch {
+          writeFileSync(skillFile, renderSkillFile(row, name));
+        }
       } else {
         writeFileSync(skillFile, renderSkillFile(row, name));
       }
@@ -654,6 +667,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
         recordPull({
           dirName,
           name,
+          rawName,
           author,
           projectKey: String(row.project_key ?? ""),
           remoteVersion,
@@ -681,9 +695,14 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     if (staleDir && staleDir !== dirName && !(opts.dryRun ?? false)
         && existsSync(skillFile) && existsSync(join(root, staleDir))) {
       try {
-        const staleEntry = entriesForRoot(loadManifest(), opts.install, root)
-          .find(e => e.dirName === staleDir);
-        if (staleEntry) {
+        const entries = entriesForRoot(loadManifest(), opts.install, root);
+        // Only retire the stale install once the CANONICAL capped install is
+        // recorded in the manifest. If recordPull failed this run, the canonical
+        // file is on disk but untracked — keep the stale entry so a later pull
+        // retries the migration instead of orphaning the skill.
+        const canonicalRecorded = entries.some(e => e.dirName === dirName);
+        const staleEntry = entries.find(e => e.dirName === staleDir);
+        if (canonicalRecorded && staleEntry) {
           // Remove the directory FIRST, then drop its manifest evidence. If
           // rmSync fails, the entry survives so the next pull retries cleanup;
           // dropping the entry first would orphan an un-removed invalid dir.
