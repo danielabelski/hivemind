@@ -1483,7 +1483,7 @@ export default definePluginEntry({
     // Auto-capture: store new messages in sessions table (same format as CC capture.ts)
     if (config.autoCapture !== false) {
       hook("agent_end", async (event) => {
-        const ev = event as { success?: boolean; session_id?: string; channel?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }>; model?: unknown; usage?: unknown }> };
+        const ev = event as { success?: boolean; session_id?: string; channel?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }>; model?: unknown; usage?: unknown; stopReason?: unknown }> };
         if (!captureEnabled || !ev.success || !ev.messages?.length) return;
         try {
           const dl = await getApi();
@@ -1518,7 +1518,7 @@ export default definePluginEntry({
             const ts = new Date().toISOString();
             // Tag assistant rows with model + token usage from the SDK message
             // (openclaw exposes both on the message object; no reasoning effort).
-            const modelMeta = msg.role === "assistant" ? sdkTurnMeta(msg.model, msg.usage) : undefined;
+            const modelMeta = msg.role === "assistant" ? sdkTurnMeta(msg.model, msg.usage, msg.stopReason) : undefined;
             const entry = {
               id: crypto.randomUUID(),
               type: msg.role === "user" ? "user_message" : "assistant_message",

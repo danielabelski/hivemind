@@ -294,7 +294,9 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // block landed for #100 between `Auto-captured` and the spawn site.
     // 3500→4000 for the embed-on-capture wiring landed for #178 between
     // `agent_end` and `Auto-captured` (tryEmbedStandalone + comment block).
-    expect(src).toMatch(/agent_end[\s\S]{0,4000}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
+    // 4000→4400 for the model/token-usage tagging (sdkTurnMeta + comment)
+    // landed between `agent_end` and `Auto-captured`.
+    expect(src).toMatch(/agent_end[\s\S]{0,4400}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });
