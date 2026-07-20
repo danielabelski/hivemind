@@ -360,9 +360,10 @@ function codexUsageExtra(
   const primary = pickWin(rateLimits?.primary);
   const secondary = pickWin(rateLimits?.secondary);
   if (primary || secondary) {
-    extra.rate_limits = {};
-    if (primary) (extra.rate_limits as Record<string, unknown>).primary = primary;
-    if (secondary) (extra.rate_limits as Record<string, unknown>).secondary = secondary;
+    const rl: Record<string, unknown> = {};
+    if (primary) rl.primary = primary;
+    if (secondary) rl.secondary = secondary;
+    extra.rate_limits = rl;
   }
   return Object.keys(extra).length > 0 ? extra : undefined;
 }

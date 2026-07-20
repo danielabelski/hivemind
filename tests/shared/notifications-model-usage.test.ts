@@ -401,6 +401,34 @@ describe("parseCodexTurnMeta — usage_extra quota", () => {
     });
   });
 
+  it("drops invalid quota values (negative / fractional) but keeps valid ones", () => {
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "medium"),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            model_context_window: 3.5, // fractional -> dropped
+          },
+          rate_limits: {
+            primary: { used_percent: -5, window_minutes: 1.5, resets_at: 100 }, // only resets_at valid
+            secondary: { used_percent: 2, window_minutes: 300, resets_at: 1 }, // all valid
+          },
+        },
+      },
+    ]);
+    const meta = parseCodexTurnMeta(file, "fb");
+    expect(meta?.usage_extra).toEqual({
+      rate_limits: {
+        primary: { resets_at: 100 },
+        secondary: { used_percent: 2, window_minutes: 300, resets_at: 1 },
+      },
+    });
+    expect(meta?.usage_extra).not.toHaveProperty("model_context_window");
+  });
+
   it("does not carry a prior turn's quota into a new turn_context (model change)", () => {
     const file = writeTranscript([
       codexTurnContext("gpt-5.5", "medium"),
