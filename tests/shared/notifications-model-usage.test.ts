@@ -220,15 +220,16 @@ describe("parseCodexTurnMeta", () => {
 });
 
 describe("normalizeSdkUsage / sdkTurnMeta (Pi + OpenClaw)", () => {
-  it("normalizes the real Pi usage shape", () => {
+  it("normalizes the real Pi usage shape incl. fractional cost", () => {
     // From a real ~/.pi transcript: {input, output, cacheRead, cacheWrite, totalTokens, cost}.
-    const u = { input: 12456, output: 15, cacheRead: 0, cacheWrite: 0, totalTokens: 12471, cost: { total: 0.06 } };
+    const u = { input: 12456, output: 15, cacheRead: 0, cacheWrite: 0, totalTokens: 12471, cost: { input: 0.06228, output: 0.00045, cacheRead: 0, cacheWrite: 0, total: 0.06273 } };
     expect(normalizeSdkUsage(u)).toEqual({
       input_tokens: 12456,
       output_tokens: 15,
       cache_read_tokens: 0,
       cache_creation_tokens: 0,
       total_tokens: 12471,
+      cost: { input: 0.06228, output: 0.00045, cache_read: 0, cache_creation: 0, total: 0.06273 },
     });
   });
 
@@ -263,5 +264,88 @@ describe("normalizeSdkUsage / sdkTurnMeta (Pi + OpenClaw)", () => {
 
   it("keeps model even when usage is absent", () => {
     expect(sdkTurnMeta("claude-via-openclaw", null)).toEqual({ model: "claude-via-openclaw" });
+  });
+
+  it("carries stop_reason and rejects a fractional token count but keeps fractional cost", () => {
+    const meta = sdkTurnMeta("gpt-5.5", { input: 10, output: 3, totalTokens: 13, cost: { total: 0.0627 } }, "stop");
+    expect(meta).toEqual({
+      model: "gpt-5.5",
+      stop_reason: "stop",
+      token_usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13, cost: { total: 0.0627 } },
+    });
+  });
+
+  it("emits stop_reason alone when only it is present", () => {
+    expect(sdkTurnMeta(undefined, undefined, "toolUse")).toEqual({ stop_reason: "toolUse" });
+  });
+});
+
+describe("parseClaudeTurnMeta — stop_reason + usage_extra", () => {
+  const tmp = () => join(TEMP_DIR, "transcript.jsonl");
+  it("extracts stop_reason and Claude billing extras (tier/speed/cache-ttl/server-tools)", () => {
+    const line = {
+      type: "assistant",
+      message: {
+        model: "claude-opus-4-8",
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 100, output_tokens: 20,
+          cache_read_input_tokens: 5, cache_creation_input_tokens: 7,
+          service_tier: "standard", speed: "standard", inference_geo: "not_available",
+          cache_creation: { ephemeral_1h_input_tokens: 7, ephemeral_5m_input_tokens: 0 },
+          server_tool_use: { web_search_requests: 2, web_fetch_requests: 1 },
+        },
+      },
+    };
+    writeFileSync(tmp(), JSON.stringify(line) + "\n", "utf-8");
+    const meta = parseClaudeTurnMeta(tmp());
+    expect(meta?.stop_reason).toBe("end_turn");
+    expect(meta?.token_usage).toEqual({ input_tokens: 100, output_tokens: 20, cache_read_tokens: 5, cache_creation_tokens: 7 });
+    expect(meta?.usage_extra).toEqual({
+      service_tier: "standard",
+      speed: "standard",
+      inference_geo: "not_available",
+      cache_creation_ttl: { ephemeral_1h: 7, ephemeral_5m: 0 },
+      server_tool_use: { web_search_requests: 2, web_fetch_requests: 1 },
+    });
+  });
+
+  it("omits usage_extra when the assistant turn has no extra billing fields", () => {
+    const line = { type: "assistant", message: { model: "claude-opus-4-8", usage: { input_tokens: 1, output_tokens: 1 } } };
+    writeFileSync(tmp(), JSON.stringify(line) + "\n", "utf-8");
+    const meta = parseClaudeTurnMeta(tmp());
+    expect(meta).not.toHaveProperty("usage_extra");
+    expect(meta).not.toHaveProperty("stop_reason");
+  });
+});
+
+describe("parseCodexTurnMeta — usage_extra quota", () => {
+  it("extracts model_context_window and rate_limits from the latest token_count", () => {
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "medium"),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            total_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            model_context_window: 258400,
+          },
+          rate_limits: {
+            primary: { used_percent: 11.0, window_minutes: 10080, resets_at: 1784782051 },
+            secondary: { used_percent: 2.0, window_minutes: 300, resets_at: 1779231430 },
+          },
+        },
+      },
+    ]);
+    const meta = parseCodexTurnMeta(file, "fb");
+    expect(meta?.usage_extra).toEqual({
+      model_context_window: 258400,
+      rate_limits: {
+        primary: { used_percent: 11.0, window_minutes: 10080, resets_at: 1784782051 },
+        secondary: { used_percent: 2.0, window_minutes: 300, resets_at: 1779231430 },
+      },
+    });
   });
 });
