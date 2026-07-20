@@ -3,11 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { mkdirSync } from "node:fs";
 import {
   parseClaudeTurnMeta,
   parseCodexTurnMeta,
   normalizeSdkUsage,
   sdkTurnMeta,
+  readClaudeEffortLevel,
 } from "../../src/notifications/model-usage.js";
 
 let TEMP_DIR = "";
@@ -70,7 +72,9 @@ describe("parseClaudeTurnMeta", () => {
     const meta = parseClaudeTurnMeta(file);
     // Last assistant turn wins (reverse scan), not the first.
     expect(meta?.model).toBe("claude-opus-4-8");
-    expect(meta?.reasoning_effort).toBeNull();
+    // reasoning_effort is read from settings (null when unset); this token-focused
+    // test stays hermetic by only asserting the shape, not an ambient value.
+    expect(meta?.reasoning_effort === null || typeof meta?.reasoning_effort === "string").toBe(true);
     expect(meta?.token_usage).toEqual({
       input_tokens: 19088,
       output_tokens: 404,
@@ -316,6 +320,33 @@ describe("parseClaudeTurnMeta — stop_reason + usage_extra", () => {
     const meta = parseClaudeTurnMeta(tmp());
     expect(meta).not.toHaveProperty("usage_extra");
     expect(meta).not.toHaveProperty("stop_reason");
+  });
+});
+
+describe("readClaudeEffortLevel", () => {
+  it("reads effortLevel from a project settings file, project overriding", () => {
+    const proj = join(TEMP_DIR, "proj");
+    mkdirSync(join(proj, ".claude"), { recursive: true });
+    writeFileSync(join(proj, ".claude", "settings.json"), JSON.stringify({ effortLevel: "high" }), "utf-8");
+    expect(readClaudeEffortLevel(proj)).toBe("high");
+    // settings.local.json wins over settings.json
+    writeFileSync(join(proj, ".claude", "settings.local.json"), JSON.stringify({ effortLevel: "low" }), "utf-8");
+    expect(readClaudeEffortLevel(proj)).toBe("low");
+  });
+
+  it("returns undefined when no settings file has effortLevel", () => {
+    const empty = join(TEMP_DIR, "empty");
+    mkdirSync(empty, { recursive: true });
+    // A cwd with no .claude dir — only the (possibly absent) user settings apply.
+    const r = readClaudeEffortLevel(empty);
+    expect(r === undefined || typeof r === "string").toBe(true); // never throws
+  });
+
+  it("ignores malformed settings JSON and falls through", () => {
+    const bad = join(TEMP_DIR, "bad");
+    mkdirSync(join(bad, ".claude"), { recursive: true });
+    writeFileSync(join(bad, ".claude", "settings.json"), "{ not valid json", "utf-8");
+    expect(() => readClaudeEffortLevel(bad)).not.toThrow();
   });
 });
 

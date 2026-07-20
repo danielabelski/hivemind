@@ -7,9 +7,9 @@
  * on-disk transcript the hook receives a path to:
  *
  *   Claude Code — `~/.claude/projects/<enc-cwd>/<session>.jsonl`. Each assistant
- *     line is `{ type:"assistant", message:{ model, usage:{ input_tokens,
- *     output_tokens, cache_read_input_tokens, cache_creation_input_tokens } } }`.
- *     Reasoning effort is not a per-message field, so it is left null.
+ *     line is `{ type:"assistant", message:{ model, stop_reason, usage:{...} } }`.
+ *     Reasoning effort is not in the message — it's the user's `effortLevel`
+ *     setting, read from settings at capture time (see readClaudeEffortLevel).
  *
  *   Codex — `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. A `turn_context`
  *     line carries `payload.model` + `payload.effort`; `event_msg` lines with
@@ -25,6 +25,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("model-usage", msg);
@@ -192,7 +194,36 @@ interface ClaudeUsage {
 
 interface ClaudeLine {
   type?: string;
+  cwd?: unknown;
   message?: { model?: unknown; usage?: ClaudeUsage; stop_reason?: unknown };
+}
+
+/**
+ * Claude Code's reasoning effort is a user-set control (low/medium/high, with
+ * `ultrathink` = high), persisted as `effortLevel` in settings — NOT in the
+ * per-message transcript. Read it at capture time, preferring project settings
+ * over the user default. Best-effort: returns undefined on any miss so the
+ * caller falls back to null. Reflects the level configured when the turn was
+ * captured (an in-prompt `ultrathink` override for a single turn isn't
+ * recorded anywhere we can recover).
+ */
+export function readClaudeEffortLevel(cwd?: string): string | undefined {
+  const candidates: string[] = [];
+  if (cwd) {
+    candidates.push(join(cwd, ".claude", "settings.local.json"));
+    candidates.push(join(cwd, ".claude", "settings.json"));
+  }
+  candidates.push(join(homedir(), ".claude", "settings.json"));
+  for (const p of candidates) {
+    try {
+      if (!existsSync(p)) continue;
+      const j = JSON.parse(readFileSync(p, "utf-8")) as { effortLevel?: unknown };
+      if (typeof j.effortLevel === "string" && j.effortLevel) return j.effortLevel;
+    } catch {
+      // ignore unreadable / malformed settings and try the next candidate
+    }
+  }
+  return undefined;
 }
 
 function normalizeClaudeUsage(u: ClaudeUsage): NormalizedUsage {
@@ -257,7 +288,9 @@ export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | n
     if (entry.type !== "assistant" || !msg || !msg.usage) continue;
     const meta: TraceModelMeta = {
       model: typeof msg.model === "string" ? msg.model : undefined,
-      reasoning_effort: null, // Claude has no per-message reasoning-effort field.
+      // Not in the transcript message — read the configured effortLevel from
+      // settings (null when unset), keyed to the turn's project cwd.
+      reasoning_effort: readClaudeEffortLevel(typeof entry.cwd === "string" ? entry.cwd : undefined) ?? null,
       token_usage: normalizeClaudeUsage(msg.usage),
     };
     if (typeof msg.stop_reason === "string") meta.stop_reason = msg.stop_reason;
