@@ -29,6 +29,7 @@
 
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
@@ -198,12 +199,15 @@ async function main(): Promise<void> {
   if (!recall) { log(`skip gate=${reason}`); return; }
 
   const session = input.session_id;
-  const config = loadConfig();
-  if (!config?.token) {
+  const baseConfig = loadConfig();
+  if (!baseConfig?.token) {
     log("skip no-config");
     recordRecallEvent({ event: "no-config", gate: reason, session });
     return;
   }
+  // Route recall by the nearest `.hivemind`, like capture and memory search:
+  // a routed directory must recall from ITS workspace, not the global one.
+  const config = resolveDirConfig(baseConfig, input.cwd ?? process.cwd()).config;
 
   // Bound the whole search path so the turn never stalls beyond the budget.
   // On timeout we ABORT the controller so the in-flight query is cancelled

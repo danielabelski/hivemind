@@ -15,6 +15,7 @@ const debugLogMock = vi.fn();
 const queryMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const buildSessionPathMock = vi.fn();
+const appendSessionEventMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
@@ -33,6 +34,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
 }));
 vi.mock("../../src/utils/session-path.js", () => ({
   buildSessionPath: (...a: unknown[]) => buildSessionPathMock(...a),
+}));
+vi.mock("../../src/hooks/session-event-cache.js", () => ({
+  appendSessionEvent: (...a: unknown[]) => appendSessionEventMock(...a),
 }));
 
 const validConfig = {
@@ -77,6 +81,7 @@ beforeEach(() => {
   queryMock.mockReset().mockResolvedValue([]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   buildSessionPathMock.mockReset().mockReturnValue("/sessions/alice/foo.jsonl");
+  appendSessionEventMock.mockReset();
 });
 
 afterEach(async () => {

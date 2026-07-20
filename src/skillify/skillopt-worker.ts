@@ -13,7 +13,7 @@
 import path from "node:path";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { log as _log } from "../utils/debug.js";
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { getStateDir } from "./state-dir.js";
 import { agentModel, detectScorerAgent } from "./agent-model.js";
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
   const toolUseId = process.env[SKILLOPT_ENV.TOOL_USE_ID] || undefined;
   if (!sessionId || !skillRef) { log("no session/skill in env — nothing to do"); return; }
 
-  const config = loadConfig();
+  const config = loadRoutedConfig();
   if (!config?.token) { log("no config/credentials — exiting"); return; }
 
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);

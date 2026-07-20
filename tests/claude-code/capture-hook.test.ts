@@ -31,6 +31,7 @@ const debugLogMock = vi.fn();
 const queryMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const apiCtorMock = vi.fn();
+const appendSessionEventMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
@@ -62,6 +63,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
     embed(_text: string, _kind?: string) { return Promise.resolve(null); }
     warmup() { return Promise.resolve(false); }
   },
+}));
+vi.mock("../../src/hooks/session-event-cache.js", () => ({
+  appendSessionEvent: (...a: any[]) => appendSessionEventMock(...a),
 }));
 
 async function runHook(env: Record<string, string | undefined> = {}): Promise<void> {
@@ -104,6 +108,7 @@ beforeEach(() => {
   queryMock.mockReset().mockResolvedValue([]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   apiCtorMock.mockReset();
+  appendSessionEventMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -189,6 +194,21 @@ describe("capture hook — event-type branches", () => {
     expect(sql).toContain('"type":"user_message"');
     expect(sql).toContain('"content":"hello"');
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringMatching(/^user session=sid-1$/));
+    // The same normalized line is mirrored into the local per-session cache so
+    // the wiki-worker never has to re-`SELECT` the fat message column.
+    expect(appendSessionEventMock).toHaveBeenCalledTimes(1);
+    const [cachedSid, cachedLine] = appendSessionEventMock.mock.calls[0];
+    expect(cachedSid).toBe("sid-1");
+    expect(JSON.parse(cachedLine)).toMatchObject({ type: "user_message", content: "hello" });
+  });
+
+  it("does NOT append to the local cache when the INSERT fails", async () => {
+    // A failed INSERT re-throws before the append — the cache must not diverge
+    // from the DB by recording an event that was never persisted.
+    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    queryMock.mockReset().mockRejectedValue(new Error("random SQL boom"));
+    await runHook();
+    expect(appendSessionEventMock).not.toHaveBeenCalled();
   });
 
   it("tool_call: INSERT contains tool_name + serialized input/response", async () => {
@@ -208,6 +228,30 @@ describe("capture hook — event-type branches", () => {
     expect(sql).toContain('tool_input');
     expect(sql).toContain('tool_response');
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringMatching(/^tool=Bash session=sid-2$/));
+  });
+
+  it("tool_call: masks secrets in the tool input/response before insert + embed", async () => {
+    // Split literal so GitHub push protection doesn't flag this fixture.
+    const secretToken = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const secretPw = "s3cr3tP4ssword";
+    stdinMock.mockResolvedValue({
+      session_id: "sid-secret",
+      cwd: "/p",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "tu-2",
+      tool_input: { command: `git remote set-url origin https://${secretToken}@github.com/o/r` },
+      tool_response: { stdout: `PGPASSWORD=${secretPw} psql -h db` },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    // Neither the raw token nor the password reaches the stored row...
+    expect(sql).not.toContain(secretToken);
+    expect(sql).not.toContain(secretPw);
+    // ...but the masked, type-hinted form is present. capture.ts derives the
+    // embedding from this same redacted `line`, so the secret is never embedded.
+    expect(sql).toContain("ghp_********");
+    expect(sql).toContain("PGPASSWORD=********");
   });
 
   it("assistant_message without agent_transcript_path", async () => {

@@ -1,11 +1,78 @@
 import { build } from "esbuild";
-import { chmodSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 
 const esmPackageJson = '{"type":"module"}\n';
 const hivemindVersion = JSON.parse(readFileSync("package.json", "utf-8")).version;
 const openclawVersion = JSON.parse(readFileSync("harnesses/openclaw/package.json", "utf-8")).version;
 const openclawSkillBody = readFileSync("harnesses/openclaw/skills/SKILL.md", "utf-8");
 const openclawGraphSkillBody = readFileSync("harnesses/openclaw/skills/hivemind-graph/SKILL.md", "utf-8");
+
+// tree-sitter + language grammars ship native .node prebuilds esbuild can't
+// bundle; they're always external and resolved from node_modules at runtime.
+const treeSitterExternals = [
+  "tree-sitter",
+  "tree-sitter-typescript",
+  "tree-sitter-javascript",
+  "tree-sitter-python",
+  "tree-sitter-go",
+  "tree-sitter-rust",
+  "tree-sitter-java",
+  "tree-sitter-ruby",
+  "tree-sitter-c",
+  "tree-sitter-cpp",
+];
+
+/**
+ * Build the graph-on-stop Stop/SessionEnd hook as its OWN code-split bundle
+ * for a harness (claude-code / codex / cursor / hermes).
+ *
+ * Why splitting instead of a plain entry in the shared harness build list:
+ * the hook's build path (runBuildCommand → extract/index → `import Parser
+ * from "tree-sitter"`) is a chain of static ESM imports. As a plain bundle,
+ * esbuild hoists the external `import ... from "tree-sitter"` to the TOP of
+ * graph-on-stop.js, so Node resolves tree-sitter at MODULE LOAD — before
+ * main() runs. On an install where the tree-sitter optionalDependency failed
+ * to build (Node 24 / arm64), that load fails with ERR_MODULE_NOT_FOUND and
+ * the Stop hook exits 1 (the reported crash). main()'s catch never fires.
+ *
+ * With `splitting: true`, graph-on-stop.ts's `await import("../commands/graph.js")`
+ * stays a runtime import into a separate chunk; the tree-sitter statics live
+ * only in that chunk, loaded lazily behind the gate. A missing grammar then
+ * rejects the dynamic import, which main()'s try/catch turns into a logged
+ * skip + exit 0. This mirrors the CLI fix (bundle/cli.js) already in this file.
+ * The entry filename stays graph-on-stop.js so hook registrations are
+ * unchanged; the chunk lands under graph-chunks/.
+ *
+ * Stale chunks are cleared first (their names are content-hashed, so a code
+ * change would otherwise leave the previous chunk behind to ship as dead
+ * weight). Scoped to graph-chunks/ so the shared bundle outputs are untouched.
+ */
+async function buildGraphOnStop(outdir) {
+  rmSync(`${outdir}/graph-chunks`, { recursive: true, force: true });
+  await build({
+    entryPoints: { "graph-on-stop": "dist/src/hooks/graph-on-stop.js" },
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    outdir,
+    splitting: true,
+    chunkNames: "graph-chunks/[name]-[hash]",
+    external: [
+      "node:*",
+      "node-liblzma",
+      "@mongodb-js/zstd",
+      "@huggingface/transformers",
+      "onnxruntime-node",
+      "onnxruntime-common",
+      "sharp",
+      ...treeSitterExternals,
+    ],
+    define: {
+      __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+    },
+  });
+  chmodSync(`${outdir}/graph-on-stop.js`, 0o755);
+}
 
 // Claude Code plugin
 const ccHooks = [
@@ -26,10 +93,9 @@ const ccHooks = [
   { entry: "dist/src/skillify/skillopt-worker.js", out: "skillopt-worker" },
   // codebase-graph Phase 1.5: auto-build the graph at SessionEnd, gated
   // on (a) 10-min rate limit, (b) HEAD changed since last build, (c) ≥1
-  // source file diff. See src/hooks/graph-on-stop.ts.
-  // Filename keeps the "on-stop" suffix for backward-compat with prior
-  // builds; the hook itself is registered under SessionEnd, not Stop.
-  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
+  // source file diff. See src/hooks/graph-on-stop.ts. Built separately via
+  // buildGraphOnStop() (code-split so tree-sitter loads lazily) — NOT in
+  // this shared list. Filename keeps the "on-stop" suffix for backward-compat.
   // codebase-graph Phase 3 v1.1: async auto-pull on SessionStart.
   // Spawned detached via nohup from each agent's SessionStart hook;
   // pulls the freshest cloud snapshot for HEAD if newer than local.
@@ -102,7 +168,7 @@ const codexHooks = [
   { entry: "dist/src/skillify/skillopt-worker.js", out: "skillopt-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
   // G3: code-graph auto-build parity for Codex (same shared hook as CC/Cursor).
-  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
+  // graph-on-stop is built separately via buildGraphOnStop() (code-split).
 ];
 
 const codexShell = [
@@ -166,8 +232,8 @@ const cursorHooks = [
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
   // A1 (graph Cursor parity): same auto-build hook as Claude Code, wired
   // to Cursor's stop + sessionEnd events in install-cursor.ts. Reuses the
-  // shared src/hooks/graph-on-stop.ts entry (no per-agent logic).
-  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
+  // shared src/hooks/graph-on-stop.ts entry (no per-agent logic). Built
+  // separately via buildGraphOnStop() (code-split).
 ];
 
 // Hermes Agent shell-hook bundles (matches Claude Code's wire protocol; see
@@ -184,7 +250,7 @@ const hermesHooks = [
   { entry: "dist/src/skillify/skillopt-worker.js", out: "skillopt-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
   // G3: code-graph auto-build parity for Hermes (registered on on_session_end).
-  { entry: "dist/src/hooks/graph-on-stop.js", out: "graph-on-stop" },
+  // graph-on-stop is built separately via buildGraphOnStop() (code-split).
 ];
 
 const cursorShell = [
@@ -327,6 +393,22 @@ for (const h of piWorker) {
 }
 writeFileSync("harnesses/pi/bundle/package.json", esmPackageJson);
 writeFileSync("harnesses/hermes/bundle/package.json", esmPackageJson);
+
+// Code-split graph-on-stop bundles for every harness that registers the hook
+// as a Stop/SessionEnd handler. Kept out of the shared build lists above so
+// its tree-sitter dependency loads lazily (see buildGraphOnStop). Each
+// harness's bundle/package.json ({"type":"module"}) has already been written,
+// so the emitted graph-chunks/ resolve as ESM. (OpenClaw ships graph-on-stop
+// via its own graph-worker build below, which has separate env-rewrite
+// handling, so it is intentionally not included here.)
+for (const outdir of [
+  "harnesses/claude-code/bundle",
+  "harnesses/codex/bundle",
+  "harnesses/cursor/bundle",
+  "harnesses/hermes/bundle",
+]) {
+  await buildGraphOnStop(outdir);
+}
 
 // OpenClaw plugin bundle. The shared CC/Codex source modules reference a
 // handful of HIVEMIND_* env vars for dev-only overrides. Those env paths are
@@ -579,6 +661,15 @@ const openclawGraphWorkerDefine = {
     "process.env.HIVEMIND_CODEBASE_TABLE": "undefined",
     "process.env.HIVEMIND_SESSIONS_TABLE": "undefined",
     "process.env.HIVEMIND_STATE_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_STATE_DIR",
+    // Config-path resolver (src/user-config.ts). Pulled into the graph-on-stop
+    // bundle via graph-on-stop.ts's lazy `import("../commands/graph.js")` →
+    // config.js → user-config.ts: the dynamic import defeats the tree-shaking
+    // that previously dropped it under the old static import, so the literal
+    // `process.env.HIVEMIND_CONFIG_PATH` read now sits alongside fetch() and
+    // trips ClawHub's env-harvesting critical. openclaw has no reason to
+    // redirect the config path, so rewrite to undefined — the call site's
+    // `?? homedir()/.deeplake/config.json` fallback yields the correct path.
+    "process.env.HIVEMIND_CONFIG_PATH": "undefined",
   },
 };
 

@@ -428,6 +428,12 @@ async function main(): Promise<void> {
     }
     wlog(`verdict source: ${source}`);
 
+    // Note: the 64-char loader-limit cap is applied by writeNewSkill (the write
+    // seam) and its canonical name is read back from the result below, so the
+    // recorded identity always matches what lands on disk. MERGE keeps the
+    // target's exact name (mergeSkill does not cap), so a legacy over-long
+    // target is found and updated rather than forked into a truncated v1.
+
     wlog(`verdict=${verdict.verdict} name=${verdict.name ?? "-"} reason=${verdict.reason ?? "-"}`);
 
     // Watermark is the OLDEST mined session date — same reasoning as the
@@ -536,6 +542,9 @@ async function main(): Promise<void> {
           author: cfg.userName,
         });
         wlog(`wrote new skill: ${result.path}`);
+        // Adopt the canonical (possibly length-capped) name writeNewSkill wrote
+        // so local state + the org row match the frontmatter/dir on disk.
+        verdict.name = result.name;
         recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
         await recordToDeeplake(result, verdict);
       } catch (e: any) {
@@ -574,6 +583,8 @@ async function main(): Promise<void> {
               author: cfg.userName,
             });
             wlog(`wrote new skill (merge fallback): ${result.path}`);
+            // Adopt the canonical capped name so state/org row match disk.
+            verdict.name = result.name;
             recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
             await recordToDeeplake(result, verdict);
           } catch (e2: any) {

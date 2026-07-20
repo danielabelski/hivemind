@@ -19,7 +19,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 
-import { loadConfig, type Config } from "../config.js";
+import { type Config } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { uploadSummary, type QueryFn, type UploadParams, type UploadResult } from "../hooks/upload-summary.js";
 import { EmbedClient } from "../embeddings/client.js";
@@ -78,7 +79,9 @@ async function defaultEmbed(text: string): Promise<number[] | null> {
 
 export function defaultDeps(pluginVersion?: string): FlushDeps {
   return {
-    loadConfig,
+    // Route by cwd so a flush targets the directory's `.hivemind` workspace,
+    // consistent with capture (see src/dir-config.ts).
+    loadConfig: loadRoutedConfig,
     makeQuery: (config) =>
       (sql: string) =>
         new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName).query(sql),

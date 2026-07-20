@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Orchestration tests for src/hooks/recall.ts — the UserPromptSubmit proactive-
@@ -18,6 +21,7 @@ const embeddingsDisabledMock = vi.fn();
 const pluginEnabledMock = vi.fn();
 const embedMock = vi.fn();
 const queryMock = vi.fn();
+const apiCtorMock = vi.fn();
 const debugLogMock = vi.fn();
 const recordEventMock = vi.fn();
 const selfHealMock = vi.fn();
@@ -33,7 +37,12 @@ vi.mock("../../src/embeddings/client.js", () => ({
   EmbedClient: class { warmup() { return Promise.resolve(true); } embed(...a: unknown[]) { return embedMock(...a); } },
 }));
 vi.mock("../../src/deeplake-api.js", () => ({
-  DeeplakeApi: class { query(sql: string) { return queryMock(sql); } },
+  DeeplakeApi: class {
+    // Record ctor args so tests can assert WHICH org/workspace recall searched
+    // — that is the routing decision (src/dir-config.ts).
+    constructor(...a: unknown[]) { apiCtorMock(...a); }
+    query(sql: string) { return queryMock(sql); }
+  },
 }));
 
 const CONFIG = {
@@ -81,6 +90,7 @@ beforeEach(() => {
   embeddingsDisabledMock.mockReset().mockReturnValue(false); // default: semantic on (only search mode)
   embedMock.mockReset().mockResolvedValue([0.1, 0.2, 0.3]);
   queryMock.mockReset().mockResolvedValue([]);
+  apiCtorMock.mockReset();
   debugLogMock.mockReset();
   recordEventMock.mockReset();
   selfHealMock.mockReset();
@@ -290,5 +300,64 @@ describe("recall hook — latency budget + failure isolation", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin boom"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("recall hook — per-directory routing (.hivemind)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "hivemind-recall-route-"));
+    delete process.env.HIVEMIND_ORG_ID;
+    delete process.env.HIVEMIND_WORKSPACE_ID;
+  });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  /** org/workspace the search was actually issued against. */
+  function searchedIdentity(): { orgId: unknown; workspaceId: unknown } {
+    expect(apiCtorMock).toHaveBeenCalled();
+    const [, , orgId, workspaceId] = apiCtorMock.mock.calls[0];
+    return { orgId, workspaceId };
+  }
+
+  it("recalls from the workspace the session's directory is pinned to", async () => {
+    writeFileSync(join(root, ".hivemind"), JSON.stringify({ workspaceId: "workspace2" }));
+    stdinMock.mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid", cwd: root });
+    await runHook();
+    expect(searchedIdentity()).toEqual({ orgId: "o", workspaceId: "workspace2" });
+  });
+
+  it("routes the org too, inheriting the config from an ancestor directory", async () => {
+    writeFileSync(join(root, ".hivemind"), JSON.stringify({ orgId: "acme", workspaceId: "client-work" }));
+    const leaf = join(root, "svc", "deep");
+    mkdirSync(leaf, { recursive: true });
+    stdinMock.mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid", cwd: leaf });
+    await runHook();
+    expect(searchedIdentity()).toEqual({ orgId: "acme", workspaceId: "client-work" });
+  });
+
+  it("still routes recall under collect:false — collect gates capture, not reads", async () => {
+    writeFileSync(join(root, ".hivemind"), JSON.stringify({ workspaceId: "client-work", collect: false }));
+    stdinMock.mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid", cwd: root });
+    await runHook();
+    expect(searchedIdentity().workspaceId).toBe("client-work");
+  });
+
+  it("uses the global identity when the directory has no .hivemind", async () => {
+    stdinMock.mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid", cwd: root });
+    await runHook();
+    expect(searchedIdentity()).toEqual({ orgId: "o", workspaceId: "w" });
+  });
+
+  it("falls back to process.cwd() when the payload carries no cwd", async () => {
+    // Claude Code always sends cwd, but the field is optional in the payload —
+    // resolving from process.cwd() keeps a cwd-less caller on a real directory
+    // rather than walking up from undefined.
+    const spy = vi.spyOn(process, "cwd").mockReturnValue(root);
+    writeFileSync(join(root, ".hivemind"), JSON.stringify({ workspaceId: "from-process-cwd" }));
+    stdinMock.mockResolvedValue({ prompt: "how did we fix the parser typeerror crash bug", session_id: "sid" });
+    await runHook();
+    expect(searchedIdentity().workspaceId).toBe("from-process-cwd");
+    spy.mockRestore();
   });
 });

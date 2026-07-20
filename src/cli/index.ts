@@ -33,6 +33,7 @@ import { runFlushMemory } from "../commands/flush-memory.js";
 import { maybeAutoBackfillMemory } from "../skillify/spawn-backfill-memory-worker.js";
 import { confirm, detectPlatforms, allPlatformIds, log, promptLine, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
+import { docsInstallLines, docsHintShown, markDocsHintShown } from "../docs/install-hint.js";
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
@@ -394,6 +395,56 @@ async function runInstallAll(args: string[]): Promise<void> {
     log("");
     log("Mining your past sessions for team memory in the background — sign in, then run `hivemind memory flush` to push.");
   }
+
+  // Docs onboarding at install — extracted to src/docs/install-docs.ts so the
+  // decision + detached-worker spawn are unit-tested. Everything effectful is
+  // injected here; a docs hiccup must never break install (guarded inside).
+  const { homedir } = await import("node:os");
+  const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
+  const { loadConfig } = await import("../config.js");
+  const { spawnDetachedNodeWorker } = await import("../utils/spawn-detached.js");
+  const { isAutoEnabled } = await import("../docs/auto-registry.js");
+  const { deriveProjectKey } = await import("../utils/repo-identity.js");
+  const { runInstallDocsOnboarding } = await import("../docs/install-docs.js");
+  await runInstallDocsOnboarding({
+    cwd: process.cwd(),
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    loggedIn: isLoggedIn(),
+    home: homedir(),
+    gitTopLevel: (cwd) => tryGitTopLevel(cwd),
+    loadCfg: () => loadConfig(),
+    autoEnabled: (orgId, root) => isAutoEnabled(orgId, deriveProjectKey(root).key),
+    // Build inline (fast, no LLM) so the wiki worker has a snapshot + the
+    // page estimate is real. Heavy graph deps stay lazy.
+    buildGraph: async (root) => {
+      const { runBuildCommand } = await import("../commands/graph.js");
+      await runBuildCommand(["--cwd", root, "--trigger", "manual"]);
+    },
+    onboard: async ({ root, orgId, orgName }) => {
+      const { runDocsOnboarding } = await import("../docs/onboarding.js");
+      const { deriveProjectKey } = await import("../utils/repo-identity.js");
+      const { loadCurrentSnapshot } = await import("../graph/load-current.js");
+      return runDocsOnboarding({
+        root, isGitRepo: true, orgId, orgName,
+        project: deriveProjectKey(root).key,
+        snap: loadCurrentSnapshot(root),
+      });
+    },
+    spawn: (workerArgs) => {
+      const cliEntry = process.argv[1];
+      if (!cliEntry) return false;
+      spawnDetachedNodeWorker(cliEntry, workerArgs);
+      return true;
+    },
+    showHint: () => {
+      if (docsHintShown()) return;
+      log("");
+      for (const line of docsInstallLines()) log(line);
+      markDocsHintShown();
+    },
+    log,
+    warn,
+  });
 
   log("");
   log("Done. Restart each assistant to activate hooks.");

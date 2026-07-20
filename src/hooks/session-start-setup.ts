@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 
   if (input.session_id) {
     try {
-      const config = loadConfig();
+      const config = loadRoutedConfig(input.cwd ?? process.cwd());
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();

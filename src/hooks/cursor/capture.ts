@@ -15,6 +15,7 @@
 
 import { readStdin } from "../../utils/stdin.js";
 import { resolveCaptureConfig } from "../shared/dir-gate.js";
+import { redactSecrets } from "../shared/redact.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
@@ -34,6 +35,7 @@ import {
   releaseLock,
 } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnCursorWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { appendSessionEvent } from "../session-event-cache.js";
 import { tryStopCounterTrigger } from "../../skillify/triggers.js";
 import type { Config } from "../../config.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
@@ -145,7 +147,7 @@ async function main(): Promise<void> {
   }
 
   const sessionPath = buildSessionPath(config, sessionId);
-  const line = JSON.stringify(entry);
+  const line = redactSecrets(JSON.stringify(entry));
   log(`writing to ${sessionPath}`);
 
   const projectName = projectNameFromCwd(cwd);
@@ -189,6 +191,12 @@ async function main(): Promise<void> {
   }
 
   log("capture ok → cloud");
+
+  // Mirror the event into the local per-session cache (row-for-row identical
+  // to the `message` column just INSERTed) so the wiki-worker reads it instead
+  // of re-scanning the fat `message` column. Best-effort; only after a
+  // successful INSERT above.
+  appendSessionEvent(sessionId, line);
 
   maybeTriggerPeriodicSummary(sessionId, cwd, config);
 
