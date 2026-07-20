@@ -18,6 +18,7 @@ import {
 } from "../../src/skillify/pull.js";
 import { lstatSync, readlinkSync, symlinkSync } from "node:fs";
 import { loadManifest, recordPull } from "../../src/skillify/manifest.js";
+import { capSkillName } from "../../src/skillify/skill-writer.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let projectRoot: string;
@@ -634,6 +635,72 @@ describe("runPull", () => {
     // First skill's file is untouched.
     expect(readdirSync(projectSkillsRoot)).toHaveLength(1);
     expect(readFileSync(join(projectSkillsRoot, dir, "SKILL.md"), "utf-8")).toBe(contentAfterRun1);
+  });
+
+  it("detects a collision against a LEGACY manifest entry (no rawName) via the name fallback", async () => {
+    // Pre-rawName entries have no persisted raw identity; the collision check
+    // must fall back to `name` so a new colliding row is still blocked.
+    const b = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz400000";
+    const dirName = `${capSkillName(b)}--al`;
+    // Back the manifest entry with a real dir on disk (matches how a real pull
+    // leaves state) so the entry is retained on reload.
+    mkdirSync(join(projectSkillsRoot, dirName), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, dirName, "SKILL.md"),
+      `---\nname: legacy-owner\ndescription: x\nversion: 1\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nowner body`);
+    recordPull({
+      // Legacy shape: NO rawName field.
+      dirName, name: "legacy-owner", author: "al", projectKey: "pk",
+      remoteVersion: 1, install: "project", installRoot: projectSkillsRoot,
+      pulledAt: "2026-05-06T00:00:00.000Z", symlinks: [],
+    });
+
+    const { fn } = makeMockQuery([sampleRow({ name: b, author: "al", version: 9 })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: true,
+    });
+
+    expect(summary.wrote).toBe(0);
+    expect(summary.skipped).toBe(1);
+    expect(summary.entries[0].destination).toContain("legacy-owner");
+  });
+
+  it("adopts an untracked canonical file on a later skipped pull, then retires the stale dir", async () => {
+    // Simulates a prior migration whose recordPull failed: the capped file is on
+    // disk but unrecorded, and the stale managed dir still exists. This pull sees
+    // the capped file at the remote version (→ skipped), so it must adopt the
+    // canonical into the manifest and finish retiring the stale dir.
+    const longName = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const cappedDir = `${capSkillName(longName)}--sasun`;
+    const staleDir = `${longName}--sasun`;
+
+    // Canonical capped file on disk at v2, but NOT recorded in the manifest.
+    mkdirSync(join(projectSkillsRoot, cappedDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, cappedDir, "SKILL.md"),
+      `---\nname: ${capSkillName(longName)}\ndescription: "x"\nversion: 2\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\ncanonical body`);
+    // Stale managed dir + manifest entry.
+    mkdirSync(join(projectSkillsRoot, staleDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, staleDir, "SKILL.md"),
+      `---\nname: ${longName}\ndescription: "x"\nversion: 2\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nstale body`);
+    recordPull({
+      dirName: staleDir, name: longName, author: "sasun", projectKey: "pk",
+      remoteVersion: 2, install: "project", installRoot: projectSkillsRoot,
+      pulledAt: "2026-05-06T00:00:00.000Z", symlinks: [],
+    });
+    expect(loadManifest().entries.some(e => e.dirName === cappedDir)).toBe(false);
+
+    const { fn } = makeMockQuery([sampleRow({ name: longName, author: "sasun", version: 2 })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+
+    expect(summary.skipped).toBe(1); // capped already at remote version
+    // Canonical is now recorded (adopted) …
+    expect(loadManifest().entries.some(e => e.dirName === cappedDir)).toBe(true);
+    // … and the stale dir + entry are retired.
+    expect(existsSync(join(projectSkillsRoot, staleDir))).toBe(false);
+    expect(loadManifest().entries.some(e => e.dirName === staleDir)).toBe(false);
   });
 
   it("rejects an over-long name whose truncated-away tail carries traversal syntax", async () => {

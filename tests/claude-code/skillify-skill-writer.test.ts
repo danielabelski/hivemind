@@ -102,6 +102,32 @@ describe("writeNewSkill", () => {
 });
 
 describe("mergeSkill", () => {
+  it("does NOT cap — updates a legacy >64-char target in place, no truncated fork", () => {
+    // Round-1 regression: a MERGE into a pre-cap over-long skill must find and
+    // update THAT dir (preserving version/lineage), not create a truncated v1.
+    // Verified end-to-end against the real functions on a real FS (2026-07-20).
+    const long = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization"; // 69 chars
+    expect(long.length).toBeGreaterThan(64);
+    mkdirSync(join(skillsRoot, long), { recursive: true });
+    writeFileSync(join(skillsRoot, long, "SKILL.md"),
+      `---\nname: ${long}\ndescription: old\nversion: 1\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nlegacy body`);
+    const before = listSkills(skillsRoot).length;
+
+    const result = mergeSkill({
+      skillsRoot, name: long, description: "new",
+      body: "## Y\nmerged body", newSourceSessions: ["s2"], agent: "cc", editor: "bob",
+    });
+
+    // Target found + updated in place (uncapped), no new truncated dir.
+    expect(result.name).toBe(long);
+    expect(result.version).toBe(2);
+    expect(result.path).toBe(join(skillsRoot, long, "SKILL.md"));
+    expect(listSkills(skillsRoot).length).toBe(before);
+    const text = readFileSync(join(skillsRoot, long, "SKILL.md"), "utf-8");
+    expect(text).toContain("merged body");
+    expect(text).toMatch(/^version: 2$/m);
+  });
+
   it("bumps version, preserves created_at, updates updated_at, dedups source_sessions", () => {
     writeNewSkill({
       skillsRoot, name: "m", description: "v1 desc", body: "v1 body",

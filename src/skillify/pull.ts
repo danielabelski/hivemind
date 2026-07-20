@@ -585,9 +585,13 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     // that caps to the same identity is caught. The first raw name to claim a
     // destination wins; skip any later collider — even under --force — so we
     // never silently overwrite one skill's file with another's.
-    const persistedOwner = entriesForRoot(loadManifest(), opts.install, root)
-      .find(e => e.dirName === dirName)?.rawName;
-    const owner = claimedDirs.get(dirName) ?? persistedOwner;
+    // Fall back to the entry's `name` for legacy rows recorded before `rawName`
+    // existed: `name` is that install's stable identity, so a colliding new row
+    // is still detected. For a same-skill re-pull the persisted identity equals
+    // this row's own name/rawName, so no false collision fires.
+    const persistedEntry = entriesForRoot(loadManifest(), opts.install, root)
+      .find(e => e.dirName === dirName);
+    const owner = claimedDirs.get(dirName) ?? persistedEntry?.rawName ?? persistedEntry?.name;
     if (owner !== undefined && owner !== rawName) {
       summary.entries.push({
         name: rawName, remoteVersion: Number(row.version ?? 1), localVersion: null,
@@ -700,8 +704,30 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
         // recorded in the manifest. If recordPull failed this run, the canonical
         // file is on disk but untracked — keep the stale entry so a later pull
         // retries the migration instead of orphaning the skill.
-        const canonicalRecorded = entries.some(e => e.dirName === dirName);
+        let canonicalRecorded = entries.some(e => e.dirName === dirName);
         const staleEntry = entries.find(e => e.dirName === staleDir);
+        // A prior run wrote the capped file but its recordPull failed, so this
+        // run saw the file at the remote version and chose "skipped" (no
+        // recordPull). Adopt the untracked canonical now — otherwise
+        // `canonicalRecorded` stays false forever and the stale dir is never
+        // retired. Skip if recordPull just failed THIS run (`manifestError`
+        // set) so we don't retry a still-broken manifest write.
+        if (!canonicalRecorded && staleEntry && !manifestError) {
+          try {
+            const symlinks = opts.install === "global"
+              ? fanOutSymlinks(skillDir, dirName, detectAgentSkillsRoots(root))
+              : [];
+            recordPull({
+              dirName, name, rawName, author,
+              projectKey: String(row.project_key ?? ""),
+              remoteVersion, install: opts.install, installRoot: root,
+              pulledAt: new Date().toISOString(), symlinks,
+            });
+            canonicalRecorded = true;
+          } catch (e: any) {
+            manifestError = manifestError ?? (e?.message ?? String(e));
+          }
+        }
         if (canonicalRecorded && staleEntry) {
           // Remove the directory FIRST, then drop its manifest evidence. If
           // rmSync fails, the entry survives so the next pull retries cleanup;
