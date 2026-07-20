@@ -152,7 +152,14 @@ export function ensureGraphDeps(): void {
     if (haveKey !== wantKey || !isGraphDepsInstalled(SHARED_NODE_MODULES, specs)) {
       log(`  Graph          installing tree-sitter parsers into ${SHARED_DIR} (code-graph; ~tens of MB)`);
       // --ignore-scripts: fetch the packages without the native build that
-      // fails on platforms lacking a prebuild; the heal below does the build.
+      //   fails on platforms lacking a prebuild; the heal below does the build.
+      // The parsers ARE saved to the shared package.json (default): a plain
+      //   `npm install` PRUNES unsaved packages (verified on npm 11), so an
+      //   unsaved install would be wiped by ensureSharedDeps' transformers
+      //   reconcile. Being declared, they're neither pruned nor (once present
+      //   and version-satisfied) rebuilt by that reconcile — so ensureSharedDeps
+      //   stays free of --ignore-scripts, which would break onnxruntime-node /
+      //   sharp (both have real install/postinstall native steps).
       execFileSync("npm", ["install", ...specs, "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund", "--ignore-scripts"], {
         cwd: SHARED_DIR,
         stdio: "inherit",
