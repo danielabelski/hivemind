@@ -207,6 +207,8 @@ interface ClaudeLine {
  * captured (an in-prompt `ultrathink` override for a single turn isn't
  * recorded anywhere we can recover).
  */
+const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh"]);
+
 export function readClaudeEffortLevel(cwd?: string): string | undefined {
   const candidates: string[] = [];
   if (cwd) {
@@ -218,7 +220,12 @@ export function readClaudeEffortLevel(cwd?: string): string | undefined {
     try {
       if (!existsSync(p)) continue;
       const j = JSON.parse(readFileSync(p, "utf-8")) as { effortLevel?: unknown };
-      if (typeof j.effortLevel === "string" && j.effortLevel) return j.effortLevel;
+      // Allowlist Claude's supported levels — a settings file is untrusted
+      // input, and an arbitrary/oversized string would poison effort analytics.
+      if (typeof j.effortLevel === "string") {
+        const level = j.effortLevel.toLowerCase();
+        if (CLAUDE_EFFORT_LEVELS.has(level)) return level;
+      }
     } catch {
       // ignore unreadable / malformed settings and try the next candidate
     }

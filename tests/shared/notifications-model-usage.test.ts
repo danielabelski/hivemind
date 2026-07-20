@@ -348,7 +348,28 @@ describe("readClaudeEffortLevel", () => {
     writeFileSync(join(bad, ".claude", "settings.json"), "{ not valid json", "utf-8");
     expect(() => readClaudeEffortLevel(bad)).not.toThrow();
   });
+
+  it("rejects an effortLevel outside Claude's supported levels", () => {
+    const evil = join(TEMP_DIR, "evil");
+    mkdirSync(join(evil, ".claude"), { recursive: true });
+    // Only this settings file on the path (project), and its value is bogus →
+    // must NOT be returned (falls through; user settings may still apply, but
+    // the bogus project value itself is never accepted).
+    writeFileSync(join(evil, ".claude", "settings.json"), JSON.stringify({ effortLevel: "A".repeat(5000) }), "utf-8");
+    const r = readClaudeEffortLevel(evil);
+    expect(r).not.toBe("A".repeat(5000));
+    expect(r === undefined || CLAUDE_LEVELS.has(r)).toBe(true);
+  });
+
+  it("normalizes case to a supported level", () => {
+    const up = join(TEMP_DIR, "up");
+    mkdirSync(join(up, ".claude"), { recursive: true });
+    writeFileSync(join(up, ".claude", "settings.local.json"), JSON.stringify({ effortLevel: "HIGH" }), "utf-8");
+    expect(readClaudeEffortLevel(up)).toBe("high");
+  });
 });
+
+const CLAUDE_LEVELS = new Set(["low", "medium", "high", "xhigh"]);
 
 describe("parseCodexTurnMeta — usage_extra quota", () => {
   it("extracts model_context_window and rate_limits from the latest token_count", () => {
