@@ -289,14 +289,16 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(src).toMatch(/const skillifySpawnedFor = new Set<string>\(\)/);
     expect(src).toMatch(/if \(!skillifySpawnedFor\.has\(sid\)\)/);
     expect(src).toMatch(/skillifySpawnedFor\.add\(sid\)/);
-    // agent_end hook calls it after the capture loop. Distance bumped
-    // from 500→1500 to accommodate the per-runtime spawn-dedup comment
-    // block landed for #100 between `Auto-captured` and the spawn site.
-    // 3500→4000 for the embed-on-capture wiring landed for #178 between
-    // `agent_end` and `Auto-captured` (tryEmbedStandalone + comment block).
-    // 4000→4400 for the model/token-usage tagging (sdkTurnMeta + comment)
-    // landed between `agent_end` and `Auto-captured`.
-    expect(src).toMatch(/agent_end[\s\S]{0,4400}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
+    // The skillify worker is spawned from the agent_end capture hook, after
+    // the "Auto-captured" log. Anchor on the real constructs and assert their
+    // source order — robust to unrelated code landing between them, unlike a
+    // magic character-count gap (CodeRabbit on #320).
+    const iAgentEnd = src.search(/hook\(\s*["']agent_end["']/);
+    const iAutoCaptured = src.indexOf("Auto-captured", iAgentEnd);
+    const iSpawn = src.search(/spawnOpenclawSkillifyWorker\(/);
+    expect(iAgentEnd).toBeGreaterThanOrEqual(0);
+    expect(iAutoCaptured).toBeGreaterThan(iAgentEnd);
+    expect(iSpawn).toBeGreaterThan(iAutoCaptured);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });
