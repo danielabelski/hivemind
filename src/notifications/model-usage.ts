@@ -378,11 +378,11 @@ export function parseCodexTurnMeta(
         model = typeof p.model === "string" ? p.model : fallbackModel;
         reasoningEffort = typeof p.effort === "string" ? p.effort : undefined;
         last = undefined;
+        extra = undefined; // quota (context window / rate limits) is per-turn too
       } else if (p.type === "token_count" && p.info) {
         if (p.info.last_token_usage) last = normalizeCodexUsage(p.info.last_token_usage);
         if (p.info.total_token_usage) total = normalizeCodexUsage(p.info.total_token_usage);
-        const e = codexUsageExtra(p.info, p.rate_limits);
-        if (e) extra = e; // latest token_count wins
+        extra = codexUsageExtra(p.info, p.rate_limits); // latest token_count wins (may clear)
       }
     }
   }

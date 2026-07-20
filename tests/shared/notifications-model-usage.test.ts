@@ -348,4 +348,23 @@ describe("parseCodexTurnMeta — usage_extra quota", () => {
       },
     });
   });
+
+  it("does not carry a prior turn's quota into a new turn_context (model change)", () => {
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "medium"),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }, model_context_window: 258400 },
+          rate_limits: { primary: { used_percent: 11, window_minutes: 10080, resets_at: 1 } },
+        },
+      },
+      codexTurnContext("gpt-5.6-sol", "high"), // new turn, no token_count after it
+    ]);
+    const meta = parseCodexTurnMeta(file, "fb");
+    expect(meta?.model).toBe("gpt-5.6-sol");
+    // Quota from gpt-5.5's turn must NOT attach to gpt-5.6-sol.
+    expect(meta).not.toHaveProperty("usage_extra");
+  });
 });
