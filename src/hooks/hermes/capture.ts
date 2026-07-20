@@ -93,11 +93,18 @@ async function main(): Promise<void> {
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
   const ts = new Date().toISOString();
+  // Hermes sends `model` + `platform` nested in `extra` (everything that isn't
+  // tool_name/args/session_id lands there — see NousResearch/hermes-agent
+  // agent/shell_hooks.py). Token usage / cost are not part of the hook payload.
+  const model = pickString(extra.model);
+  const platform = pickString(extra.platform);
   const meta = {
     session_id: sessionId,
     cwd,
     hook_event_name: event,
     timestamp: ts,
+    ...(model ? { model } : {}),
+    ...(platform ? { usage_extra: { platform } } : {}),
   };
 
   let entry: Record<string, unknown> | null = null;
