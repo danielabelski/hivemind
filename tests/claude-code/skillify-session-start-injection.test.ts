@@ -295,10 +295,11 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // magic character-count gap (CodeRabbit on #320).
     const iAgentEnd = src.search(/hook\(\s*["']agent_end["']/);
     const iAutoCaptured = src.indexOf("Auto-captured", iAgentEnd);
-    const iSpawn = src.search(/spawnOpenclawSkillifyWorker\(/);
+    // The CALL site, after the log — not the earlier function definition.
+    const iSpawnCall = src.indexOf("spawnOpenclawSkillifyWorker(", iAutoCaptured);
     expect(iAgentEnd).toBeGreaterThanOrEqual(0);
     expect(iAutoCaptured).toBeGreaterThan(iAgentEnd);
-    expect(iSpawn).toBeGreaterThan(iAutoCaptured);
+    expect(iSpawnCall).toBeGreaterThan(iAutoCaptured);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });
