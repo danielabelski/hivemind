@@ -272,7 +272,8 @@ interface ClaudeUsage {
 interface ClaudeLine {
   type?: string;
   cwd?: unknown;
-  message?: { model?: unknown; usage?: ClaudeUsage; stop_reason?: unknown };
+  isSidechain?: unknown;
+  message?: { model?: unknown; usage?: ClaudeUsage; stop_reason?: unknown; content?: unknown };
 }
 
 /**
@@ -397,6 +398,165 @@ export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | n
   } finally {
     r.close();
   }
+}
+
+/** Flatten a Claude message `content` (string or block array) to its text. */
+function flattenClaudeText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((b) => (b && typeof b === "object" && (b as { type?: unknown }).type === "text" && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+    .join("");
+}
+
+/**
+ * Whether the transcript's assistant text plausibly IS the hook's
+ * `last_assistant_message`. Exact match after trimming, or an ANCHORED
+ * prefix with enough shared length that a coincidental hit is implausible —
+ * an unanchored substring test would let a short reply ("Done") match the
+ * PREVIOUS turn ("Done — details…") and resurrect the off-by-one this
+ * correlation exists to prevent.
+ */
+const MIN_TRUNCATION_MATCH_LEN = 32;
+
+function textMatches(entryText: string, expect: string): boolean {
+  const a = entryText.trim();
+  const b = expect.trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  return shorter.length >= MIN_TRUNCATION_MATCH_LEN && longer.startsWith(shorter);
+}
+
+/**
+ * One point-in-time scan of a Claude transcript for the CURRENT turn's
+ * assistant metadata.
+ *
+ * `"match"` — the newest relevant assistant record is complete (has usage) and,
+ * when `expectText` is given, its text corresponds to the captured
+ * `last_assistant_message`. `meta` is set.
+ *
+ * `"retry"` — the transcript hasn't caught up with the turn being captured:
+ * the file is missing/unreadable, ends in a partial JSONL record, has no
+ * relevant assistant record yet, or its newest relevant assistant record lacks
+ * usage or doesn't correspond to `expectText`. The caller should re-read after
+ * a short backoff. Crucially this NEVER falls back to an older usage-bearing
+ * record — that would silently attribute the previous turn's tokens to this
+ * one (the off-by-one this scan exists to prevent).
+ *
+ * `includeSidechain` — on SubagentStop the agent transcript IS the sidechain,
+ * so its records must not be filtered; on a main-session Stop, sidechain
+ * records belong to subagents and must be skipped.
+ */
+export interface ClaudeTurnScan {
+  status: "match" | "retry";
+  meta?: TraceModelMeta;
+}
+
+export function scanClaudeTurnForCapture(
+  transcriptPath: string | undefined,
+  expectText?: string,
+  includeSidechain = false,
+): ClaudeTurnScan {
+  if (!transcriptPath) return { status: "retry" };
+  const r = openTranscript(transcriptPath);
+  if (!r) return { status: "retry" };
+  try {
+    // The tail window can slice the newest records away only when a single
+    // record exceeds 1 MiB — scan the whole snapshot when the tail finds
+    // nothing relevant.
+    return scanClaudeTurn(r.lines, expectText, includeSidechain) ??
+      scanClaudeTurn(r.readWhole(), expectText, includeSidechain) ??
+      { status: "retry" };
+  } finally {
+    r.close();
+  }
+}
+
+/** Reverse-scan for the newest relevant assistant record. Null = nothing relevant in these lines. */
+function scanClaudeTurn(
+  lines: string[] | null,
+  expectText: string | undefined,
+  includeSidechain: boolean,
+): ClaudeTurnScan | null {
+  if (!lines) return null;
+  let sawNonBlank = false;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    let entry: ClaudeLine;
+    try {
+      entry = JSON.parse(trimmed) as ClaudeLine;
+    } catch {
+      // A malformed FINAL record is an in-progress append — wait for it to
+      // complete. Malformed records further up are just skipped.
+      if (!sawNonBlank) {
+        log("trailing partial record — retry");
+        return { status: "retry" };
+      }
+      sawNonBlank = true;
+      continue;
+    }
+    sawNonBlank = true;
+    if (!entry || typeof entry !== "object") continue;
+    const msg = entry.message;
+    if (entry.type !== "assistant" || !msg) continue;
+    if (!includeSidechain && entry.isSidechain === true) continue;
+    if (expectText !== undefined) {
+      // Only a TEXT-bearing record can be the one behind
+      // last_assistant_message — a turn's trailing tool_use/thinking records
+      // have no text and must not decide the correlation.
+      const text = flattenClaudeText(msg.content);
+      if (!text.trim()) continue;
+      if (!textMatches(text, expectText)) {
+        log("newest assistant record does not match last_assistant_message — retry");
+        return { status: "retry" };
+      }
+    }
+    // Newest relevant assistant record found — it alone decides the outcome.
+    if (!msg.usage) {
+      log("newest assistant record has no usage — retry");
+      return { status: "retry" };
+    }
+    const meta: TraceModelMeta = {
+      model: typeof msg.model === "string" ? msg.model : undefined,
+      reasoning_effort: readClaudeEffortLevel(typeof entry.cwd === "string" ? entry.cwd : undefined) ?? null,
+      token_usage: normalizeClaudeUsage(msg.usage),
+    };
+    if (typeof msg.stop_reason === "string") meta.stop_reason = msg.stop_reason;
+    const extra = claudeUsageExtra(msg.usage);
+    if (extra) meta.usage_extra = extra;
+    return { status: "match", meta };
+  }
+  return null;
+}
+
+/**
+ * Live-capture variant of {@link parseClaudeTurnMeta}: the Stop hook often
+ * fires before Claude has flushed the turn's final assistant record to the
+ * transcript, so a single read races the writer (observed in real sessions:
+ * turn 1 captured with null model/usage while the record landed ~ms later).
+ * Re-opens and re-scans the file across a short bounded backoff and returns
+ * null — capture proceeds unenriched — if the record never materializes.
+ */
+export async function parseClaudeTurnMetaLive(
+  transcriptPath: string | undefined,
+  expectText?: string,
+  includeSidechain = false,
+  backoffMs: readonly number[] = [25, 50, 100],
+): Promise<TraceModelMeta | null> {
+  let scan = scanClaudeTurnForCapture(transcriptPath, expectText, includeSidechain);
+  for (const delay of backoffMs) {
+    if (scan.status === "match") break;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    scan = scanClaudeTurnForCapture(transcriptPath, expectText, includeSidechain);
+  }
+  if (scan.status !== "match") {
+    log(`turn meta unavailable after ${backoffMs.length + 1} reads — writing unenriched`);
+    return null;
+  }
+  return scan.meta ?? null;
 }
 
 // ---------------------------------------------------------------------------

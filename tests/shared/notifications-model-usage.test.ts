@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import {
   parseClaudeTurnMeta,
+  parseClaudeTurnMetaLive,
   parseCodexTurnMeta,
   normalizeSdkUsage,
+  scanClaudeTurnForCapture,
   sdkTurnMeta,
   readClaudeEffortLevel,
   readTailLines,
@@ -539,5 +541,135 @@ describe("parseCodexTurnMeta — usage_extra quota", () => {
     expect(meta?.model).toBe("gpt-5.6-sol");
     // Quota from gpt-5.5's turn must NOT attach to gpt-5.6-sol.
     expect(meta).not.toHaveProperty("usage_extra");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stop-capture race: scanClaudeTurnForCapture / parseClaudeTurnMetaLive
+// ---------------------------------------------------------------------------
+
+const USAGE = { input_tokens: 10, output_tokens: 42 };
+
+function claudeAssistantText(model: string, usage: Record<string, number> | undefined, text: string, extra: object = {}) {
+  return {
+    type: "assistant",
+    message: { model, role: "assistant", content: [{ type: "text", text }], ...(usage ? { usage } : {}) },
+    ...extra,
+  };
+}
+
+describe("scanClaudeTurnForCapture", () => {
+  it("matches the newest assistant record when it carries usage and the expected text", () => {
+    const file = writeTranscript([
+      { type: "user" },
+      claudeAssistantText("claude-fable-5", USAGE, "final answer"),
+    ]);
+    const scan = scanClaudeTurnForCapture(file, "final answer");
+    expect(scan.status).toBe("match");
+    expect(scan.meta?.model).toBe("claude-fable-5");
+    expect(scan.meta?.token_usage).toEqual({ input_tokens: 10, output_tokens: 42 });
+  });
+
+  it("retries instead of falling back to the PREVIOUS turn when the current record is absent", () => {
+    // Only turn 1 is on disk; the Stop being captured is turn 2.
+    const file = writeTranscript([
+      claudeAssistantText("claude-fable-5", { input_tokens: 1, output_tokens: 1 }, "turn one answer"),
+    ]);
+    const scan = scanClaudeTurnForCapture(file, "turn two answer");
+    expect(scan.status).toBe("retry");
+    expect(scan.meta).toBeUndefined();
+  });
+
+  it("retries when the newest assistant record has no usage yet", () => {
+    const file = writeTranscript([
+      claudeAssistantText("claude-fable-5", undefined, "final answer"),
+    ]);
+    expect(scanClaudeTurnForCapture(file, "final answer").status).toBe("retry");
+  });
+
+  it("retries on a trailing partial JSONL record", () => {
+    const file = writeTranscript([claudeAssistantText("claude-fable-5", USAGE, "final answer")]);
+    writeFileSync(file, '{"type":"assistant","message":{"mod', { flag: "a" });
+    expect(scanClaudeTurnForCapture(file, "final answer").status).toBe("retry");
+  });
+
+  it("retries on a missing file and on an empty transcript", () => {
+    expect(scanClaudeTurnForCapture(join(TEMP_DIR, "absent.jsonl")).status).toBe("retry");
+    const empty = join(TEMP_DIR, "empty.jsonl");
+    writeFileSync(empty, "");
+    expect(scanClaudeTurnForCapture(empty).status).toBe("retry");
+  });
+
+  it("skips sidechain records on a main-session Stop but not on SubagentStop", () => {
+    const file = writeTranscript([
+      claudeAssistantText("claude-fable-5", USAGE, "main answer"),
+      claudeAssistantText("claude-haiku-4-5", { input_tokens: 2, output_tokens: 3 }, "subagent answer", { isSidechain: true }),
+    ]);
+    const main = scanClaudeTurnForCapture(file, "main answer", false);
+    expect(main.status).toBe("match");
+    expect(main.meta?.model).toBe("claude-fable-5");
+    const sub = scanClaudeTurnForCapture(file, "subagent answer", true);
+    expect(sub.status).toBe("match");
+    expect(sub.meta?.model).toBe("claude-haiku-4-5");
+  });
+
+  it("matches without text correlation when no expected text is given", () => {
+    const file = writeTranscript([claudeAssistantText("claude-fable-5", USAGE, "whatever")]);
+    expect(scanClaudeTurnForCapture(file).status).toBe("match");
+  });
+
+  it("tolerates one-sided truncation of the expected text only with an anchored, long-enough prefix", () => {
+    const long = "a sufficiently long final answer that exceeds the anchored-prefix minimum length";
+    const file = writeTranscript([claudeAssistantText("claude-fable-5", USAGE, long + " with extra tail detail")]);
+    expect(scanClaudeTurnForCapture(file, long).status).toBe("match");
+    // A SHORT shared prefix is not evidence of identity — "Done" must not
+    // match the previous turn's "Done — details…" (the off-by-one guard).
+    const file2 = writeTranscript([claudeAssistantText("claude-fable-5", USAGE, "Done — full details follow here")]);
+    expect(scanClaudeTurnForCapture(file2, "Done").status).toBe("retry");
+    // Unanchored containment must not match either.
+    const file3 = writeTranscript([claudeAssistantText("claude-fable-5", USAGE, "prefix junk then a sufficiently long final answer that exceeds the anchored-prefix minimum length")]);
+    expect(scanClaudeTurnForCapture(file3, long).status).toBe("retry");
+  });
+
+  it("skips textless trailing records (tool_use) when correlating, without falling back across turns", () => {
+    // The turn's final flush order can put a textless record last; the
+    // text-bearing record of the SAME turn must still match…
+    const file = writeTranscript([
+      claudeAssistantText("claude-fable-5", USAGE, "the actual final answer text here padded long"),
+      { type: "assistant", message: { model: "claude-fable-5", role: "assistant", content: [{ type: "tool_use", id: "t1" }], usage: USAGE } },
+    ]);
+    expect(scanClaudeTurnForCapture(file, "the actual final answer text here padded long").status).toBe("match");
+    // …but a PREVIOUS turn's text must not satisfy the current turn.
+    expect(scanClaudeTurnForCapture(file, "a different current-turn reply").status).toBe("retry");
+  });
+});
+
+describe("parseClaudeTurnMetaLive", () => {
+  it("recovers the turn's meta when the record lands between reads (the real flush race)", async () => {
+    const file = join(TEMP_DIR, "grow.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "user" }) + "\n");
+    const pending = parseClaudeTurnMetaLive(file, "late answer", false, [10, 10, 200]);
+    setTimeout(() => {
+      writeFileSync(file, JSON.stringify(claudeAssistantText("claude-fable-5", USAGE, "late answer")) + "\n", { flag: "a" });
+    }, 15);
+    const meta = await pending;
+    expect(meta?.model).toBe("claude-fable-5");
+    expect(meta?.token_usage).toEqual({ input_tokens: 10, output_tokens: 42 });
+  });
+
+  it("returns null (unenriched) instead of the previous turn's usage when the record never lands", async () => {
+    const file = writeTranscript([
+      claudeAssistantText("claude-fable-5", { input_tokens: 999, output_tokens: 999 }, "turn one answer"),
+    ]);
+    const meta = await parseClaudeTurnMetaLive(file, "turn two answer", false, [1, 1, 1]);
+    expect(meta).toBeNull();
+  });
+
+  it("resolves immediately on first read when the record is already complete", async () => {
+    const file = writeTranscript([claudeAssistantText("claude-fable-5", USAGE, "done")]);
+    const started = Date.now();
+    const meta = await parseClaudeTurnMetaLive(file, "done", false, [500, 500, 500]);
+    expect(meta?.model).toBe("claude-fable-5");
+    expect(Date.now() - started).toBeLessThan(400);
   });
 });

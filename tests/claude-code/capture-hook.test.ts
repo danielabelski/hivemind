@@ -262,6 +262,9 @@ describe("capture hook — event-type branches", () => {
       last_assistant_message: "reply text",
     });
     await runHook();
+    // The Stop path re-reads the (here: absent) transcript across a bounded
+    // backoff before inserting unenriched — wait for the INSERT, not a tick.
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalled(), { timeout: 2000 });
     const sql = queryMock.mock.calls[0][0] as string;
     expect(sql).toContain('"type":"assistant_message"');
     expect(sql).toContain('"content":"reply text"');
@@ -277,6 +280,7 @@ describe("capture hook — event-type branches", () => {
       agent_transcript_path: "/tmp/agent.jsonl",
     });
     await runHook();
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalled(), { timeout: 2000 });
     const sql = queryMock.mock.calls[0][0] as string;
     expect(sql).toContain('"agent_transcript_path":"/tmp/agent.jsonl"');
   });
