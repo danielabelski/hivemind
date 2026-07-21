@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { HOME, ensureDir, log, pkgRoot, symlinkForce, warn, writeJson } from "./util.js";
 import { pidPathFor, socketPathFor } from "../embeddings/protocol.js";
 import { getEmbeddingsEnabled, setEmbeddingsEnabled } from "../user-config.js";
+import { ensureGraphDeps } from "./graph-deps.js";
 
 /**
  * Shared-deps location for the embedding daemon's runtime dependencies.
@@ -107,11 +108,17 @@ function ensureSharedDeps(): void {
     log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
     log(`                 (~600 MB; first install only — every agent will share this)`);
     ensureDir(SHARED_DIR);
-    writeJson(join(SHARED_DIR, "package.json"), {
+    // Merge, don't clobber: ensureGraphDeps may have already declared the
+    // tree-sitter parsers here. Overwriting with transformers-only would drop
+    // that declaration and let a subsequent reconcile prune the parsers.
+    const pkgPath = join(SHARED_DIR, "package.json");
+    let existing: { dependencies?: Record<string, string> } = {};
+    try { existing = JSON.parse(readFileSync(pkgPath, "utf8")); } catch { /* none yet */ }
+    writeJson(pkgPath, {
       name: "hivemind-embed-deps",
       version: "1.0.0",
       private: true,
-      dependencies: { [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
+      dependencies: { ...(existing.dependencies ?? {}), [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
     });
     execFileSync("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
       cwd: SHARED_DIR,
@@ -170,6 +177,10 @@ function linkAgent(install: AgentInstall): void {
  */
 export function installEmbeddings(): void {
   ensureSharedDeps();
+  // Provision the code-graph parsers into the same shared dir so the
+  // graph-on-stop hook (which symlinks here) can auto-build the graph.
+  // Best-effort — a native-build failure never aborts the embeddings install.
+  ensureGraphDeps();
   const installs = findHivemindInstalls();
   if (installs.length === 0) {
     warn("  Embeddings     no hivemind installs detected — run `hivemind install` first");

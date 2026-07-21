@@ -12,6 +12,7 @@ import {
   statusEmbeddings,
   uninstallEmbeddings,
 } from "./embeddings.js";
+import { ensureGraphDeps } from "./graph-deps.js";
 import { ensureLoggedIn, isLoggedIn, loginWithProvidedToken, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
 // NOTE: ../commands/graph.js is intentionally NOT imported statically. It pulls
@@ -547,6 +548,14 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "graph") {
+    // `graph init` sets up the auto-build. Provision the tree-sitter parsers
+    // into the shared embed-deps dir the graph-on-stop hook resolves from, so
+    // the automatic rebuild works — not just this CLI run (which resolves
+    // tree-sitter from its own package). Idempotent + best-effort; decoupled
+    // from the ~600 MB embeddings download.
+    if (args[1] === "init") {
+      try { ensureGraphDeps(); } catch { /* best-effort — never block graph init */ }
+    }
     let runGraphCommand: (a: string[]) => Promise<void> | void;
     try {
       ({ runGraphCommand } = await import("../commands/graph.js"));
