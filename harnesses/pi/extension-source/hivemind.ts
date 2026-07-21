@@ -967,11 +967,14 @@ async function writeSessionRow(
   // this inline rather than importing src/hooks/shared/session-insert-sql.ts to
   // preserve the "raw .ts, zero deps" promise — kept in lockstep with that
   // helper's shape.
-  const rowId = crypto.randomUUID();
+  // Reuse the event id embedded in the message JSON so the row PK matches the
+  // payload's id and stays the dedup key across a re-send. Fall back to a fresh
+  // uuid if a caller ever omits it (keeps each row unique rather than colliding).
+  const rowId = sqlStr(typeof entry.id === "string" ? entry.id : crypto.randomUUID());
   const insertSql =
     `INSERT INTO "${SESSIONS_TABLE}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `SELECT '${rowId}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embedSqlLiteral(emb)}, '${sqlStr(creds.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', '${agent}', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}' ` +
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', '${sqlStr(agent)}', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}' ` +
     `WHERE NOT EXISTS (SELECT 1 FROM "${SESSIONS_TABLE}" WHERE id = '${rowId}')`;
   let lastErr: any = null;
   for (let attempt = 0; attempt <= INSERT_RETRY_BACKOFFS_MS.length; attempt++) {

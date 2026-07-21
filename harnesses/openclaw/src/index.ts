@@ -1540,7 +1540,9 @@ export default definePluginEntry({
             const embeddingSql = embeddingSqlLiteral(embedding);
 
             const insertSql = buildDirectSessionInsertSql(sessionsTable, {
-              id: crypto.randomUUID(),
+              // Reuse the event id already embedded in the message JSON so the
+              // row PK matches the payload's id (dedup key = the logical event).
+              id: entry.id,
               sessionPath,
               filename,
               jsonForSql,

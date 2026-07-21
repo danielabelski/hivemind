@@ -115,10 +115,15 @@ describe("session queue", () => {
     // builder emits INSERT ... SELECT ... FROM (VALUES ...) v WHERE NOT EXISTS
     // (id = v.id) — the multi-row equivalent of the single-row capture guard.
     const sql = buildSessionInsertSql("sessions", [makeRow("s", 1), makeRow("s", 2)]);
-    expect(sql).toMatch(/FROM \(VALUES .*\) AS v\(id, path, filename, message,/s);
-    expect(sql).toMatch(/WHERE NOT EXISTS \(SELECT 1 FROM "sessions" AS t WHERE t\.id = v\.id\)/);
+    const cols =
+      "id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date";
+    expect(sql).toContain(`INSERT INTO "sessions" (${cols})`);
+    expect(sql).toContain(`) AS v(${cols})`);
+    expect(sql).toContain(
+      `WHERE NOT EXISTS (SELECT 1 FROM "sessions" AS t WHERE t.id = v.id)`,
+    );
     // ...and never the duplicate-prone `) VALUES (` form directly after the column list.
-    expect(sql).not.toMatch(/last_update_date\)\s*VALUES\s*\(/);
+    expect(sql).not.toContain(`${cols}) VALUES (`);
   });
 
   it("wraps malformed messages in a valid JSON object before casting to jsonb", () => {
