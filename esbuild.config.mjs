@@ -101,6 +101,10 @@ const ccHooks = [
   // pulls the freshest cloud snapshot for HEAD if newer than local.
   // See src/hooks/graph-pull-worker.ts.
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
+  // Detached provisioning worker for the code-graph tree-sitter parsers.
+  // Spawned by session-start-setup so a cold npm install + native compile
+  // can outlive the hook's ~120s async timeout. See src/hooks/graph-deps-worker.ts.
+  { entry: "dist/src/hooks/graph-deps-worker.js", out: "graph-deps-worker" },
 ];
 
 const ccShell = [
@@ -167,6 +171,10 @@ const codexHooks = [
   // recently-used org skill (judging runs on the codex CLI). Same shared module CC uses.
   { entry: "dist/src/skillify/skillopt-worker.js", out: "skillopt-worker" },
   { entry: "dist/src/hooks/graph-pull-worker.js", out: "graph-pull-worker" },
+  // Detached provisioning worker for the code-graph tree-sitter parsers —
+  // codex parity with CC. Spawned by session-start-setup so a cold npm install
+  // + native compile can outlive the hook. See src/hooks/graph-deps-worker.ts.
+  { entry: "dist/src/hooks/graph-deps-worker.js", out: "graph-deps-worker" },
   // G3: code-graph auto-build parity for Codex (same shared hook as CC/Cursor).
   // graph-on-stop is built separately via buildGraphOnStop() (code-split).
 ];

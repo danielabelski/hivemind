@@ -19,6 +19,7 @@ import { log as _log } from "../../utils/debug.js";
 import { makeWikiLogger } from "../../utils/wiki-log.js";
 import { autoUpdate } from "../shared/autoupdate.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
+import { spawnDetachedNodeWorker } from "../../utils/spawn-detached.js";
 const log = (msg: string) => _log("codex-session-setup", msg);
 
 const { log: wikiLog } = makeWikiLogger(join(homedir(), ".codex", "hooks"));
@@ -48,6 +49,17 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
+
+  // Provision the code-graph tree-sitter parsers into the shared embed-deps
+  // dir so the graph-on-stop hook can auto-build the graph. Spawned as a
+  // DETACHED worker — NOT run inline — because a cold provision runs npm +
+  // a from-source native compile that can exceed this hook's ~120s async
+  // timeout; the worker outlives the hook and finishes in the background.
+  // Fired BEFORE the credentials early-return: provisioning is purely local
+  // and must not depend on login. Best-effort — the spawn helper swallows any
+  // failure, and ensureGraphDeps inside the worker serializes via its own lock.
+  spawnDetachedNodeWorker(join(__bundleDir, "graph-deps-worker.js"));
+
   const creds = loadCredentials();
   if (!creds?.token) { log("no credentials"); return; }
 

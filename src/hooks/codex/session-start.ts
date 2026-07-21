@@ -58,9 +58,16 @@ async function main(): Promise<void> {
     creds = await healDriftedOrgToken(creds, log);
   }
 
-  // Spawn async setup (table creation, placeholder, version check) as detached process.
-  // Codex doesn't support async hooks, so we use the same pattern as the wiki worker.
-  if (creds?.token) {
+  // Spawn async setup (graph-deps provisioning, table creation, placeholder,
+  // version check) as a detached process. Codex doesn't support async hooks,
+  // so we use the same pattern as the wiki worker.
+  //
+  // Spawned UNCONDITIONALLY — not gated on creds. The setup worker runs
+  // ensureGraphDeps() (purely local code-graph provisioning) BEFORE its own
+  // credentials early-return, so it must fire even when logged out. The
+  // remote/credentialed work (autoupdate, table + placeholder) stays gated
+  // INSIDE the worker on its `if (!creds?.token) return`.
+  {
     const setupScript = join(__bundleDir, "session-start-setup.js");
     const child = spawn("node", [setupScript], {
       detached: true,
