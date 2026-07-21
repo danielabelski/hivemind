@@ -484,3 +484,154 @@ describe("codex wiki-worker — finalize + release edges", () => {
     expect(finalizeSummaryMock).not.toHaveBeenCalled();
   });
 });
+
+const promptOf = (a: string[]) => a.find((x) => typeof x === "string" && x.includes("SUMMARY="))!;
+
+describe("codex wiki-worker — bounded-fetch edges + error paths (coverage)", () => {
+  function setupFetch(opts: { total: number; msgRows?: number; summaryOffset?: number }) {
+    const n = opts.msgRows ?? Math.min(opts.total, 2000);
+    const rows = Array.from({ length: n }, (_, i) => [JSON.stringify({ c: opts.total - 1 - i }), "t"]);
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[opts.total]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/sessions/alice/s.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) return jsonResp({ columns: ["summary"], rows: opts.summaryOffset === undefined ? [] : [[`# S\n- **JSONL offset**: ${opts.summaryOffset}\n\n## What Happened\nx`]] });
+      return jsonResp({ columns: [], rows: [] });
+    });
+  }
+  const writesSummary = () => execFileSyncMock.mockImplementation((_b: string, a: string[]) => { writeFileSync(promptOf(a).match(/SUMMARY=(\S+)/)![1], "# S\n\n## What Happened\ndone\n"); return Buffer.from(""); });
+
+  it("skips when the resume offset already covers every row", async () => {
+    setupFetch({ total: 5, summaryOffset: 5 }); writesSummary(); await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("no new events since last summary");
+  });
+  it("prefers the sidecar count over a smaller parsed offset", async () => {
+    setupFetch({ total: 10, summaryOffset: 3 }); readStateMock.mockReturnValue({ lastSummaryCount: 8 }); writesSummary(); await runWorker();
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+  });
+  it("writes a NULL embedding when the embed daemon fails", async () => {
+    setupFetch({ total: 2 }); embedSummaryMock.mockRejectedValue(new Error("down")); writesSummary(); await runWorker();
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("summary embedding failed");
+  });
+  it("skips when the existing-summary lookup throws", async () => {
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[2]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"], ["{}", "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) throw new Error("db down");
+      return jsonResp({ columns: [], rows: [] });
+    });
+    writesSummary(); await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+  });
+  it("logs the sidecar update failure but still releases the lock", async () => {
+    setupFetch({ total: 2 }); writesSummary(); finalizeSummaryMock.mockImplementation(() => { throw new Error("boom"); }); await runWorker();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("sidecar update failed");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
+  });
+  it("swallows a releaseLock throw in the finally", async () => {
+    setupFetch({ total: 2 }); writesSummary(); releaseLockMock.mockImplementation(() => { throw new Error("boom"); });
+    await expect(runWorker()).resolves.toBeUndefined();
+  });
+  it("truncates a single event exceeding the byte budget", async () => {
+    const huge = JSON.stringify({ c: "x".repeat(5 * 1024 * 1024) });
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [[huge, "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      return jsonResp({ columns: ["summary"], rows: [] });
+    });
+    writesSummary(); await runWorker();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("truncated it to stay within the buffer");
+  });
+  it("drops oldest rows when the batch exceeds the byte budget", async () => {
+    const row = JSON.stringify({ c: "y".repeat(600 * 1024) });
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[10]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: Array.from({ length: 10 }, () => [row, "t"]) });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      return jsonResp({ columns: ["summary"], rows: [] });
+    });
+    writesSummary(); await runWorker();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("permanently skipping");
+  });
+  it("skips upload when exec throws AFTER a partial summary write", async () => {
+    setupFetch({ total: 2 });
+    execFileSyncMock.mockImplementation((_b: string, a: string[]) => { writeFileSync(promptOf(a).match(/SUMMARY=(\S+)/)![1], "junk"); throw new Error("crash"); });
+    await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+  });
+  it("logs a fatal error and releases the lock when a query hard-fails", async () => {
+    fetchMock.mockResolvedValue(jsonResp("bad", false, 400)); await runWorker();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("fatal:");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
+  });
+  it("retries a retryable API error then succeeds", async () => {
+    vi.spyOn(global, "setTimeout").mockImplementation(((cb: any) => { cb(); return 0 as any; }) as any);
+    let first = true;
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      if (first) { first = false; return jsonResp("busy", false, 503); }
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      return jsonResp({ columns: ["summary"], rows: [] });
+    });
+    writesSummary(); await runWorker();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("retrying in");
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("codex wiki-worker — unknown server path (coverage)", () => {
+  it("falls back to /sessions/unknown/ when the DISTINCT path lookup is empty", async () => {
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [] });
+      return jsonResp({ columns: ["summary"], rows: [] });
+    });
+    execFileSyncMock.mockImplementation((_b: string, a: string[]) => { writeFileSync(promptOf(a).match(/SUMMARY=(\S+)/)![1], "# S\n\n## What Happened\nok\n"); return Buffer.from(""); });
+    await runWorker();
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
+  });
+});
+
+describe("codex wiki-worker — formatExecFailure branches (coverage)", () => {
+  function setupOk() {
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      return jsonResp({ columns: ["summary"], rows: [] });
+    });
+  }
+  it("formats an exec error carrying code + string stderr + Buffer stdout (with truncation)", async () => {
+    setupOk();
+    const err: any = new Error("boom");
+    err.code = "ETIMEDOUT";
+    err.stderr = "e".repeat(400);            // string branch + truncation
+    err.stdout = Buffer.from("o".repeat(400)); // Buffer branch + truncation
+    execFileSyncMock.mockImplementation(() => { throw err; });
+    await runWorker();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("code=ETIMEDOUT");
+    expect(log).toContain("stderr=");
+    expect(log).toContain("stdout=");
+  });
+  it("formats an exec error with no recognizable fields as 'unknown failure'", async () => {
+    setupOk();
+    execFileSyncMock.mockImplementation(() => { throw {}; });
+    await runWorker();
+    expect(readFileSync(join(hooksDir, "wiki.log"), "utf-8")).toContain("unknown failure");
+  });
+});
