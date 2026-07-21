@@ -192,10 +192,13 @@ describe("wiki-worker — no events", () => {
     let eventSelects = 0;
     fetchMock.mockImplementation(async (_url: string, opts: any) => {
       const q = JSON.parse(opts.body).query as string;
-      if (/^\s*SELECT message, creation_date FROM "sessions"/.test(q)) {
+      // The bounded fallback retries on the cheap count probe now (not the fat
+      // message fetch): empty count for the first two attempts, then events appear.
+      if (/^\s*SELECT count\(\*\) AS n FROM "sessions"/.test(q)) {
         eventSelects++;
-        // Empty for the first two attempts, then the events appear.
-        if (eventSelects <= 2) return jsonResp({ columns: ["message", "creation_date"], rows: [] });
+        return jsonResp({ columns: ["n"], rows: eventSelects <= 2 ? [[0]] : [[1]] });
+      }
+      if (/^\s*SELECT message, creation_date FROM "sessions"/.test(q)) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi" }), "2026-01-01T00:00:00Z"]] });
       }
       // path lookup + existing-summary lookup → empty is fine
@@ -233,8 +236,14 @@ describe("wiki-worker — happy path", () => {
     let call = 0;
     return fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) {
+        return jsonResp({ columns: ["n"], rows: [[eventCount > 0 ? eventCount : eventRows.length]] });
+      }
       if (sql.startsWith("SELECT message, creation_date")) {
-        return jsonResp({ columns: eventsCol, rows: eventCount > 0 ? manyRows : eventRows.map(r => [r.message, r.creation_date]) });
+        // Worker fetches newest-first (ORDER BY creation_date DESC) then reverses back to
+        // chronological — the mock returns DESC to match the real DB.
+        const asc = eventCount > 0 ? manyRows : eventRows.map(r => [r.message, r.creation_date]);
+        return jsonResp({ columns: eventsCol, rows: asc.slice().reverse() });
       }
       if (sql.startsWith("SELECT DISTINCT path")) {
         return jsonResp({
@@ -384,12 +393,14 @@ describe("wiki-worker — happy path", () => {
   it("serializes event rows that arrive as objects (JSONB) instead of strings", async () => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[2]] });
       if (sql.startsWith("SELECT message, creation_date")) {
+        // DESC (newest-first) to match the real ORDER BY … DESC; worker reverses back.
         return jsonResp({
           columns: ["message", "creation_date"],
           rows: [
-            [{ type: "user_message", content: "hi" }, "2026-04-20T00:00:00Z"],
             [{ type: "tool_call", tool_name: "Bash" }, "2026-04-20T00:00:01Z"],
+            [{ type: "user_message", content: "hi" }, "2026-04-20T00:00:00Z"],
           ],
         });
       }
@@ -418,6 +429,7 @@ describe("wiki-worker — claude -p failure", () => {
   it("logs the claude exit code and skips the upload when no summary file lands", async () => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/sessions/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });
@@ -438,6 +450,7 @@ describe("wiki-worker — claude -p failure", () => {
   it("falls back to err.message when err.status is absent", async () => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });
@@ -506,6 +519,7 @@ describe("wiki-worker — finalize + release edge cases", () => {
   beforeEach(() => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });

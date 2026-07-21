@@ -126,6 +126,9 @@ describe("hermes wiki-worker — behavior", () => {
   it("runs hermes -z <prompt> --provider --yolo and uploads agent=hermes", async () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) {
+        return jsonResp({ columns: ["n"], rows: [[1]] });
+      }
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi hermes" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -158,6 +161,9 @@ describe("hermes wiki-worker — behavior", () => {
   it("logs the failure and skips upload when the hermes spawn throws", async () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) {
+        return jsonResp({ columns: ["n"], rows: [[1]] });
+      }
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi hermes" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -208,6 +214,7 @@ describe("hermes wiki-worker — behavior", () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
       sqls.push(sql);
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "db" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -224,5 +231,205 @@ describe("hermes wiki-worker — behavior", () => {
 
     expect(sqls.some(s => s.startsWith("SELECT message, creation_date"))).toBe(true);
     expect(sqls.some(s => s.startsWith("SELECT DISTINCT path"))).toBe(true);
+    // The fallback is BOUNDED now — a cheap count probe + newest-N DESC LIMIT,
+    // never the old unbounded `ORDER BY creation_date ASC` full fat-column scan.
+    expect(sqls.some(s => s.startsWith("SELECT count(*) AS n"))).toBe(true);
+    const fetchSql = sqls.find(s => s.startsWith("SELECT message, creation_date"))!;
+    expect(fetchSql).toContain("ORDER BY creation_date DESC");
+    expect(fetchSql).toContain("LIMIT 2000");
+    expect(sqls.some(s => s.includes("ORDER BY creation_date ASC"))).toBe(false);
+  });
+});
+
+describe("hermes wiki-worker — bounded-fetch edges + error paths (coverage)", () => {
+  // Fetch mock: count(*) → total; message → newest-first rows; DISTINCT path;
+  // summary → optional existing (with offset). `summaryOffset` omitted → no summary.
+  function setupFetch(opts: { total: number; msgRows?: number; summaryOffset?: number }) {
+    const n = opts.msgRows ?? Math.min(opts.total, 2000);
+    const rows = Array.from({ length: n }, (_, i) => [
+      JSON.stringify({ type: "user_message", content: `m${opts.total - 1 - i}` }), // DESC
+      "2026-04-20T00:00:00Z",
+    ]);
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[opts.total]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/sessions/alice/s.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) {
+        return jsonResp({
+          columns: ["summary"],
+          rows: opts.summaryOffset === undefined ? [] : [[`# S\n- **JSONL offset**: ${opts.summaryOffset}\n\n## What Happened\nx`]],
+        });
+      }
+      return jsonResp({ columns: [], rows: [] });
+    });
+  }
+  const writesSummary = () =>
+    execFileSyncMock.mockImplementation((_b: string, a: string[]) => {
+      writeFileSync(a[1].match(/SUMMARY=(\S+)/)![1], "# S\n\n## What Happened\ndone\n");
+      return Buffer.from("");
+    });
+
+  it("skips when the resume offset already covers every row (no new events)", async () => {
+    setupFetch({ total: 5, summaryOffset: 5 });
+    writesSummary();
+    await runWorker();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("no new events since last summary");
+  });
+
+  it("refetches from the bounded DB when the local cache is shorter than the offset", async () => {
+    readCacheMock.mockReturnValue(["line1", "line2"]); // 2 cached < offset 40
+    const sqls: string[] = [];
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      sqls.push(sql);
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[43]] });
+      if (sql.startsWith("SELECT message, creation_date"))
+        return jsonResp({ columns: ["message", "creation_date"], rows: Array.from({ length: 43 }, (_, i) => [JSON.stringify({ t: 42 - i }), "t"]) });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/sessions/alice/s.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) return jsonResp({ columns: ["summary"], rows: [["# S\n- **JSONL offset**: 40\n\n## What Happened\nx"]] });
+      return jsonResp({ columns: [], rows: [] });
+    });
+    writesSummary();
+    await runWorker();
+    // The bounded DB fetch ran (count + newest-N DESC LIMIT), not the stale cache.
+    expect(sqls.some(s => s.startsWith("SELECT count(*) AS n"))).toBe(true);
+    const fetchSql = sqls.find(s => s.startsWith("SELECT message, creation_date"))!;
+    expect(fetchSql).toContain("ORDER BY creation_date DESC");
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers the sidecar count over a smaller parsed offset", async () => {
+    setupFetch({ total: 10, summaryOffset: 3 });
+    readStateMock.mockReturnValue({ lastSummaryCount: 8 }); // sidecar 8 > parsed 3
+    writesSummary();
+    await runWorker();
+    // 10 total, offset 8 → 2 new rows summarized.
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes a NULL embedding when the embed daemon fails, still uploads", async () => {
+    setupFetch({ total: 2 });
+    embedSummaryMock.mockRejectedValue(new Error("embed daemon down"));
+    writesSummary();
+    await runWorker();
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("summary embedding failed");
+  });
+
+  it("skips the run when the existing-summary lookup throws (no overwrite)", async () => {
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[2]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"], ["{}", "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) throw new Error("summary db down");
+      return jsonResp({ columns: [], rows: [] });
+    });
+    writesSummary();
+    await runWorker();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it("logs the sidecar update failure but still releases the lock", async () => {
+    setupFetch({ total: 2 });
+    writesSummary();
+    finalizeSummaryMock.mockImplementation(() => { throw new Error("sidecar boom"); });
+    await runWorker();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("sidecar update failed");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-hermes");
+  });
+
+  it("swallows a releaseLock throw in the finally", async () => {
+    setupFetch({ total: 2 });
+    writesSummary();
+    releaseLockMock.mockImplementation(() => { throw new Error("release boom"); });
+    await expect(runWorker()).resolves.toBeUndefined();
+  });
+});
+
+describe("hermes wiki-worker — more edges (coverage)", () => {
+  function setupFetch(total: number, msgRows: [unknown, string][]) {
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[total]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: msgRows });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/sessions/alice/s.jsonl"]] });
+      if (sql.startsWith("SELECT summary FROM")) return jsonResp({ columns: ["summary"], rows: [] });
+      return jsonResp({ columns: [], rows: [] });
+    });
+  }
+  const writesSummary = () =>
+    execFileSyncMock.mockImplementation((_b: string, a: string[]) => {
+      writeFileSync(a[1].match(/SUMMARY=(\S+)/)![1], "# S\n\n## What Happened\ndone\n");
+      return Buffer.from("");
+    });
+
+  it("truncates a single event that exceeds the JSONL byte budget", async () => {
+    const huge = JSON.stringify({ type: "user_message", content: "x".repeat(5 * 1024 * 1024) });
+    setupFetch(1, [[huge, "t"]]);
+    writesSummary();
+    await runWorker();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("truncated it to stay within the buffer");
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the oldest rows when the new batch exceeds the byte budget", async () => {
+    const row = JSON.stringify({ type: "user_message", content: "y".repeat(600 * 1024) });
+    setupFetch(10, Array.from({ length: 10 }, () => [row, "t"]) as [unknown, string][]);
+    writesSummary();
+    await runWorker();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("permanently skipping");
+  });
+
+  it("skips the upload when the exec throws AFTER a partial summary write", async () => {
+    setupFetch(2, [["{}", "t"], ["{}", "t"]]);
+    execFileSyncMock.mockImplementation((_b: string, a: string[]) => {
+      writeFileSync(a[1].match(/SUMMARY=(\S+)/)![1], "partial junk");
+      throw new Error("crashed mid-write");
+    });
+    await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("failed after a partial summary write");
+  });
+
+  it("logs a fatal error and still releases the lock when a query hard-fails", async () => {
+    fetchMock.mockResolvedValue(jsonResp("bad request", false, 400)); // non-retryable → throws
+    await runWorker();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("fatal:");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-hermes");
+  });
+});
+
+describe("hermes wiki-worker — query retry (coverage)", () => {
+  it("retries a retryable API error (503) then succeeds", async () => {
+    vi.spyOn(global, "setTimeout").mockImplementation(((cb: any) => { cb(); return 0 as any; }) as any);
+    let first = true;
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      if (first) { first = false; return jsonResp("busy", false, 503); }
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
+      if (sql.startsWith("SELECT message, creation_date")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
+      if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
+      return jsonResp({ columns: ["summary"], rows: [] });
+    });
+    execFileSyncMock.mockImplementation((_b: string, a: string[]) => {
+      writeFileSync(a[1].match(/SUMMARY=(\S+)/)![1], "# S\n\n## What Happened\nok\n");
+      return Buffer.from("");
+    });
+    await runWorker();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("retrying in");
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -18,6 +18,39 @@
 /** Max bytes of session JSONL fed to the summarizer in one run. */
 export const WIKI_JSONL_MAX_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Max session rows the DB fallback fetches, newest-first. The old fallback did an
+ * unbounded `ORDER BY creation_date ASC` with no limit, which materializes the WHOLE fat
+ * `message` column — tens of MB, ~30s cold on a mega-session — even though the summarizer
+ * only ever consumes the newest un-summarized rows (`capLinesByBytes` discards the rest).
+ * This caps the fetch to a superset of what any one run can use.
+ */
+export const WIKI_FALLBACK_MAX_ROWS = 2000;
+
+/**
+ * Select the un-summarized "new" rows from a BOUNDED newest-N window.
+ *
+ * The workers fetch the whole session ASC and take `rows.slice(prevOffset)`, where
+ * `prevOffset` is a count over the FULL history. When the fetch is instead bounded to the
+ * newest `window.length` rows (of a `total`-row session), that full-history index no longer
+ * addresses the window, so the plain slice is wrong. This maps it correctly:
+ *
+ *   newCount = max(0, total - prevOffset)   // rows added since the last summary
+ *   → the LAST `newCount` rows of the window are the un-summarized ones.
+ *
+ * When the window doesn't reach back to `prevOffset` (the session grew by more than the
+ * window since the last summary), `newCount >= window.length` and the whole window is
+ * returned — the older new rows fell outside the fetch, exactly the ones `capLinesByBytes`
+ * would drop anyway (it keeps the newest). So bounding never changes what a run summarizes
+ * beyond what the byte cap already does. `prevOffset <= 0` returns the whole window.
+ */
+export function newRowsFromWindow<T>(window: readonly T[], total: number, prevOffset: number): T[] {
+  if (prevOffset <= 0) return window.slice();
+  const newCount = Math.max(0, total - prevOffset);
+  if (newCount >= window.length) return window.slice();
+  return window.slice(window.length - newCount);
+}
+
 /** Matches the offset line in a stored summary, regardless of leading bullet.
  *  Single source of truth for both detection (stampOffset) and extraction
  *  (parseOffset) so the round-trip contract can't drift. */
