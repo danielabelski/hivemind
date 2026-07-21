@@ -220,6 +220,35 @@ describe("redactSecrets — high-entropy backstop", () => {
   it("does NOT mask a long decimal number", () => {
     expect(redactSecrets("count=123456789012345678901234567890")).toContain("123456789012345678901234567890");
   });
+
+  it("does NOT mask provider model identifiers (stored in trace rows)", () => {
+    // These are captured into every trace row's `model` field; masking a long
+    // dated slug would break per-model token rollups. Bare token in / bare
+    // token out — exact, no redaction.
+    for (const m of [
+      "claude-haiku-4-5-20251001",
+      "claude-3-5-sonnet-20241022",
+      "gemini-3-flash-preview",
+      "qwen2.5-coder-32b-instruct",
+      "llama3.1-405b-instruct",
+      "us.anthropic.claude-3-5-sonnet-20241022-v2",
+    ]) {
+      expect(redactSecrets(m)).toBe(m);
+    }
+  });
+
+  it("STILL masks a high-entropy secret that wears a model-name prefix", () => {
+    // The model-id exemption must not become a bypass: a random key with a
+    // `gpt-`/`claude-` prefix has an over-long or mixed-case segment and must
+    // still be redacted to exactly the mask.
+    for (const s of [
+      "gpt-AbCdEfGhIjKlMnOpQrStUvWxYz123456",
+      "claude-Zk9QW3mLpX7vNbR2tYcH8dFgJsK4uE1a",
+      "gpt-abcdefghijklmnopqrstuvwxyz0123456789",
+    ]) {
+      expect(redactSecrets(s)).toBe(MASK);
+    }
+  });
 });
 
 describe("redactSecrets — idempotency & multi-secret", () => {

@@ -33,11 +33,11 @@ describe("openclaw dist bundle — embeddings wiring", () => {
   });
 
   it("session INSERT column list includes message_embedding", () => {
-    // The whole INSERT lives on one line in the minified bundle. Match
-    // the column list between INSERT INTO "...sessions..." and VALUES.
-    // Locking in the column NAME, not its position, so a future reorder
-    // doesn't false-fail.
-    const insertMatches = SRC.match(/INSERT INTO "\$\{sessionsTable[^"]*\}"\s*\([^)]+\)/g) ?? [];
+    // The sessions INSERT is now built by the shared buildDirectSessionInsertSql
+    // helper, whose column list is `INSERT INTO "${table}" (...)`. Match the
+    // column list and lock in the column NAME, not its position, so a future
+    // reorder doesn't false-fail.
+    const insertMatches = SRC.match(/INSERT INTO "\$\{table\}"\s*\([^)]+\)/g) ?? [];
     expect(insertMatches.length).toBeGreaterThanOrEqual(1);
     for (const m of insertMatches) {
       expect(m).toContain("message_embedding");

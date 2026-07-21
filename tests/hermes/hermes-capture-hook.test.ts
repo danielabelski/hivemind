@@ -238,6 +238,24 @@ describe("hermes capture hook — post_llm_call (assistant message)", () => {
     expect(queryMock).not.toHaveBeenCalled();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("no response found"));
   });
+
+  it("captures model + platform from extra (Hermes nests them there)", async () => {
+    stdinMock.mockResolvedValue({
+      hook_event_name: "post_llm_call",
+      session_id: "sid",
+      extra: { response: "done", model: "hermes-4-405b", platform: "nousresearch" },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain('"model":"hermes-4-405b"');
+    expect(sql).toContain('"usage_extra":{"platform":"nousresearch"}');
+  });
+
+  it("omits model when extra carries none (no fabrication)", async () => {
+    stdinMock.mockResolvedValue({ hook_event_name: "post_llm_call", session_id: "sid", extra: { response: "done" } });
+    await runHook();
+    expect((queryMock.mock.calls[0][0] as string)).not.toContain('"model"');
+  });
 });
 
 describe("hermes capture hook — unknown / failure paths", () => {

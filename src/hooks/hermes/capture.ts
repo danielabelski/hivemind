@@ -18,13 +18,13 @@ import { readStdin } from "../../utils/stdin.js";
 import { resolveCaptureConfig } from "../shared/dir-gate.js";
 import { redactSecrets } from "../shared/redact.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingSqlLiteral } from "../../embeddings/sql.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
+import { buildDirectSessionInsertSql } from "../shared/session-insert-sql.js";
 import { ensurePluginNodeModulesLink } from "../../embeddings/self-heal.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -93,11 +93,18 @@ async function main(): Promise<void> {
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
   const ts = new Date().toISOString();
+  // Hermes sends `model` + `platform` nested in `extra` (everything that isn't
+  // tool_name/args/session_id lands there — see NousResearch/hermes-agent
+  // agent/shell_hooks.py). Token usage / cost are not part of the hook payload.
+  const model = pickString(extra.model);
+  const platform = pickString(extra.platform);
   const meta = {
     session_id: sessionId,
     cwd,
     hook_event_name: event,
     timestamp: ts,
+    ...(model ? { model } : {}),
+    ...(platform ? { usage_extra: { platform } } : {}),
   };
 
   let entry: Record<string, unknown> | null = null;
@@ -146,10 +153,22 @@ async function main(): Promise<void> {
     : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
 
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', 'hermes', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
+  const insertSql = buildDirectSessionInsertSql(sessionsTable, {
+    // Reuse the event id already embedded in the message JSON so the row PK
+    // matches the payload's id (and keeps the dedup key = the logical event).
+    id: entry.id as string,
+    sessionPath,
+    filename,
+    jsonForSql,
+    embeddingSql,
+    userName: config.userName,
+    sizeBytes: Buffer.byteLength(line, "utf-8"),
+    projectName,
+    description: event,
+    agent: "hermes",
+    pluginVersion: PLUGIN_VERSION,
+    timestamp: ts,
+  });
 
   try {
     await api.query(insertSql);

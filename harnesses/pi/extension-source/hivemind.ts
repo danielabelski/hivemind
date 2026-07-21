@@ -149,6 +149,44 @@ function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boo
   return { creds: { ...withEnv, orgId, orgName, workspaceId }, collect: true, routed };
 }
 
+// Inline copy of normalizeSdkUsage / sdkTurnMeta (shared version lives in
+// src/notifications/model-usage.ts, but pi extensions ship as raw .ts with no
+// shared-module imports — kept in lockstep with that file). Maps the pi/SDK
+// usage object {input, output, cacheRead, cacheWrite, totalTokens} onto the
+// normalized token_usage keys used across every agent's trace rows.
+function piModelMeta(message: any): { model?: string; stop_reason?: string; token_usage?: Record<string, unknown> } {
+  const out: { model?: string; stop_reason?: string; token_usage?: Record<string, unknown> } = {};
+  if (typeof message?.model === "string" && message.model) out.model = message.model;
+  if (typeof message?.stopReason === "string" && message.stopReason) out.stop_reason = message.stopReason;
+  const u = message?.usage;
+  if (u && typeof u === "object") {
+    const t: Record<string, unknown> = {};
+    const putInt = (k: string, v: unknown) => {
+      if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) t[k] = v;
+    };
+    putInt("input_tokens", u.input);
+    putInt("output_tokens", u.output);
+    putInt("cache_read_tokens", u.cacheRead);
+    putInt("cache_creation_tokens", u.cacheWrite);
+    putInt("total_tokens", u.totalTokens);
+    if (u.cost && typeof u.cost === "object") {
+      const cost: Record<string, number> = {};
+      putFloatInto(cost, "input", u.cost.input);
+      putFloatInto(cost, "output", u.cost.output);
+      putFloatInto(cost, "cache_read", u.cost.cacheRead);
+      putFloatInto(cost, "cache_creation", u.cost.cacheWrite);
+      putFloatInto(cost, "total", u.cost.total);
+      if (Object.keys(cost).length > 0) t.cost = cost;
+    }
+    if (Object.keys(t).length > 0) out.token_usage = t;
+  }
+  return out;
+}
+
+function putFloatInto(target: Record<string, number>, key: string, v: unknown): void {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) target[key] = v;
+}
+
 // Inline copies of decodeJwtPayload + healDriftedOrgToken (the shared helpers
 // live in src/commands/auth.ts, but pi extensions ship as raw .ts with no
 // shared-module imports — kept in lockstep with that file).
@@ -961,10 +999,21 @@ async function writeSessionRow(
   logHm(`writeSessionRow: event=${event} session=${sessionId} bytes=${line.length} table=${SESSIONS_TABLE}`);
   const emb = await embed(line);
   logHm(`writeSessionRow: embed=${emb ? `dims=${emb.length}` : "null"}`);
+  // Idempotent INSERT: `SELECT ... WHERE NOT EXISTS (id = ...)` instead of a
+  // plain VALUES insert, so a re-send of the same event can never create a
+  // duplicate row (the sessions table has no UNIQUE constraint on id). pi keeps
+  // this inline rather than importing src/hooks/shared/session-insert-sql.ts to
+  // preserve the "raw .ts, zero deps" promise — kept in lockstep with that
+  // helper's shape.
+  // Reuse the event id embedded in the message JSON so the row PK matches the
+  // payload's id and stays the dedup key across a re-send. Fall back to a fresh
+  // uuid if a caller ever omits it (keeps each row unique rather than colliding).
+  const rowId = sqlStr(typeof entry.id === "string" ? entry.id : crypto.randomUUID());
   const insertSql =
     `INSERT INTO "${SESSIONS_TABLE}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embedSqlLiteral(emb)}, '${sqlStr(creds.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', '${agent}', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
+    `SELECT '${rowId}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embedSqlLiteral(emb)}, '${sqlStr(creds.userName)}', ` +
+    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(event)}', '${sqlStr(agent)}', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}' ` +
+    `WHERE NOT EXISTS (SELECT 1 FROM "${SESSIONS_TABLE}" WHERE id = '${rowId}')`;
   let lastErr: any = null;
   for (let attempt = 0; attempt <= INSERT_RETRY_BACKOFFS_MS.length; attempt++) {
     try {
@@ -1531,6 +1580,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         session_id: sessionId,
         content: text,
         timestamp: new Date().toISOString(),
+        ...piModelMeta(message),
       });
     } catch (e: any) {
       logHm(`message_end: writeSessionRow swallowed: ${e?.message ?? e}`);

@@ -58,6 +58,21 @@ function looksLikeSecret(tok: string): boolean {
   if (/^\d+$/.test(tok)) return false; // pure number
   if (/^[0-9a-f]+$/i.test(tok)) return false; // hex hash / git SHA / md5
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tok)) return false; // UUID
+  // Provider model identifiers (e.g. claude-haiku-4-5-20251001, gpt-5.6-sol,
+  // qwen2.5-coder-32b-instruct, us.anthropic.claude-3-5-sonnet-20241022-v2) —
+  // a long dated slug can otherwise trip the entropy check, and these are
+  // captured into every trace row's `model` field, so shredding them would
+  // break per-model usage rollups. Kept safe by two invariants that a random
+  // secret can't satisfy: lowercase only (random keys mix case) and every
+  // dot/dash segment capped at 12 chars (so no 24+ high-entropy run fits).
+  // Within those bounds we allow optional cloud/region prefixes (Bedrock etc.),
+  // a digit fused to the family (`qwen2`, `llama3`), and short version segments.
+  if (
+    /^(?:(?:us|eu|apac|anthropic|amazon|bedrock|cohere|meta|mistral|google)\.)*(?:claude|gpt|o[1-9]|gemini|gemma|codex|text-embedding|dall-e|whisper|grok|deepseek|kimi|llama|mixtral|qwen|phi)[0-9]?(?:[._-][a-z0-9]{1,12})*$/.test(
+      tok,
+    )
+  )
+    return false;
   // Require a mix of character classes — random keys blend cases/digits, while
   // English words, dotted versions and snake_case identifiers do not.
   const classes =

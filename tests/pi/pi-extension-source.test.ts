@@ -32,6 +32,21 @@ describe("pi extension — embedding wiring", () => {
     expect(insertLine![0]).toContain("message_embedding");
   });
 
+  // Regression for C1 (duplicate session rows). The sessions table has no
+  // UNIQUE constraint on id, so a plain `INSERT ... VALUES` that gets re-sent
+  // (retry after a transient error) creates a duplicate. pi must build the row
+  // idempotently — `INSERT ... SELECT ... WHERE NOT EXISTS (id = ...)` — matching
+  // the shared buildDirectSessionInsertSql helper the bundled agents use.
+  it("builds the sessions INSERT idempotently (no bare VALUES insert)", () => {
+    expect(PI_SRC).toMatch(
+      /INSERT INTO "\$\{SESSIONS_TABLE\}"[\s\S]*?WHERE NOT EXISTS \(SELECT 1 FROM "\$\{SESSIONS_TABLE\}" WHERE id = '\$\{rowId\}'\)/,
+    );
+    // ...and never the duplicate-prone bare VALUES form for the sessions row.
+    expect(PI_SRC).not.toMatch(
+      /INSERT INTO "\$\{SESSIONS_TABLE\}" \([^)]*message_embedding[^)]*\)\s*VALUES/,
+    );
+  });
+
   // Regression for the pi `plugin_version` 42703 incident (org c2d29f27 et al.):
   // the pi extension hard-codes its sessions CREATE TABLE inline (it does NOT go
   // through DeeplakeApi.ensureSessionsTable / healMissingColumns like the other

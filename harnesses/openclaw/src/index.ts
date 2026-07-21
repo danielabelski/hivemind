@@ -66,7 +66,9 @@ import { readVirtualPathContent } from "../../../src/hooks/virtual-table-query.j
 // message_embedding (today's behavior, preserved on every failure mode).
 import { tryEmbedStandalone, _setSpawnImpl } from "../../../src/embeddings/standalone-embed-client.js";
 import { embeddingSqlLiteral } from "../../../src/embeddings/sql.js";
+import { buildDirectSessionInsertSql } from "../../../src/hooks/shared/session-insert-sql.js";
 import { redactSecrets } from "../../../src/hooks/shared/redact.js";
+import { sdkTurnMeta } from "../../../src/notifications/model-usage.js";
 // Resolve sibling skillify-worker.js path at runtime via import.meta.url. The
 // openclaw plugin is bundled to harnesses/openclaw/dist/index.js, then installed to
 // ~/.openclaw/extensions/hivemind/dist/index.js by install-openclaw.ts. The
@@ -1482,7 +1484,7 @@ export default definePluginEntry({
     // Auto-capture: store new messages in sessions table (same format as CC capture.ts)
     if (config.autoCapture !== false) {
       hook("agent_end", async (event) => {
-        const ev = event as { success?: boolean; session_id?: string; channel?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
+        const ev = event as { success?: boolean; session_id?: string; channel?: string; messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }>; model?: unknown; usage?: unknown; stopReason?: unknown }> };
         if (!captureEnabled || !ev.success || !ev.messages?.length) return;
         try {
           const dl = await getApi();
@@ -1515,12 +1517,16 @@ export default definePluginEntry({
             if (!text.trim()) continue;
 
             const ts = new Date().toISOString();
+            // Tag assistant rows with model + token usage from the SDK message
+            // (openclaw exposes both on the message object; no reasoning effort).
+            const modelMeta = msg.role === "assistant" ? sdkTurnMeta(msg.model, msg.usage, msg.stopReason) : undefined;
             const entry = {
               id: crypto.randomUUID(),
               type: msg.role === "user" ? "user_message" : "assistant_message",
               session_id: sid,
               content: text,
               timestamp: ts,
+              ...(modelMeta ?? {}),
             };
             // Mask secrets before the payload is embedded or stored.
             const line = redactSecrets(JSON.stringify(entry));
@@ -1538,10 +1544,22 @@ export default definePluginEntry({
             const embedding = await tryEmbedStandalone(line, "document");
             const embeddingSql = embeddingSqlLiteral(embedding);
 
-            const insertSql =
-              `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(cfg.userName)}', ` +
-              `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${sqlStr(getInstalledVersion() ?? "")}', '${ts}', '${ts}')`;
+            const insertSql = buildDirectSessionInsertSql(sessionsTable, {
+              // Reuse the event id already embedded in the message JSON so the
+              // row PK matches the payload's id (dedup key = the logical event).
+              id: entry.id,
+              sessionPath,
+              filename,
+              jsonForSql,
+              embeddingSql,
+              userName: cfg.userName,
+              sizeBytes: Buffer.byteLength(line, "utf-8"),
+              projectName,
+              description: msg.role,
+              agent: "openclaw",
+              pluginVersion: getInstalledVersion() ?? "",
+              timestamp: ts,
+            });
 
             try {
               await dl.query(insertSql);
