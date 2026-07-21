@@ -120,40 +120,85 @@ function normalizeCost(cost: unknown): CostBreakdown | undefined {
  * window the first (partial) line is dropped, so callers only ever see whole
  * lines. Best-effort: returns null on any error.
  */
-export function readTailLines(path: string, maxBytes = 1_048_576): string[] | null {
+/** Read one window [size-maxBytes, size) of an open fd, returning whole lines. */
+function readWindowLines(fd: number, size: number, maxBytes: number): string[] {
+  if (size <= maxBytes) {
+    // Whole file fits — read it all; no partial-line handling needed.
+    const buf = Buffer.alloc(size);
+    const n = size > 0 ? readSync(fd, buf, 0, size, 0) : 0;
+    return buf.toString("utf-8", 0, n).split("\n");
+  }
+  // Read the window PLUS one leading byte, so we can tell whether the window
+  // already starts at a line boundary. Buffer.alloc (zeroed) + decoding only the
+  // bytes actually read guards against a short read exposing stale memory.
+  const start = size - maxBytes - 1;
+  const buf = Buffer.alloc(maxBytes + 1);
+  const n = readSync(fd, buf, 0, maxBytes + 1, start);
+  const text = buf.toString("utf-8", 0, n);
+  // The first char is the byte BEFORE the window. If it's "\n", the window starts
+  // on a complete line and slicing at index 0 keeps it; otherwise the first line
+  // is partial and slicing drops it. Either case: cut at the first "\n".
+  const nl = text.indexOf("\n");
+  return (nl >= 0 ? text.slice(nl + 1) : "").split("\n");
+}
+
+/**
+ * A transcript opened ONCE. `lines` is the tail (default 1 MiB window);
+ * `readWhole()` re-reads the entire file from the SAME fd using the size
+ * captured at open — so a fallback whole-file scan sees the exact same snapshot
+ * as the tail, closing any reopen/mutation race between the two reads. The
+ * caller must `close()`.
+ */
+interface TranscriptReader {
+  lines: string[];
+  readWhole(): string[];
+  close(): void;
+}
+
+function openTranscript(path: string, window = 1_048_576): TranscriptReader | null {
   if (!path || !existsSync(path)) {
     log(`transcript missing: ${path}`);
     return null;
   }
-  let fd: number | undefined;
+  let fd: number;
   try {
     fd = openSync(path, "r");
-    const size = fstatSync(fd).size;
-    if (size <= maxBytes) {
-      // Whole file fits — read it all; no partial-line handling needed.
-      const buf = Buffer.alloc(size);
-      const n = size > 0 ? readSync(fd, buf, 0, size, 0) : 0;
-      return buf.toString("utf-8", 0, n).split("\n");
-    }
-    // Read the window PLUS one leading byte, so we can tell whether the window
-    // already starts at a line boundary. Buffer.alloc (zeroed) + decoding only
-    // the bytes actually read guards against a short read exposing stale memory.
-    const start = size - maxBytes - 1;
-    const buf = Buffer.alloc(maxBytes + 1);
-    const n = readSync(fd, buf, 0, maxBytes + 1, start);
-    const text = buf.toString("utf-8", 0, n);
-    // The first char is the byte BEFORE the window. If it's "\n", the window
-    // starts on a complete line and slicing at index 0 keeps it; otherwise the
-    // first line is partial and slicing drops it. Either case: cut at first "\n".
-    const nl = text.indexOf("\n");
-    return (nl >= 0 ? text.slice(nl + 1) : "").split("\n");
   } catch (e: any) {
-    log(`read failed: ${e?.message ?? String(e)}`);
+    log(`open failed: ${e?.message ?? String(e)}`);
     return null;
-  } finally {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* already closed / best-effort */ }
+  }
+  let size: number;
+  try {
+    size = fstatSync(fd).size;
+  } catch (e: any) {
+    try { closeSync(fd); } catch { /* best-effort */ }
+    log(`stat failed: ${e?.message ?? String(e)}`);
+    return null;
+  }
+  const read = (maxBytes: number): string[] => {
+    try {
+      return readWindowLines(fd, size, maxBytes);
+    } catch (e: any) {
+      log(`read failed: ${e?.message ?? String(e)}`);
+      return [];
     }
+  };
+  let wholeCache: string[] | undefined;
+  return {
+    lines: read(window),
+    readWhole: () => (wholeCache ??= read(Number.MAX_SAFE_INTEGER)),
+    close: () => { try { closeSync(fd); } catch { /* best-effort */ } },
+  };
+}
+
+/** Tail lines of a transcript (default 1 MiB). Thin wrapper over {@link openTranscript}. */
+export function readTailLines(path: string, maxBytes = 1_048_576): string[] | null {
+  const r = openTranscript(path, maxBytes);
+  if (!r) return null;
+  try {
+    return r.lines;
+  } finally {
+    r.close();
   }
 }
 
@@ -343,10 +388,15 @@ function scanClaudeLines(lines: string[] | null): TraceModelMeta | null {
  */
 export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | null {
   if (!transcriptPath) return null;
-  return (
-    scanClaudeLines(readTailLines(transcriptPath)) ??
-    scanClaudeLines(readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER))
-  );
+  const r = openTranscript(transcriptPath);
+  if (!r) return null;
+  try {
+    // Fast path: the last turn is in the tail. Only re-read the whole file (same
+    // fd/snapshot) if the usage-bearing line didn't fit the window.
+    return scanClaudeLines(r.lines) ?? scanClaudeLines(r.readWhole());
+  } finally {
+    r.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,20 +545,24 @@ export function parseCodexTurnMeta(
   fallbackModel?: string,
 ): TraceModelMeta | null {
   if (!transcriptPath) return scanCodexLines(null, fallbackModel).meta;
-  const tail = scanCodexLines(readTailLines(transcriptPath), fallbackModel);
-  // Trust the tail only if it holds the COMPLETE latest state: model/effort
-  // (turn_context), per-turn usage + quota (token_count), AND the cumulative
-  // total — which the whole-file scan carries across turns and an in-tail
-  // token_count might not include if an earlier one set it.
-  if (tail.sawTurnContext && tail.sawTokenCount && tail.meta?.token_usage_total !== undefined) {
-    return tail.meta;
+  const r = openTranscript(transcriptPath);
+  if (!r) return scanCodexLines(null, fallbackModel).meta;
+  try {
+    const tail = scanCodexLines(r.lines, fallbackModel);
+    // Trust the tail only if it holds the COMPLETE latest state: model/effort
+    // (turn_context), per-turn usage + quota (token_count), AND the cumulative
+    // total — which the whole-file scan carries across turns and an in-tail
+    // token_count might not include if an earlier one set it.
+    if (tail.sawTurnContext && tail.sawTokenCount && tail.meta?.token_usage_total !== undefined) {
+      return tail.meta;
+    }
+    // Widen to the whole file — SAME fd + size captured at open, so tail and
+    // whole are one snapshot (no reopen/mutation race). Trust the whole scan
+    // only if it saw Codex events; otherwise keep what the tail extracted.
+    const whole = scanCodexLines(r.readWhole(), fallbackModel);
+    if (!whole.sawTurnContext && !whole.sawTokenCount) return tail.meta;
+    return whole.meta ?? tail.meta;
+  } finally {
+    r.close();
   }
-  const wholeLines = readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER);
-  if (wholeLines === null) return tail.meta; // second read failed — keep the tail
-  const whole = scanCodexLines(wholeLines, fallbackModel);
-  // Only trust the reread if it actually found Codex events. A file removed or
-  // truncated (to empty, or below the tail's data) between reads yields a
-  // model-only fallback that must not clobber usage the tail already extracted.
-  if (!whole.sawTurnContext && !whole.sawTokenCount) return tail.meta;
-  return whole.meta ?? tail.meta;
 }
