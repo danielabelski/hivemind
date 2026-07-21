@@ -496,7 +496,17 @@ export function parseCodexTurnMeta(
 ): TraceModelMeta | null {
   if (!transcriptPath) return scanCodexLines(null, fallbackModel).meta;
   const tail = scanCodexLines(readTailLines(transcriptPath), fallbackModel);
-  if (tail.sawTurnContext && tail.sawTokenCount) return tail.meta;
-  const whole = scanCodexLines(readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER), fallbackModel);
+  // Trust the tail only if it holds the COMPLETE latest state: model/effort
+  // (turn_context), per-turn usage + quota (token_count), AND the cumulative
+  // total — which the whole-file scan carries across turns and an in-tail
+  // token_count might not include if an earlier one set it.
+  if (tail.sawTurnContext && tail.sawTokenCount && tail.meta?.token_usage_total !== undefined) {
+    return tail.meta;
+  }
+  const wholeLines = readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER);
+  // The second read can fail (file removed/truncated between reads) — never let
+  // that discard usage the tail already extracted.
+  if (wholeLines === null) return tail.meta;
+  const whole = scanCodexLines(wholeLines, fallbackModel);
   return whole.meta ?? tail.meta;
 }

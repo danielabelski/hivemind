@@ -503,6 +503,25 @@ describe("parseCodexTurnMeta — usage_extra quota", () => {
     expect(meta?.token_usage?.total_tokens).toBe(10);
   });
 
+  it("recovers a cumulative total set before the tail window via the whole-file scan", () => {
+    // First token_count carries total; a >1 MiB record follows; then a new turn
+    // whose token_count OMITS total. The tail sees both signals but no total, so
+    // parseCodexTurnMeta must widen to recover token_usage_total from the file.
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "medium"),
+      codexTokenCount(
+        { input_tokens: 5, output_tokens: 5, total_tokens: 10 },
+        { input_tokens: 5, output_tokens: 5, total_tokens: 500 },
+      ),
+      { type: "event_msg", payload: { type: "note", pad: "q".repeat(1_200_000) } },
+      codexTurnContext("gpt-5.5", "medium"),
+      // token_count WITHOUT total_token_usage
+      { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } } },
+    ]);
+    const meta = parseCodexTurnMeta(file, "fb");
+    expect(meta?.token_usage_total?.total_tokens).toBe(500); // preserved from the first token_count
+  });
+
   it("does not carry a prior turn's quota into a new turn_context (model change)", () => {
     const file = writeTranscript([
       codexTurnContext("gpt-5.5", "medium"),
