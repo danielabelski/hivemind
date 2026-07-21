@@ -334,12 +334,15 @@ describe("codex integration: session-start-setup", () => {
   });
 
   it("exits cleanly with no credentials (HIVEMIND_TOKEN='')", () => {
+    // HIVEMIND_GRAPH_ON_STOP=0 makes the detached graph-deps worker (spawned
+    // by this hook) early-return instead of running a real npm install against
+    // the dev machine's ~/.hivemind/embed-deps during the integration run.
     const raw = runHook("session-start-setup.js", {
       session_id: "test-session-setup-002",
       cwd: "/tmp/test-project",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
-    });
+    }, { HIVEMIND_GRAPH_ON_STOP: "0" });
     expect(raw).toBe("");
   });
 
@@ -349,7 +352,7 @@ describe("codex integration: session-start-setup", () => {
       cwd: "/tmp/test-project",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
-    });
+    }, { HIVEMIND_GRAPH_ON_STOP: "0" });
     expect(raw).toBe("");
   });
 });
