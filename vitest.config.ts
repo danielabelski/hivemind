@@ -430,6 +430,13 @@ export default defineConfig({
         // EXDEV/EPERM error-recovery branch is mocked via vi.doMock("node:fs")
         // and the uncaught-rethrow branch covers everything else implicitly.
         "src/skillify/legacy-migration.ts":  { statements: 90, branches: 80, functions: 90, lines: 90 },
+        // fix/skillify-legacy-cap-migration — local, remote-independent cap
+        // migration of legacy over-long installs (runs before the network in
+        // auto-pull). Branches at 85: a couple of defensive arms (installedName
+        // null, capSkillName no-op, already-canonical dir) aren't each worth a
+        // dedicated fixture; the load-bearing migrate/skip/collision/fs-error
+        // paths are all exercised.
+        "src/skillify/legacy-cap-migration.ts": { statements: 90, branches: 85, functions: 90, lines: 90 },
         "src/skillify/pull.ts":              { statements: 90, branches: 75, functions: 90, lines: 90 },
         "src/skillify/push.ts":              { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/skillify/scope-config.ts":      { statements: 90, branches: 90, functions: 90, lines: 90 },
