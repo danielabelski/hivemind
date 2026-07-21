@@ -131,9 +131,10 @@ describe("statusEmbeddings (sandboxed HOME)", () => {
     outSpy.mockRestore();
     errSpy.mockRestore();
     const out = lines.join("\n");
-    // Surfaces the shared-deps location and the detected codex agent.
-    expect(out).toMatch(/embed-deps|shared/i);
-    expect(out.toLowerCase()).toContain("codex");
+    // Shared deps absent + codex has no node_modules symlink → specific lines.
+    expect(out).toContain(`Shared deps:   ${mod.SHARED_DIR}`);
+    expect(out).toContain("Installed:     no");
+    expect(out).toMatch(/codex\s+✗ not linked/);
   });
 
   it("reports a linked agent + present shared deps (linked/present status arms)", () => {
@@ -148,6 +149,9 @@ describe("statusEmbeddings (sandboxed HOME)", () => {
     expect(() => mod.statusEmbeddings()).not.toThrow();
     outSpy.mockRestore();
     errSpy.mockRestore();
-    expect(lines.join("\n").toLowerCase()).toContain("codex");
+    const out = lines.join("\n");
+    // Shared deps present + codex symlinked → the "installed" + linked arms.
+    expect(out).toContain("Installed:     yes");
+    expect(out).toMatch(/codex\s+✓ linked → shared/);
   });
 });
