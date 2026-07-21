@@ -10,6 +10,7 @@ import {
   normalizeSdkUsage,
   sdkTurnMeta,
   readClaudeEffortLevel,
+  readTailLines,
 } from "../../src/notifications/model-usage.js";
 
 let TEMP_DIR = "";
@@ -320,6 +321,43 @@ describe("parseClaudeTurnMeta — stop_reason + usage_extra", () => {
     const meta = parseClaudeTurnMeta(tmp());
     expect(meta).not.toHaveProperty("usage_extra");
     expect(meta).not.toHaveProperty("stop_reason");
+  });
+});
+
+describe("readTailLines", () => {
+  const f = () => join(TEMP_DIR, "tail.jsonl");
+  it("returns all lines when the file fits in the window", () => {
+    writeFileSync(f(), "a\nb\nc\n", "utf-8");
+    expect(readTailLines(f(), 1024)).toEqual(["a", "b", "c", ""]);
+  });
+
+  it("reads only the tail and drops the partial first line when over the window", () => {
+    // 5 lines; a small window that starts mid-file. The first surviving line
+    // must be a WHOLE line (partial leading line dropped).
+    writeFileSync(f(), "L1-oldest\nL2\nL3\nL4\nL5-newest\n", "utf-8");
+    const lines = readTailLines(f(), 12); // ~last 12 bytes -> mid "L4"/"L5"
+    expect(lines).not.toBeNull();
+    // No partial line: every returned non-empty line is one of the originals.
+    for (const ln of lines!.filter(Boolean)) {
+      expect(["L1-oldest", "L2", "L3", "L4", "L5-newest"]).toContain(ln);
+    }
+    // The newest line is always present (it's at the very end).
+    expect(lines).toContain("L5-newest");
+    // The oldest is NOT in a 12-byte tail.
+    expect(lines).not.toContain("L1-oldest");
+  });
+
+  it("returns null for a missing file", () => {
+    expect(readTailLines(join(TEMP_DIR, "nope.jsonl"))).toBeNull();
+  });
+
+  it("still extracts from a real-shaped transcript whose relevant line is in the tail", () => {
+    // Big filler older turn, then the assistant turn with usage at the very end.
+    const filler = Array.from({ length: 50 }, (_, i) => JSON.stringify({ type: "user", n: i, pad: "x".repeat(200) })).join("\n");
+    const last = JSON.stringify(claudeAssistantLine("claude-opus-4-8", { input_tokens: 7, output_tokens: 8 }));
+    writeFileSync(f(), filler + "\n" + last + "\n", "utf-8");
+    const meta = parseClaudeTurnMeta(f()); // default 1 MiB window covers it
+    expect(meta?.token_usage).toEqual({ input_tokens: 7, output_tokens: 8 });
   });
 });
 

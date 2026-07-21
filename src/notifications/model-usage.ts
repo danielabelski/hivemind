@@ -24,7 +24,7 @@
  * the enrichment (never throws, never blocks a trace write).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log as _log } from "../utils/debug.js";
@@ -111,16 +111,42 @@ function normalizeCost(cost: unknown): CostBreakdown | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function readLines(path: string): string[] | null {
+/**
+ * Read only the tail of a transcript (default 1 MiB). Model / usage / stop
+ * reason all live in the MOST RECENT turn, which sits at the end of the file —
+ * so reading the whole thing on every capture event is needlessly O(filesize)
+ * (and O(n²) across a session for Codex, which parses on every user/tool row).
+ * The tail bounds each read to a constant. When the file is larger than the
+ * window the first (partial) line is dropped, so callers only ever see whole
+ * lines. Best-effort: returns null on any error.
+ */
+export function readTailLines(path: string, maxBytes = 1_048_576): string[] | null {
   if (!path || !existsSync(path)) {
     log(`transcript missing: ${path}`);
     return null;
   }
+  let fd: number | undefined;
   try {
-    return readFileSync(path, "utf-8").split("\n");
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, maxBytes);
+    const buf = Buffer.allocUnsafe(len);
+    if (len > 0) readSync(fd, buf, 0, len, size - len);
+    let text = buf.toString("utf-8");
+    if (size > maxBytes) {
+      // We started mid-file: the leading bytes are a partial line (and possibly
+      // a split multi-byte char) — drop everything up to the first newline.
+      const nl = text.indexOf("\n");
+      text = nl >= 0 ? text.slice(nl + 1) : "";
+    }
+    return text.split("\n");
   } catch (e: any) {
     log(`read failed: ${e?.message ?? String(e)}`);
     return null;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed / best-effort */ }
+    }
   }
 }
 
@@ -278,7 +304,7 @@ function claudeUsageExtra(u: ClaudeUsage): Record<string, unknown> | undefined {
  */
 export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | null {
   if (!transcriptPath) return null;
-  const lines = readLines(transcriptPath);
+  const lines = readTailLines(transcriptPath);
   if (!lines) return null;
 
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -388,7 +414,7 @@ export function parseCodexTurnMeta(
   transcriptPath?: string | null,
   fallbackModel?: string,
 ): TraceModelMeta | null {
-  const lines = transcriptPath ? readLines(transcriptPath) : null;
+  const lines = transcriptPath ? readTailLines(transcriptPath) : null;
 
   let model: string | undefined = fallbackModel;
   let reasoningEffort: string | undefined;
