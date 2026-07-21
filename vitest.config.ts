@@ -153,6 +153,17 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // PR #323 — feat: provision tree-sitter parsers into the shared
+        // embed-deps dir so the graph-on-stop auto-build hook resolves them.
+        // Pure logic + an injectable npm/heal boundary — fully unit-tested.
+        // Branches held at 85: a few defensive arms (malformed package.json,
+        // non-Error throw coerced via String(err)) aren't worth a fixture each.
+        "src/cli/graph-deps.ts": {
+          statements: 90,
+          branches: 85,
+          functions: 90,
+          lines: 90,
+        },
         // embedding_generation — nomic daemon + IPC client + SQL helper.
         // Lines/statements held at 90; branches + functions are allowed to
         // dip on the daemon because a few paths (SIGINT/SIGTERM handlers,

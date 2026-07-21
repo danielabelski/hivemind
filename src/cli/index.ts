@@ -8,11 +8,11 @@ import { installPi, uninstallPi } from "./install-pi.js";
 import {
   disableEmbeddings,
   enableEmbeddings,
-  ensureGraphDeps,
   installEmbeddings,
   statusEmbeddings,
   uninstallEmbeddings,
 } from "./embeddings.js";
+import { ensureGraphDeps } from "./graph-deps.js";
 import { ensureLoggedIn, isLoggedIn, loginWithProvidedToken, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
 // NOTE: ../commands/graph.js is intentionally NOT imported statically. It pulls
