@@ -351,6 +351,13 @@ describe("readTailLines", () => {
     expect(readTailLines(join(TEMP_DIR, "nope.jsonl"))).toBeNull();
   });
 
+  it("keeps a COMPLETE line when the window starts exactly at a line boundary", () => {
+    // "AAAA\nBBBB\n" is 10 bytes; a 5-byte window starts exactly at "BBBB".
+    // The boundary byte before the window is "\n", so BBBB is whole and kept.
+    writeFileSync(f(), "AAAA\nBBBB\n", "utf-8");
+    expect(readTailLines(f(), 5)).toEqual(["BBBB", ""]);
+  });
+
   it("still extracts from a real-shaped transcript whose relevant line is in the tail", () => {
     // Big filler older turn, then the assistant turn with usage at the very end.
     const filler = Array.from({ length: 50 }, (_, i) => JSON.stringify({ type: "user", n: i, pad: "x".repeat(200) })).join("\n");
@@ -358,6 +365,17 @@ describe("readTailLines", () => {
     writeFileSync(f(), filler + "\n" + last + "\n", "utf-8");
     const meta = parseClaudeTurnMeta(f()); // default 1 MiB window covers it
     expect(meta?.token_usage).toEqual({ input_tokens: 7, output_tokens: 8 });
+  });
+
+  it("falls back to the whole file when the assistant record exceeds the tail window", () => {
+    // A single assistant record larger than the 1 MiB tail: its start (with the
+    // usage) is outside the window, so the tail scan finds a partial/nothing and
+    // parseClaudeTurnMeta must re-read the whole file to recover the usage.
+    const huge = { type: "assistant", message: { model: "claude-opus-4-8", usage: { input_tokens: 11, output_tokens: 22 }, content: "y".repeat(1_200_000) } };
+    writeFileSync(f(), JSON.stringify(huge) + "\n", "utf-8");
+    const meta = parseClaudeTurnMeta(f());
+    expect(meta?.model).toBe("claude-opus-4-8");
+    expect(meta?.token_usage).toEqual({ input_tokens: 11, output_tokens: 22 });
   });
 });
 

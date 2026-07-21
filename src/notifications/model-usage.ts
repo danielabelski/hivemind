@@ -129,17 +129,24 @@ export function readTailLines(path: string, maxBytes = 1_048_576): string[] | nu
   try {
     fd = openSync(path, "r");
     const size = fstatSync(fd).size;
-    const len = Math.min(size, maxBytes);
-    const buf = Buffer.allocUnsafe(len);
-    if (len > 0) readSync(fd, buf, 0, len, size - len);
-    let text = buf.toString("utf-8");
-    if (size > maxBytes) {
-      // We started mid-file: the leading bytes are a partial line (and possibly
-      // a split multi-byte char) — drop everything up to the first newline.
-      const nl = text.indexOf("\n");
-      text = nl >= 0 ? text.slice(nl + 1) : "";
+    if (size <= maxBytes) {
+      // Whole file fits — read it all; no partial-line handling needed.
+      const buf = Buffer.alloc(size);
+      const n = size > 0 ? readSync(fd, buf, 0, size, 0) : 0;
+      return buf.toString("utf-8", 0, n).split("\n");
     }
-    return text.split("\n");
+    // Read the window PLUS one leading byte, so we can tell whether the window
+    // already starts at a line boundary. Buffer.alloc (zeroed) + decoding only
+    // the bytes actually read guards against a short read exposing stale memory.
+    const start = size - maxBytes - 1;
+    const buf = Buffer.alloc(maxBytes + 1);
+    const n = readSync(fd, buf, 0, maxBytes + 1, start);
+    const text = buf.toString("utf-8", 0, n);
+    // The first char is the byte BEFORE the window. If it's "\n", the window
+    // starts on a complete line and slicing at index 0 keeps it; otherwise the
+    // first line is partial and slicing drops it. Either case: cut at first "\n".
+    const nl = text.indexOf("\n");
+    return (nl >= 0 ? text.slice(nl + 1) : "").split("\n");
   } catch (e: any) {
     log(`read failed: ${e?.message ?? String(e)}`);
     return null;
@@ -296,17 +303,9 @@ function claudeUsageExtra(u: ClaudeUsage): Record<string, unknown> | undefined {
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
 
-/**
- * Extract model + last-turn usage from a Claude Code transcript. Scans from the
- * end so the returned usage belongs to the most recently completed assistant
- * turn — exactly the turn whose Stop event is being captured. Returns null when
- * the file is unreadable or contains no assistant line with usage.
- */
-export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | null {
-  if (!transcriptPath) return null;
-  const lines = readTailLines(transcriptPath);
+/** Reverse-scan already-read lines for the last assistant turn carrying usage. */
+function scanClaudeLines(lines: string[] | null): TraceModelMeta | null {
   if (!lines) return null;
-
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
     if (!trimmed) continue;
@@ -332,6 +331,22 @@ export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | n
     return meta;
   }
   return null;
+}
+
+/**
+ * Extract model + last-turn usage from a Claude Code transcript. Scans from the
+ * end so the returned usage belongs to the most recently completed assistant
+ * turn — exactly the turn whose Stop event is being captured. Reads the file
+ * tail for speed; falls back to the whole file if the usage-bearing line didn't
+ * fit the tail window (a single assistant record over the window size). Returns
+ * null when the file is unreadable or has no assistant line with usage.
+ */
+export function parseClaudeTurnMeta(transcriptPath?: string): TraceModelMeta | null {
+  if (!transcriptPath) return null;
+  return (
+    scanClaudeLines(readTailLines(transcriptPath)) ??
+    scanClaudeLines(readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER))
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -405,22 +420,21 @@ function normalizeCodexUsage(u: CodexUsage): NormalizedUsage {
 }
 
 /**
- * Extract model + reasoning effort + latest token usage from a Codex rollout.
- * Walks forward keeping the last `turn_context` (model/effort) and last
- * `token_count` (per-turn + cumulative usage). `fallbackModel` is the hook
- * payload's `model`, used when the rollout has no `turn_context` yet.
+ * Forward-scan already-read Codex rollout lines. `foundData` reports whether any
+ * turn_context / token_count was actually seen — so the caller can tell a real
+ * extraction from a fallback-model-only result and decide whether to widen the
+ * read window.
  */
-export function parseCodexTurnMeta(
-  transcriptPath?: string | null,
+function scanCodexLines(
+  lines: string[] | null,
   fallbackModel?: string,
-): TraceModelMeta | null {
-  const lines = transcriptPath ? readTailLines(transcriptPath) : null;
-
+): { meta: TraceModelMeta | null; foundData: boolean } {
   let model: string | undefined = fallbackModel;
   let reasoningEffort: string | undefined;
   let last: NormalizedUsage | undefined;
   let total: NormalizedUsage | undefined;
   let extra: Record<string, unknown> | undefined;
+  let foundData = false;
 
   if (lines) {
     for (const raw of lines) {
@@ -442,11 +456,13 @@ export function parseCodexTurnMeta(
         // earlier turn's model or effort. The previous turn's per-turn usage is
         // cleared for the same reason; `total` is a session-wide cumulative and
         // is intentionally preserved across turns.
+        foundData = true;
         model = typeof p.model === "string" ? p.model : fallbackModel;
         reasoningEffort = typeof p.effort === "string" ? p.effort : undefined;
         last = undefined;
         extra = undefined; // quota (context window / rate limits) is per-turn too
       } else if (p.type === "token_count" && p.info) {
+        foundData = true;
         if (p.info.last_token_usage) last = normalizeCodexUsage(p.info.last_token_usage);
         if (p.info.total_token_usage) total = normalizeCodexUsage(p.info.total_token_usage);
         extra = codexUsageExtra(p.info, p.rate_limits); // latest token_count wins (may clear)
@@ -454,13 +470,32 @@ export function parseCodexTurnMeta(
     }
   }
 
-  if (model === undefined && reasoningEffort === undefined && !last && !total && !extra) return null;
-
+  if (model === undefined && reasoningEffort === undefined && !last && !total && !extra) {
+    return { meta: null, foundData };
+  }
   const meta: TraceModelMeta = {};
   if (model !== undefined) meta.model = model;
   if (reasoningEffort !== undefined) meta.reasoning_effort = reasoningEffort;
   if (last) meta.token_usage = last;
   if (total) meta.token_usage_total = total;
   if (extra) meta.usage_extra = extra;
-  return meta;
+  return { meta, foundData };
+}
+
+/**
+ * Extract model + reasoning effort + latest token usage from a Codex rollout.
+ * Keeps the last `turn_context` (model/effort) and last `token_count` (per-turn
+ * + cumulative usage + quota). Reads the file tail for speed; if the tail held
+ * no turn_context/token_count (a turn with >window bytes after its metadata),
+ * re-scans the whole file. `fallbackModel` is the hook payload's `model`.
+ */
+export function parseCodexTurnMeta(
+  transcriptPath?: string | null,
+  fallbackModel?: string,
+): TraceModelMeta | null {
+  if (!transcriptPath) return scanCodexLines(null, fallbackModel).meta;
+  const tail = scanCodexLines(readTailLines(transcriptPath), fallbackModel);
+  if (tail.foundData) return tail.meta;
+  const whole = scanCodexLines(readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER), fallbackModel);
+  return whole.foundData ? whole.meta : tail.meta;
 }
