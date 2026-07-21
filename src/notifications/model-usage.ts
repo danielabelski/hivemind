@@ -420,21 +420,22 @@ function normalizeCodexUsage(u: CodexUsage): NormalizedUsage {
 }
 
 /**
- * Forward-scan already-read Codex rollout lines. `foundData` reports whether any
- * turn_context / token_count was actually seen — so the caller can tell a real
- * extraction from a fallback-model-only result and decide whether to widen the
- * read window.
+ * Forward-scan already-read Codex rollout lines. `sawTurnContext` / `sawTokenCount`
+ * report which event types were present — the two carry different halves of the
+ * turn's metadata (model+effort vs usage+total+quota), so the caller only trusts
+ * the tail when BOTH were seen; otherwise it widens the read.
  */
 function scanCodexLines(
   lines: string[] | null,
   fallbackModel?: string,
-): { meta: TraceModelMeta | null; foundData: boolean } {
+): { meta: TraceModelMeta | null; sawTurnContext: boolean; sawTokenCount: boolean } {
   let model: string | undefined = fallbackModel;
   let reasoningEffort: string | undefined;
   let last: NormalizedUsage | undefined;
   let total: NormalizedUsage | undefined;
   let extra: Record<string, unknown> | undefined;
-  let foundData = false;
+  let sawTurnContext = false;
+  let sawTokenCount = false;
 
   if (lines) {
     for (const raw of lines) {
@@ -456,13 +457,13 @@ function scanCodexLines(
         // earlier turn's model or effort. The previous turn's per-turn usage is
         // cleared for the same reason; `total` is a session-wide cumulative and
         // is intentionally preserved across turns.
-        foundData = true;
+        sawTurnContext = true;
         model = typeof p.model === "string" ? p.model : fallbackModel;
         reasoningEffort = typeof p.effort === "string" ? p.effort : undefined;
         last = undefined;
         extra = undefined; // quota (context window / rate limits) is per-turn too
       } else if (p.type === "token_count" && p.info) {
-        foundData = true;
+        sawTokenCount = true;
         if (p.info.last_token_usage) last = normalizeCodexUsage(p.info.last_token_usage);
         if (p.info.total_token_usage) total = normalizeCodexUsage(p.info.total_token_usage);
         extra = codexUsageExtra(p.info, p.rate_limits); // latest token_count wins (may clear)
@@ -470,24 +471,24 @@ function scanCodexLines(
     }
   }
 
-  if (model === undefined && reasoningEffort === undefined && !last && !total && !extra) {
-    return { meta: null, foundData };
-  }
+  const empty = model === undefined && reasoningEffort === undefined && !last && !total && !extra;
+  if (empty) return { meta: null, sawTurnContext, sawTokenCount };
   const meta: TraceModelMeta = {};
   if (model !== undefined) meta.model = model;
   if (reasoningEffort !== undefined) meta.reasoning_effort = reasoningEffort;
   if (last) meta.token_usage = last;
   if (total) meta.token_usage_total = total;
   if (extra) meta.usage_extra = extra;
-  return { meta, foundData };
+  return { meta, sawTurnContext, sawTokenCount };
 }
 
 /**
  * Extract model + reasoning effort + latest token usage from a Codex rollout.
  * Keeps the last `turn_context` (model/effort) and last `token_count` (per-turn
- * + cumulative usage + quota). Reads the file tail for speed; if the tail held
- * no turn_context/token_count (a turn with >window bytes after its metadata),
- * re-scans the whole file. `fallbackModel` is the hook payload's `model`.
+ * + cumulative usage + quota). Reads the file tail for speed; the two event
+ * types carry different halves of the metadata, so if the tail is missing
+ * EITHER (a turn with >window bytes between them), it re-scans the whole file —
+ * whose result is authoritative. `fallbackModel` is the hook payload's `model`.
  */
 export function parseCodexTurnMeta(
   transcriptPath?: string | null,
@@ -495,7 +496,7 @@ export function parseCodexTurnMeta(
 ): TraceModelMeta | null {
   if (!transcriptPath) return scanCodexLines(null, fallbackModel).meta;
   const tail = scanCodexLines(readTailLines(transcriptPath), fallbackModel);
-  if (tail.foundData) return tail.meta;
+  if (tail.sawTurnContext && tail.sawTokenCount) return tail.meta;
   const whole = scanCodexLines(readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER), fallbackModel);
-  return whole.foundData ? whole.meta : tail.meta;
+  return whole.meta ?? tail.meta;
 }

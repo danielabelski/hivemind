@@ -485,6 +485,24 @@ describe("parseCodexTurnMeta — usage_extra quota", () => {
     expect(meta?.usage_extra).not.toHaveProperty("model_context_window");
   });
 
+  it("falls back to the whole file when turn_context is pushed out of the tail by a huge record", () => {
+    // turn_context (model/effort) ... >1 MiB event ... token_count (usage) at end.
+    // The 1 MiB tail catches only the token_count, so parseCodexTurnMeta must
+    // re-read the whole file to recover the model/effort from turn_context.
+    const file = writeTranscript([
+      codexTurnContext("gpt-5.5", "high"),
+      { type: "event_msg", payload: { type: "note", pad: "z".repeat(1_200_000) } },
+      codexTokenCount(
+        { input_tokens: 9, output_tokens: 1, total_tokens: 10 },
+        { input_tokens: 9, output_tokens: 1, total_tokens: 10 },
+      ),
+    ]);
+    const meta = parseCodexTurnMeta(file, "payload-fallback");
+    expect(meta?.model).toBe("gpt-5.5"); // recovered from turn_context, not the payload fallback
+    expect(meta?.reasoning_effort).toBe("high");
+    expect(meta?.token_usage?.total_tokens).toBe(10);
+  });
+
   it("does not carry a prior turn's quota into a new turn_context (model change)", () => {
     const file = writeTranscript([
       codexTurnContext("gpt-5.5", "medium"),
