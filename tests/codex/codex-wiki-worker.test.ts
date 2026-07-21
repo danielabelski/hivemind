@@ -147,8 +147,12 @@ describe("codex wiki-worker — happy path", () => {
     ]);
     return fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[eventCount]] });
       if (sql.startsWith("SELECT message, creation_date")) {
-        return jsonResp({ columns: ["message", "creation_date"], rows: eventCount === 1 ? eventRow.map(r => [r.message, r.creation_date]) : rows });
+        // The worker now fetches newest-first (ORDER BY creation_date DESC) and reverses
+        // back to chronological, so the mock returns rows in DESC order to match the DB.
+        const asc = eventCount === 1 ? eventRow.map(r => [r.message, r.creation_date]) : rows;
+        return jsonResp({ columns: ["message", "creation_date"], rows: asc.slice().reverse() });
       }
       if (sql.startsWith("SELECT DISTINCT path")) {
         return jsonResp({
@@ -291,6 +295,7 @@ describe("codex wiki-worker — happy path", () => {
     // — that would regenerate from scratch and overwrite the canonical summary.
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi" }), "t"]] });
       }
@@ -328,6 +333,7 @@ describe("codex wiki-worker — happy path", () => {
           rows: [[{ type: "user_message", content: "obj" }, "t"]],
         });
       }
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });
     });
@@ -350,6 +356,7 @@ describe("codex wiki-worker — codex exec failure", () => {
   beforeEach(() => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });
@@ -382,6 +389,7 @@ describe("codex wiki-worker — codex exec failure", () => {
   it("does not re-upload a stale existing summary after a failed regeneration", async () => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[8]] });
       if (sql.startsWith("SELECT message")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [["# Session X\n- **JSONL offset**: 7\n\n## What Happened\nprior"]] });
@@ -438,6 +446,7 @@ describe("codex wiki-worker — finalize + release edges", () => {
   beforeEach(() => {
     fetchMock.mockImplementation(async (_url: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message")) return jsonResp({ columns: ["message", "creation_date"], rows: [["{}", "t"]] });
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });

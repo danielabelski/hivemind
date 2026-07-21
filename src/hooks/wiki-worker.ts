@@ -19,7 +19,7 @@ const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock, readState } from "./summary-state.js";
 import { readSessionEventCache } from "./session-event-cache.js";
 import { buildSessionPath } from "../utils/session-path.js";
-import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "./wiki-offset.js";
+import { capLinesByBytes, newRowsFromWindow, stampOffset, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "./wiki-offset.js";
 import { redactSecrets } from "./shared/redact.js";
 import { uploadSummary } from "./upload-summary.js";
 import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
@@ -146,24 +146,38 @@ async function main(): Promise<void> {
     // DB is still the source of truth: fall back to it whenever the cache is
     // absent (session resumed on another machine), empty, or — checked once
     // the offset is known — shorter than the offset already summarized.
-    const dbFetch = () => query(
-      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
-    );
+    // Bounded DB fallback: the NEWEST WIKI_FALLBACK_MAX_ROWS rows (reversed to
+    // chronological) plus the true `total`. The old unbounded `ORDER BY ASC`
+    // materialized the whole fat `message` column (tens of MB, ~30s cold on a
+    // mega-session) even though only the newest un-summarized rows are consumed.
+    // `count(*)` reads no fat column, so `total` is cheap and lets the offset
+    // math (`newRowsFromWindow`) and the stamped offset stay correct.
+    const dbFetch = async (): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
+      const like = esc(`/sessions/%${cfg.sessionId}%`);
+      const cnt = await query(`SELECT count(*) AS n FROM "${cfg.sessionsTable}" WHERE path LIKE '${like}'`);
+      const total = Number(cnt[0]?.["n"] ?? 0);
+      if (total === 0) return { rows: [], total: 0 };
+      const r = await query(
+        `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
+        `WHERE path LIKE '${like}' ORDER BY creation_date DESC LIMIT ${WIKI_FALLBACK_MAX_ROWS}`
+      );
+      return { rows: r.reverse(), total };
+    };
     // Retry on an empty result: the async capture writes (or Deeplake read
     // consistency) may simply be lagging behind SessionEnd under load.
-    const dbFetchWithRetry = async (): Promise<Record<string, unknown>[]> => {
-      let r = await dbFetch();
-      for (let attempt = 1; r.length === 0 && attempt <= EVENT_FETCH_RETRIES; attempt++) {
+    const dbFetchWithRetry = async (): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
+      let f = await dbFetch();
+      for (let attempt = 1; f.total === 0 && attempt <= EVENT_FETCH_RETRIES; attempt++) {
         const delay = EVENT_FETCH_BACKOFF_MS * attempt;
         wlog(`no events yet — retry ${attempt}/${EVENT_FETCH_RETRIES} in ${delay}ms`);
         await sleep(delay);
-        r = await dbFetch();
+        f = await dbFetch();
       }
-      return r;
+      return f;
     };
 
     let usedLocalCache = false;
+    let dbTotal = 0; // true row count when the bounded DB path was used (else 0)
     let rows: Record<string, unknown>[];
     const cachedLines = readSessionEventCache(cfg.sessionId);
     if (cachedLines && cachedLines.length > 0) {
@@ -172,7 +186,9 @@ async function main(): Promise<void> {
       wlog(`loaded ${rows.length} events from local cache`);
     } else {
       wlog("fetching session events");
-      rows = await dbFetchWithRetry();
+      const f = await dbFetchWithRetry();
+      rows = f.rows;
+      dbTotal = f.total;
     }
 
     if (rows.length === 0) {
@@ -193,7 +209,9 @@ async function main(): Promise<void> {
       return;
     }
 
-    let jsonlLines = rows.length;
+    // The offset high-water (stamped into the summary) must be the TRUE total, not the
+    // bounded window length — else the next run's offset regresses and re-summarizes.
+    let jsonlLines = usedLocalCache ? rows.length : dbTotal;
 
     // Derive the server path. When the events came from the local cache we've
     // already avoided the backend round-trip, so reproduce the canonical path
@@ -263,15 +281,20 @@ async function main(): Promise<void> {
     // to nothing, so re-load the full session from the DB instead.
     if (usedLocalCache && rows.length < prevOffset) {
       wlog(`local cache (${rows.length}) < summarized offset (${prevOffset}) — refetching from DB`);
-      rows = await dbFetchWithRetry();
-      jsonlLines = rows.length;
+      const f = await dbFetchWithRetry();
+      rows = f.rows;
+      dbTotal = f.total;
+      jsonlLines = dbTotal;
+      usedLocalCache = false;
     }
 
     // Feed claude only the rows added since the last summary. Reprocessing the
     // full session on every run is what drives ENOBUFS / 120s-timeout failures
     // on long (4000+ event) sessions — a stuck offset re-summarizes everything.
     // Reconstruct JSONL from individual rows (message is JSONB — may be object or string)
-    const newRows = prevOffset > 0 ? rows.slice(prevOffset) : rows;
+    const newRows = usedLocalCache
+      ? (prevOffset > 0 ? rows.slice(prevOffset) : rows)
+      : newRowsFromWindow(rows, dbTotal, prevOffset);
     if (prevOffset > 0 && newRows.length === 0) {
       wlog(`no new events since last summary (offset=${prevOffset}, total=${jsonlLines}) — skipping`);
       return;

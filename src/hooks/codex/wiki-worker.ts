@@ -13,7 +13,7 @@ import { buildTrailingPromptInvocation } from "../wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
-import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
+import { capLinesByBytes, newRowsFromWindow, stampOffset, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
 import { redactSecrets } from "../shared/redact.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
@@ -135,19 +135,27 @@ function formatExecFailure(error: any): string {
 
 async function main(): Promise<void> {
   try {
-    // 1. Fetch session events from sessions table
+    // 1. Fetch session events from the sessions table — BOUNDED to the newest
+    // WIKI_FALLBACK_MAX_ROWS rows (reversed to chronological) plus the true
+    // total. The old unbounded `ORDER BY ASC` materialized the whole fat
+    // `message` column (tens of MB, ~30s cold on a mega-session) even though
+    // only the newest un-summarized rows are consumed. `count(*)` reads no fat
+    // column, so `total` is cheap and keeps the offset math + stamped offset right.
     wlog("fetching session events");
-    const rows = await query(
-      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
-    );
-
-    if (rows.length === 0) {
+    const likePat = esc(`/sessions/%${cfg.sessionId}%`);
+    const cntRows = await query(`SELECT count(*) AS n FROM "${cfg.sessionsTable}" WHERE path LIKE E'${likePat}'`);
+    const total = Number(cntRows[0]?.["n"] ?? 0);
+    if (total === 0) {
       wlog("no session events found — exiting");
       return;
     }
+    const fetched = await query(
+      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
+      `WHERE path LIKE E'${likePat}' ORDER BY creation_date DESC LIMIT ${WIKI_FALLBACK_MAX_ROWS}`
+    );
+    const rows = fetched.reverse();
 
-    const jsonlLines = rows.length;
+    const jsonlLines = total;
 
     const pathRows = await query(
       `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
@@ -201,7 +209,7 @@ async function main(): Promise<void> {
     // full session on every run is what drove the ENOBUFS / 120s-timeout
     // failures on long (4000+ event) sessions — a stuck offset meant every run
     // re-summarized everything from scratch.
-    const newRows = prevOffset > 0 ? rows.slice(prevOffset) : rows;
+    const newRows = newRowsFromWindow(rows, total, prevOffset);
     if (prevOffset > 0 && newRows.length === 0) {
       wlog(`no new events since last summary (offset=${prevOffset}, total=${jsonlLines}) — skipping`);
       return;

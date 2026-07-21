@@ -99,11 +99,12 @@ function trackingFetch(sqls: string[], summaryRows: unknown[][] = []): void {
     const sql = JSON.parse(init.body).query as string;
     sqls.push(sql);
     if (sql.startsWith("SELECT summary FROM")) return jsonResp({ columns: ["summary"], rows: summaryRows });
+    if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[6]] });
     if (sql.startsWith("SELECT message, creation_date")) {
-      // DB fallback path — a handful of generic rows.
+      // DB fallback path — a handful of generic rows (newest-first to match ORDER BY DESC).
       return jsonResp({
         columns: ["message", "creation_date"],
-        rows: Array.from({ length: 6 }, (_, i) => [JSON.stringify({ type: "user_message", content: `db ${i}` }), "2026-01-01T00:00:00Z"]),
+        rows: Array.from({ length: 6 }, (_, i) => [JSON.stringify({ type: "user_message", content: `db ${5 - i}` }), "2026-01-01T00:00:00Z"]),
       });
     }
     if (sql.startsWith("SELECT DISTINCT path")) {

@@ -124,6 +124,7 @@ describe("cursor wiki-worker — behavior", () => {
   it("runs cursor-agent --print --force with the prompt as the trailing arg and uploads agent=cursor", async () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi cursor" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -156,6 +157,7 @@ describe("cursor wiki-worker — behavior", () => {
   it("logs the failure and skips upload when the cursor-agent spawn throws", async () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi cursor" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -207,6 +209,7 @@ describe("cursor wiki-worker — behavior", () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
       sqls.push(sql);
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "db" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -223,5 +226,11 @@ describe("cursor wiki-worker — behavior", () => {
 
     expect(sqls.some(s => s.startsWith("SELECT message, creation_date"))).toBe(true);
     expect(sqls.some(s => s.startsWith("SELECT DISTINCT path"))).toBe(true);
+    // Bounded fallback: cheap count probe + newest-N DESC LIMIT, never unbounded ASC.
+    expect(sqls.some(s => s.startsWith("SELECT count(*) AS n"))).toBe(true);
+    const fetchSql = sqls.find(s => s.startsWith("SELECT message, creation_date"))!;
+    expect(fetchSql).toContain("ORDER BY creation_date DESC");
+    expect(fetchSql).toContain("LIMIT 2000");
+    expect(sqls.some(s => s.includes("ORDER BY creation_date ASC"))).toBe(false);
   });
 });

@@ -119,6 +119,7 @@ describe("pi wiki-worker — behavior", () => {
   it("runs pi --print --provider --model with the prompt as the trailing arg and uploads agent=pi", async () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi pi" }), "2026-04-20T00:00:00Z"]] });
       }
@@ -152,6 +153,7 @@ describe("pi wiki-worker — behavior", () => {
   it("logs the failure and skips upload when the pi spawn throws", async () => {
     fetchMock.mockImplementation(async (_u: string, init: any) => {
       const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
       if (sql.startsWith("SELECT message, creation_date")) {
         return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi pi" }), "2026-04-20T00:00:00Z"]] });
       }

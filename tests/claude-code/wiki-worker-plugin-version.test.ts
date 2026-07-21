@@ -127,6 +127,7 @@ async function runVariant(variant: AgentVariant, pluginVersion: string): Promise
   // Then SELECT summary FROM "memory" WHERE path = ... LIMIT 1 (to resume).
   fetchMock.mockImplementation(async (_url: string, init: any) => {
     const sql = JSON.parse(init.body).query as string;
+    if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
     if (sql.startsWith("SELECT message, creation_date")) {
       return jsonResp({
         columns: ["message", "creation_date"],
@@ -187,6 +188,7 @@ describe("wiki-worker pluginVersion threading — per agent", () => {
       process.argv[2] = configPath;
       fetchMock.mockImplementation(async (_url: string, init: any) => {
         const sql = JSON.parse(init.body).query as string;
+        if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
         if (sql.startsWith("SELECT message, creation_date")) {
           return jsonResp({
             columns: ["message", "creation_date"],
@@ -257,6 +259,7 @@ describe("wiki-worker API retry path — per agent", () => {
       let firstEventsCall = true;
       fetchMock.mockImplementation(async (_url: string, init: any) => {
         const sql = JSON.parse(init.body).query as string;
+        if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[1]] });
         if (sql.startsWith("SELECT message, creation_date")) {
           if (firstEventsCall) {
             firstEventsCall = false;
@@ -298,13 +301,15 @@ describe("wiki-worker resume + embeddings-disabled branches — per agent", () =
       process.argv[2] = configPath;
       fetchMock.mockImplementation(async (_url: string, init: any) => {
         const sql = JSON.parse(init.body).query as string;
+        if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[43]] });
         if (sql.startsWith("SELECT message, creation_date")) {
           // 43 rows so the offset-42 resume baseline still leaves 1 new row to
           // summarize (otherwise the worker correctly skips a no-new-rows run).
+          // Newest-first (DESC) to match the real ORDER BY … DESC; worker reverses.
           return jsonResp({
             columns: ["message", "creation_date"],
             rows: Array.from({ length: 43 }, (_, i) => [
-              JSON.stringify({ type: "user_message", content: `hi ${i}` }),
+              JSON.stringify({ type: "user_message", content: `hi ${42 - i}` }),
               "2026-04-20T00:00:00Z",
             ]),
           });
@@ -391,6 +396,7 @@ describe("wiki-worker error / edge-case branches — per agent", () => {
       // found" and exits early before invoking the LLM or upload path.
       fetchMock.mockImplementation(async (_url: string, init: any) => {
         const sql = JSON.parse(init.body).query as string;
+        if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[0]] });
         if (sql.startsWith("SELECT message, creation_date")) {
           return jsonResp({ columns: ["message", "creation_date"], rows: [] });
         }
