@@ -24,7 +24,7 @@
  * the enrichment (never throws, never blocks a trace write).
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log as _log } from "../utils/debug.js";
@@ -156,15 +156,14 @@ interface TranscriptReader {
 }
 
 function openTranscript(path: string, window = 1_048_576): TranscriptReader | null {
-  if (!path || !existsSync(path)) {
-    log(`transcript missing: ${path}`);
-    return null;
-  }
+  if (!path) return null;
   let fd: number;
   try {
+    // Open directly and handle the error (incl. ENOENT) rather than an
+    // existsSync() pre-check — a check-then-open is a file-system race.
     fd = openSync(path, "r");
   } catch (e: any) {
-    log(`open failed: ${e?.message ?? String(e)}`);
+    log(`open failed (${path}): ${e?.message ?? String(e)}`);
     return null;
   }
   let size: number;
@@ -296,7 +295,8 @@ export function readClaudeEffortLevel(cwd?: string): string | undefined {
   candidates.push(join(homedir(), ".claude", "settings.json"));
   for (const p of candidates) {
     try {
-      if (!existsSync(p)) continue;
+      // Read directly and let a missing file throw into the catch (no
+      // existsSync pre-check — that's a check-then-read race).
       const j = JSON.parse(readFileSync(p, "utf-8")) as { effortLevel?: unknown };
       // Allowlist Claude's supported levels — a settings file is untrusted
       // input, and an arbitrary/oversized string would poison effort analytics.
