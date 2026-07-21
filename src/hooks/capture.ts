@@ -15,7 +15,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
-import { parseClaudeTurnMeta } from "../notifications/model-usage.js";
+import { parseClaudeTurnMetaLive } from "../notifications/model-usage.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
@@ -139,7 +139,23 @@ async function main(): Promise<void> {
     // last assistant turn (best-effort; null on any read/parse failure). On
     // SubagentStop, last_assistant_message belongs to the subagent transcript;
     // transcript_path points at the parent session, so prefer the agent one.
-    const modelMeta = parseClaudeTurnMeta(input.agent_transcript_path ?? input.transcript_path);
+    // The Stop event races the transcript writer (the turn's final assistant
+    // record may not be flushed yet), so this re-reads across a short backoff
+    // and correlates the record with last_assistant_message — never attributing
+    // a PREVIOUS turn's tokens to this one. A sidechain record is a subagent's
+    // on a main-session Stop, but IS the turn on SubagentStop.
+    // An empty last_assistant_message can't be correlated with a transcript
+    // record — skipping the correlation would silently accept the PREVIOUS
+    // turn's record, so skip the enrichment instead.
+    const expectText = typeof input.last_assistant_message === "string" ? input.last_assistant_message.trim() : "";
+    if (!expectText) log("empty last_assistant_message — skipping turn-meta enrichment");
+    const modelMeta = expectText
+      ? await parseClaudeTurnMetaLive(
+          input.agent_transcript_path ?? input.transcript_path,
+          expectText,
+          Boolean(input.agent_transcript_path),
+        )
+      : null;
     entry = {
       id: crypto.randomUUID(),
       ...meta,

@@ -38,7 +38,7 @@ const TABLE = process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions_modeltest";
 const RUN_TAG = "modeltest-" + Date.now().toString(36);
 const MAX_FILES_PER_AGENT = Number(process.env.MAX_FILES ?? 300);
 
-const { parseClaudeTurnMeta, parseCodexTurnMeta, sdkTurnMeta } = await import(
+const { parseClaudeTurnMeta, parseCodexTurnMeta, scanClaudeTurnForCapture, sdkTurnMeta } = await import(
   join(ROOT, "dist/src/notifications/model-usage.js")
 );
 const { loadConfig } = await import(join(ROOT, "dist/src/config.js"));
@@ -143,6 +143,50 @@ function runHook(entry, payload) {
   return r.status === 0;
 }
 
+/**
+ * The transcript's newest non-sidechain assistant text — what a live Stop
+ * hook would receive as `last_assistant_message` for that transcript.
+ */
+function lastClaudeAssistantText(file) {
+  let raw;
+  try {
+    raw = readFileSync(file, "utf-8");
+  } catch {
+    return null;
+  }
+  const lines = raw.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    let e;
+    try { e = JSON.parse(t); } catch { continue; }
+    // Mirror the live scanner: the newest text-bearing, non-sidechain
+    // assistant record — with NO usage requirement, because that is the
+    // record the hook will correlate against.
+    if (e?.type !== "assistant" || e.isSidechain === true) continue;
+    const c = e.message?.content;
+    const text = typeof c === "string"
+      ? c
+      : Array.isArray(c) ? c.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text : "")).join("") : "";
+    if (text.trim()) return text;
+  }
+  return null;
+}
+
+/**
+ * Live-faithful Claude parse for transcript selection: only pick transcripts
+ * whose FINAL turn would actually enrich under the hook's correlation
+ * semantics (newest text-bearing record matches + carries usage). Replaying a
+ * transcript whose final turn has no usage would correctly produce an
+ * unenriched row — useless for this harness's per-model assertions.
+ */
+function parseClaudeLive(file) {
+  const text = lastClaudeAssistantText(file);
+  if (!text) return null;
+  const scan = scanClaudeTurnForCapture(file, text);
+  return scan.status === "match" ? scan.meta : null;
+}
+
 async function main() {
   const config = loadConfig();
   if (!config) {
@@ -153,7 +197,7 @@ async function main() {
 
   const claudeModels = pickOnePerModel(
     listTranscripts(join(homedir(), ".claude", "projects"), MAX_FILES_PER_AGENT),
-    parseClaudeTurnMeta,
+    parseClaudeLive,
   );
   const codexModels = pickOnePerModel(
     listTranscripts(join(homedir(), ".codex", "sessions"), MAX_FILES_PER_AGENT),
@@ -176,10 +220,15 @@ async function main() {
   let n = 0;
   for (const [model, file] of claudeModels) {
     const sid = `${RUN_TAG}-cc-${n++}`;
+    // The capture hook correlates last_assistant_message with the transcript's
+    // newest assistant record (off-by-one guard), so a synthetic message would
+    // make every enrichment come back null — replay the transcript's REAL
+    // final assistant text.
+    const lastText = lastClaudeAssistantText(file);
     jobs.push({ agent: "claude_code", model, run: () =>
       runHook("dist/src/hooks/capture.js", {
         session_id: sid, transcript_path: file, cwd: ROOT,
-        hook_event_name: "Stop", last_assistant_message: `e2e trace for ${model}`,
+        hook_event_name: "Stop", last_assistant_message: lastText ?? `e2e trace for ${model}`,
       }) });
   }
   for (const [model, file] of codexModels) {
