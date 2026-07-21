@@ -142,55 +142,59 @@ function migrateEntry(entry: PulledEntry): boolean {
   // No-op if the entry is already at the canonical dir (idempotent).
   if (cappedDir === entry.dirName) return false;
 
-  // Reconcile against any existing canonical entry at the capped destination.
-  const managed = entriesForRoot(loadManifest(), entry.install, entry.installRoot);
-  const collidingEntry = managed.find(
-    e => e.dirName === cappedDir && e.dirName !== entry.dirName,
-  );
-  if (collidingEntry) {
-    // SAME rawName → not a foreign collision: a previous migration (or pull)
-    // already produced the canonical install and only this legacy leftover
-    // remains.
-    if ((collidingEntry.rawName ?? collidingEntry.name) === rawName) {
-      // Guard against an INTERRUPTED prior migration: the canonical copy exists
-      // but its frontmatter `name` was never rewritten (the writeFileSync step
-      // threw), so it's still over-long. Retiring the legacy now would leave the
-      // half-written canonical install permanently un-capped. In that case tear
-      // down the broken canonical dir + row and fall through to re-migrate from
-      // the still-intact legacy. A properly-capped canonical is left untouched.
-      const canonName = readInstalledName(cappedFile);
-      if (canonName !== null && canonName.length > MAX_SKILL_NAME_LEN) {
-        rmSync(cappedDirPath, { recursive: true, force: true });
-        unlinkSymlinks(collidingEntry.symlinks);
-        removePullEntry(collidingEntry.install, collidingEntry.installRoot, collidingEntry.dirName);
-        log(`repair: dropped half-migrated ${cappedDir}, re-migrating from ${entry.dirName}`);
-        // Fall through to the copy-then-swap below (cappedDirPath is now clear).
+  try {
+    // Reconcile against any existing canonical entry at the capped
+    // destination. Inside the try: reconciliation touches the manifest and the
+    // filesystem, and a throw here must be swallowed per-entry like every
+    // other failure — never escape into autoPullSkills.
+    const managed = entriesForRoot(loadManifest(), entry.install, entry.installRoot);
+    const collidingEntry = managed.find(
+      e => e.dirName === cappedDir && e.dirName !== entry.dirName,
+    );
+    if (collidingEntry) {
+      // SAME rawName → not a foreign collision: a previous migration (or pull)
+      // already produced the canonical install and only this legacy leftover
+      // remains.
+      if ((collidingEntry.rawName ?? collidingEntry.name) === rawName) {
+        // Guard against an INTERRUPTED prior migration: the canonical copy
+        // exists but its frontmatter `name` was never rewritten (still
+        // over-long), or the dir/SKILL.md is missing/unreadable entirely
+        // (orphaned manifest row). Retiring the legacy in either state would
+        // drop the only good copy — tear down the broken canonical dir + row
+        // and fall through to re-migrate from the still-intact legacy. Only a
+        // verified, properly-capped canonical retires the legacy.
+        const canonName = readInstalledName(cappedFile);
+        if (canonName === null || canonName.length > MAX_SKILL_NAME_LEN) {
+          rmSync(cappedDirPath, { recursive: true, force: true });
+          unlinkSymlinks(collidingEntry.symlinks);
+          removePullEntry(collidingEntry.install, collidingEntry.installRoot, collidingEntry.dirName);
+          log(`repair: dropped half-migrated ${cappedDir}, re-migrating from ${entry.dirName}`);
+          // Fall through to the copy-then-swap below (cappedDirPath is now clear).
+        } else {
+          retireEntry(entry);
+          log(`reconciled leftover ${entry.dirName} (canonical ${cappedDir} already present)`);
+          return true;
+        }
       } else {
-        retireEntry(entry);
-        log(`reconciled leftover ${entry.dirName} (canonical ${cappedDir} already present)`);
-        return true;
+        // DIFFERENT rawName → a true foreign collision. Leave the original
+        // untouched so a later run can retry once the conflict clears.
+        log(`skip ${entry.dirName}: capped dir ${cappedDir} claimed by ${collidingEntry.rawName ?? collidingEntry.name}`);
+        return false;
       }
-    } else {
-      // DIFFERENT rawName → a true foreign collision. Leave the original
-      // untouched so a later run can retry once the conflict clears.
-      log(`skip ${entry.dirName}: capped dir ${cappedDir} claimed by ${collidingEntry.rawName ?? collidingEntry.name}`);
+    }
+    // A dir already sits at the capped destination but NO manifest entry
+    // claims it (the manifest reconciliation above found none). We cannot
+    // safely tell a user-owned capped skill apart from a crashed-migration
+    // leftover by disk contents alone, so we skip and leave both untouched.
+    // Recovery of an interrupted migration is manifest-driven instead: the
+    // canonical entry is recorded BEFORE the destructive removal (see below),
+    // so a failed run leaves a same-rawName manifest row that the
+    // reconciliation above collapses on the retry.
+    if (existsSync(cappedDirPath)) {
+      log(`skip ${entry.dirName}: ${cappedDir} already exists on disk`);
       return false;
     }
-  }
-  // A dir already sits at the capped destination but NO manifest entry claims
-  // it (the manifest reconciliation above found none). We cannot safely tell a
-  // user-owned capped skill apart from a crashed-migration leftover by disk
-  // contents alone, so we skip and leave both untouched. Recovery of an
-  // interrupted migration is manifest-driven instead: the canonical entry is
-  // recorded BEFORE the destructive removal (see below), so a failed run leaves
-  // a same-rawName manifest row that the reconciliation above collapses on the
-  // retry.
-  if (existsSync(cappedDirPath)) {
-    log(`skip ${entry.dirName}: ${cappedDir} already exists on disk`);
-    return false;
-  }
 
-  try {
     // (a) COPY the install to the canonical capped dir — the original is left
     // in place until the very last step, so any failure below is recoverable.
     cpSync(staleDir, cappedDirPath, { recursive: true });

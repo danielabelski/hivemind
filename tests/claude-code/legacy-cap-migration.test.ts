@@ -420,6 +420,65 @@ describe("migrateLegacyCappedInstalls — same-rawName reconciliation", () => {
     expect(canon!.remoteVersion).toBe(7);
     expect(canon!.rawName).toBe(LONG_NAME);
   });
+
+  it("treats an ORPHANED canonical row (dir missing on disk) as repair, not as already-migrated", () => {
+    const capped = capSkillName(LONG_NAME);
+    const cappedDir = `${capped}--sasun`;
+
+    // Manifest row claims the canonical dir, but the dir was deleted manually —
+    // retiring the legacy here would drop the only surviving copy.
+    record({ dirName: cappedDir, name: capped, rawName: LONG_NAME, remoteVersion: 7 });
+
+    const staleDir = `${LONG_NAME}--sasun`;
+    writeSkill(staleDir, LONG_NAME, 5, "legacy body");
+    record({ dirName: staleDir, name: LONG_NAME, rawName: LONG_NAME, remoteVersion: 5 });
+
+    const res = migrateLegacyCappedInstalls();
+
+    // Re-migrated from the legacy copy: canonical recreated with capped name…
+    expect(res.migrated).toBe(1);
+    expect(readFileSync(join(installRoot, cappedDir, "SKILL.md"), "utf-8")).toContain(`name: ${capped}`);
+    expect(readFileSync(join(installRoot, cappedDir, "SKILL.md"), "utf-8")).toContain("legacy body");
+    // …and the legacy dir + row retired only after the swap completed.
+    expect(existsSync(join(installRoot, staleDir))).toBe(false);
+    expect(loadManifest().entries.some(e => e.dirName === staleDir)).toBe(false);
+  });
+
+  it("swallows a throw inside the reconciliation itself — the pass never escapes into the caller", async () => {
+    const capped = capSkillName(LONG_NAME);
+    const cappedDir = `${capped}--sasun`;
+
+    // Half-migrated canonical (frontmatter still over-long) triggers the
+    // repair branch, whose rmSync we make throw.
+    writeSkill(cappedDir, LONG_NAME, 7, "broken canonical");
+    record({ dirName: cappedDir, name: capped, rawName: LONG_NAME, remoteVersion: 7 });
+    const staleDir = `${LONG_NAME}--sasun`;
+    writeSkill(staleDir, LONG_NAME, 5, "legacy body");
+    record({ dirName: staleDir, name: LONG_NAME, rawName: LONG_NAME, remoteVersion: 5 });
+
+    vi.resetModules();
+    vi.doMock("node:fs", async () => {
+      const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...real,
+        rmSync: (p: any, o: any) => {
+          if (String(p).includes(cappedDir)) throw new Error("EIO: rm failed");
+          return real.rmSync(p, o);
+        },
+      };
+    });
+    const { migrateLegacyCappedInstalls: migrate } = await import("../../src/skillify/legacy-cap-migration.js");
+
+    // Must not throw — the per-entry catch swallows the reconciliation error…
+    const res = migrate();
+    expect(res.migrated).toBe(0);
+    // …and BOTH copies are left in place for the next retry.
+    expect(existsSync(join(installRoot, staleDir))).toBe(true);
+    expect(existsSync(join(installRoot, cappedDir))).toBe(true);
+    expect(loadManifest().entries.some(e => e.dirName === staleDir)).toBe(true);
+    vi.doUnmock("node:fs");
+    vi.resetModules();
+  });
 });
 
 // ─── path validation skips invalid author / frontmatter name ─────────────────
