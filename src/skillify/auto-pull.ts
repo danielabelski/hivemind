@@ -29,6 +29,7 @@ import { type Config } from "../config.js";
 import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { runPull, type QueryFn } from "./pull.js";
+import { migrateLegacyCappedInstalls } from "./legacy-cap-migration.js";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("skillify-autopull", msg);
@@ -79,6 +80,16 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
     log("disabled via HIVEMIND_AUTOPULL_DISABLED=1");
     return { pulled: 0, skipped: true, reason: "disabled" };
   }
+
+  // Local, remote-independent cap migration of legacy over-long installs.
+  // Runs BEFORE the network query — and before the config / not-logged-in
+  // check — so a legacy managed install whose org/workspace isn't the
+  // currently-routed one (or an offline session) still gets its frontmatter
+  // `name` capped, instead of codex logging "invalid name: exceeds maximum
+  // length of 64 characters" for it forever. All failures are swallowed
+  // inside the pass; never let it block SessionStart.
+  try { migrateLegacyCappedInstalls(); }
+  catch (e: any) { log(`legacy-cap migration failed (swallowed): ${e?.message ?? e}`); }
 
   // Not logged in → silent skip (no nag).
   // Real callers get the routed config (nearest `.hivemind` for the session
