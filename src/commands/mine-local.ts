@@ -656,7 +656,7 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
     console.log(`Fan-out targets: ${fanOutRoots.join(", ")}`);
   }
 
-  const written: Array<{ skill: MinedSkill; session: SessionFile; result: { path: string; createdAt: string }; symlinks: string[] }> = [];
+  const written: Array<{ skill: MinedSkill; session: SessionFile; result: { path: string; name: string; createdAt: string }; symlinks: string[] }> = [];
   const knownSummaries: Array<{ name: string; desc: string }> = [...existingSummaries];
 
   for (const { skill, session } of flat) {
@@ -666,6 +666,10 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
       continue;
     }
     try {
+      // writeNewSkill validates the raw name then length-caps it to the
+      // 64-char loader ceiling (an over-long mined name is truncated, not
+      // dropped) and returns the canonical on-disk name. Use result.name for
+      // the log line and dedup list so they match what's written.
       const result = writeNewSkill({
         skillsRoot,
         name: skill.name,
@@ -680,9 +684,9 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
         ? fanOutSymlinks(canonicalDir, basename(canonicalDir), fanOutRoots)
         : [];
       const symlinkSuffix = symlinks.length > 0 ? `, fan-out → ${symlinks.length} root(s)` : "";
-      console.log(`  wrote ${skill.name} ← session ${session.sessionId.slice(0, 8)} (${session.agent}${symlinkSuffix})`);
+      console.log(`  wrote ${result.name} ← session ${session.sessionId.slice(0, 8)} (${session.agent}${symlinkSuffix})`);
       written.push({ skill, session, result, symlinks });
-      knownSummaries.push({ name: skill.name, desc: skill.description });
+      knownSummaries.push({ name: result.name, desc: skill.description });
     } catch (e: any) {
       if (/already exists/i.test(e.message ?? "")) {
         console.log(`  skipped ${skill.name} (file already exists at ${skillsRoot})`);
@@ -699,7 +703,10 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
   if (written.length > 0) {
     const existing = loadManifest();
     const newEntries: ManifestEntry[] = written.map(({ skill, session, result, symlinks }) => ({
-      skill_name: skill.name,
+      // result.name is the canonical (possibly length-capped) on-disk name, so
+      // the manifest identity matches canonical_path / the frontmatter — not
+      // the raw model name, which may not exist on disk.
+      skill_name: result.name,
       canonical_path: result.path,
       symlinks,
       source_session_ids: [session.sessionId],
