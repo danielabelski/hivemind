@@ -504,9 +504,11 @@ export function parseCodexTurnMeta(
     return tail.meta;
   }
   const wholeLines = readTailLines(transcriptPath, Number.MAX_SAFE_INTEGER);
-  // The second read can fail (file removed/truncated between reads) — never let
-  // that discard usage the tail already extracted.
-  if (wholeLines === null) return tail.meta;
+  if (wholeLines === null) return tail.meta; // second read failed — keep the tail
   const whole = scanCodexLines(wholeLines, fallbackModel);
+  // Only trust the reread if it actually found Codex events. A file removed or
+  // truncated (to empty, or below the tail's data) between reads yields a
+  // model-only fallback that must not clobber usage the tail already extracted.
+  if (!whole.sawTurnContext && !whole.sawTokenCount) return tail.meta;
   return whole.meta ?? tail.meta;
 }
