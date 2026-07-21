@@ -11,7 +11,7 @@ This lets "tokens/cost per model" be a plain `GROUP BY message->>'model'` query.
 
 ## Where the code lives
 
-- Extraction / normalization: [`src/notifications/model-usage.ts`](src/notifications/model-usage.ts)
+- Extraction / normalization: [`src/notifications/model-usage.ts`](../src/notifications/model-usage.ts)
   - `parseClaudeTurnMeta(transcriptPath)` — Claude Code
   - `parseCodexTurnMeta(transcriptPath, fallbackModel)` — Codex
   - `normalizeSdkUsage` / `sdkTurnMeta` — Pi / OpenClaw (in-process SDK message)

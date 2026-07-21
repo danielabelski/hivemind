@@ -523,7 +523,7 @@ For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates 
 
 Per-agent integration mechanisms (marketplace plugin, hooks, skills, native extension) and monorepo structure: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-What each trace row records — model, reasoning effort, stop reason, token usage (incl. cache tokens and cost) and per-harness extras, with the capture matrix per agent: **[TRACE_MODEL_USAGE.md](TRACE_MODEL_USAGE.md)**.
+What each trace row records — model, reasoning effort, stop reason, token usage (incl. cache tokens and cost) and per-harness extras, with the capture matrix per agent: **[harnesses/TRACE_MODEL_USAGE.md](harnesses/TRACE_MODEL_USAGE.md)**.
 
 ## Roadmap
 
