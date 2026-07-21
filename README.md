@@ -523,6 +523,8 @@ For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates 
 
 Per-agent integration mechanisms (marketplace plugin, hooks, skills, native extension) and monorepo structure: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
+What each trace row records — model, reasoning effort, stop reason, token usage (incl. cache tokens and cost) and per-harness extras, with the capture matrix per agent: **[TRACE_MODEL_USAGE.md](TRACE_MODEL_USAGE.md)**.
+
 ## Roadmap
 
 - **Trajectory export for fine-tuning.** Because traces are stored in Deeplake's tensor format, they're export-ready as PyTorch datasets. Teams running their own open-source models can fine-tune on their org's accumulated trajectories. A handful of advanced customers are already doing this against the trajectories their Claude Code and Codex agents generated.
