@@ -15,6 +15,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
+import { parseClaudeTurnMeta } from "../notifications/model-usage.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
@@ -134,12 +135,18 @@ async function main(): Promise<void> {
     };
   } else if (input.last_assistant_message !== undefined) {
     log(`assistant session=${input.session_id}`);
+    // Model / usage aren't in the hook payload — read them from the transcript's
+    // last assistant turn (best-effort; null on any read/parse failure). On
+    // SubagentStop, last_assistant_message belongs to the subagent transcript;
+    // transcript_path points at the parent session, so prefer the agent one.
+    const modelMeta = parseClaudeTurnMeta(input.agent_transcript_path ?? input.transcript_path);
     entry = {
       id: crypto.randomUUID(),
       ...meta,
       type: "assistant_message",
       content: input.last_assistant_message,
       ...(input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}),
+      ...(modelMeta ?? {}),
     };
   } else {
     log("unknown event, skipping");

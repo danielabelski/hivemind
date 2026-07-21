@@ -149,6 +149,44 @@ function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boo
   return { creds: { ...withEnv, orgId, orgName, workspaceId }, collect: true, routed };
 }
 
+// Inline copy of normalizeSdkUsage / sdkTurnMeta (shared version lives in
+// src/notifications/model-usage.ts, but pi extensions ship as raw .ts with no
+// shared-module imports — kept in lockstep with that file). Maps the pi/SDK
+// usage object {input, output, cacheRead, cacheWrite, totalTokens} onto the
+// normalized token_usage keys used across every agent's trace rows.
+function piModelMeta(message: any): { model?: string; stop_reason?: string; token_usage?: Record<string, unknown> } {
+  const out: { model?: string; stop_reason?: string; token_usage?: Record<string, unknown> } = {};
+  if (typeof message?.model === "string" && message.model) out.model = message.model;
+  if (typeof message?.stopReason === "string" && message.stopReason) out.stop_reason = message.stopReason;
+  const u = message?.usage;
+  if (u && typeof u === "object") {
+    const t: Record<string, unknown> = {};
+    const putInt = (k: string, v: unknown) => {
+      if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) t[k] = v;
+    };
+    putInt("input_tokens", u.input);
+    putInt("output_tokens", u.output);
+    putInt("cache_read_tokens", u.cacheRead);
+    putInt("cache_creation_tokens", u.cacheWrite);
+    putInt("total_tokens", u.totalTokens);
+    if (u.cost && typeof u.cost === "object") {
+      const cost: Record<string, number> = {};
+      putFloatInto(cost, "input", u.cost.input);
+      putFloatInto(cost, "output", u.cost.output);
+      putFloatInto(cost, "cache_read", u.cost.cacheRead);
+      putFloatInto(cost, "cache_creation", u.cost.cacheWrite);
+      putFloatInto(cost, "total", u.cost.total);
+      if (Object.keys(cost).length > 0) t.cost = cost;
+    }
+    if (Object.keys(t).length > 0) out.token_usage = t;
+  }
+  return out;
+}
+
+function putFloatInto(target: Record<string, number>, key: string, v: unknown): void {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) target[key] = v;
+}
+
 // Inline copies of decodeJwtPayload + healDriftedOrgToken (the shared helpers
 // live in src/commands/auth.ts, but pi extensions ship as raw .ts with no
 // shared-module imports — kept in lockstep with that file).
@@ -1542,6 +1580,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
         session_id: sessionId,
         content: text,
         timestamp: new Date().toISOString(),
+        ...piModelMeta(message),
       });
     } catch (e: any) {
       logHm(`message_end: writeSessionRow swallowed: ${e?.message ?? e}`);

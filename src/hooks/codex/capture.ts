@@ -20,6 +20,7 @@ import { DeeplakeApi } from "../../deeplake-api.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
+import { parseCodexTurnMeta } from "../../notifications/model-usage.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingSqlLiteral } from "../../embeddings/sql.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
@@ -84,6 +85,14 @@ async function main(): Promise<void> {
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
 
   const ts = new Date().toISOString();
+  // Reasoning effort + token usage aren't in the hook payload — read them from
+  // the rollout transcript (turn_context + token_count). `token_usage` is the
+  // latest turn (scoped to the current model); `token_usage_total` is the
+  // whole-session cumulative across every model. Codex has no assistant event,
+  // so this rides on every user/tool row — `turn_id` (in meta) lets a per-model
+  // rollup dedupe the shared per-turn snapshot. Best-effort; falls back to the
+  // payload model.
+  const modelMeta = parseCodexTurnMeta(input.transcript_path, input.model);
   const meta = {
     session_id: input.session_id,
     transcript_path: input.transcript_path,
@@ -92,6 +101,7 @@ async function main(): Promise<void> {
     model: input.model,
     turn_id: input.turn_id,
     timestamp: ts,
+    ...(modelMeta ?? {}),
   };
 
   let entry: Record<string, unknown>;
