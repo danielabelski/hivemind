@@ -66,6 +66,7 @@ import { readVirtualPathContent } from "../../../src/hooks/virtual-table-query.j
 // message_embedding (today's behavior, preserved on every failure mode).
 import { tryEmbedStandalone, _setSpawnImpl } from "../../../src/embeddings/standalone-embed-client.js";
 import { embeddingSqlLiteral } from "../../../src/embeddings/sql.js";
+import { buildDirectSessionInsertSql } from "../../../src/hooks/shared/session-insert-sql.js";
 import { redactSecrets } from "../../../src/hooks/shared/redact.js";
 // Resolve sibling skillify-worker.js path at runtime via import.meta.url. The
 // openclaw plugin is bundled to harnesses/openclaw/dist/index.js, then installed to
@@ -1538,10 +1539,22 @@ export default definePluginEntry({
             const embedding = await tryEmbedStandalone(line, "document");
             const embeddingSql = embeddingSqlLiteral(embedding);
 
-            const insertSql =
-              `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-              `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(cfg.userName)}', ` +
-              `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(msg.role)}', 'openclaw', '${sqlStr(getInstalledVersion() ?? "")}', '${ts}', '${ts}')`;
+            const insertSql = buildDirectSessionInsertSql(sessionsTable, {
+              // Reuse the event id already embedded in the message JSON so the
+              // row PK matches the payload's id (dedup key = the logical event).
+              id: entry.id,
+              sessionPath,
+              filename,
+              jsonForSql,
+              embeddingSql,
+              userName: cfg.userName,
+              sizeBytes: Buffer.byteLength(line, "utf-8"),
+              projectName,
+              description: msg.role,
+              agent: "openclaw",
+              pluginVersion: getInstalledVersion() ?? "",
+              timestamp: ts,
+            });
 
             try {
               await dl.query(insertSql);

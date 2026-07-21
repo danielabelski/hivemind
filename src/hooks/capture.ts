@@ -12,7 +12,6 @@ import { type Config } from "../config.js";
 import { resolveCaptureConfig } from "./shared/dir-gate.js";
 import { redactSecrets } from "./shared/redact.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
@@ -30,6 +29,7 @@ import { tryStopCounterTrigger } from "../skillify/triggers.js";
 import { reactSkillOpt } from "./shared/skillopt-hook.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { buildDirectSessionInsertSql } from "./shared/session-insert-sql.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
 import { ensurePluginNodeModulesLink } from "../embeddings/self-heal.js";
@@ -168,10 +168,22 @@ async function main(): Promise<void> {
     : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
 
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
+  const insertSql = buildDirectSessionInsertSql(sessionsTable, {
+    // Reuse the event id already embedded in the message JSON so the row PK
+    // matches the payload's id (and keeps the dedup key = the logical event).
+    id: entry.id as string,
+    sessionPath,
+    filename,
+    jsonForSql,
+    embeddingSql,
+    userName: config.userName,
+    sizeBytes: Buffer.byteLength(line, "utf-8"),
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "claude_code",
+    pluginVersion: PLUGIN_VERSION,
+    timestamp: ts,
+  });
 
   try {
     await api.query(insertSql);

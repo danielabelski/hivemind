@@ -16,11 +16,12 @@ import { SESSIONS_COLUMNS } from "../../src/deeplake-schema.js";
  * INSERT writes must exist in SESSIONS_COLUMNS — otherwise CREATE/heal never
  * create it and the write 42703s. Lock it so the pi bug can't reappear here.
  */
+// The claude/codex/cursor/hermes capture hooks and codex/stop.ts all build
+// their single-row INSERT through the shared buildDirectSessionInsertSql
+// helper, so its one column list covers every direct-insert agent. The
+// batched queue path keeps its own inline column list.
 const SESSIONS_INSERT_FILES = [
-  "src/hooks/capture.ts",
-  "src/hooks/codex/capture.ts",
-  "src/hooks/cursor/capture.ts",
-  "src/hooks/hermes/capture.ts",
+  "src/hooks/shared/session-insert-sql.ts",
   "src/hooks/session-queue.ts",
 ];
 

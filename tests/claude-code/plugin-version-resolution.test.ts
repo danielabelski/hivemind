@@ -74,11 +74,15 @@ describe("plugin_version is wired into every agent's capture INSERT", () => {
 
   it.each(CAPTURE_BUNDLES)("%s INSERT lists plugin_version column", (_label, path) => {
     const src = readFileSync(path, "utf-8");
-    // The INSERT into the sessions table must include plugin_version in
-    // its column list. Regex matches the actual concatenated INSERT line
+    // The INSERT into the sessions table must carry the exact canonical column
+    // list (built by the shared buildDirectSessionInsertSql helper), with
+    // plugin_version present. Asserting the full literal — not a wildcard —
     // so a typo or column-list drift fails here, not silently in prod.
-    const sessionsInsert = /INSERT INTO\s+"\$\{sessionsTable\}"[^`]*?plugin_version[^`]*?VALUES/;
-    expect(src).toMatch(sessionsInsert);
+    const expectedColumns =
+      'INSERT INTO "${table}" (id, path, filename, message, message_embedding, ' +
+      "author, size_bytes, project, description, agent, plugin_version, " +
+      "creation_date, last_update_date)";
+    expect(src).toContain(expectedColumns);
   });
 });
 

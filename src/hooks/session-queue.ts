@@ -141,10 +141,17 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
     );
   }).join(", ");
 
+  // Idempotent batch insert: skip any row whose id already exists, so a flush
+  // that re-sends the batch after a transient 5xx (the insert committed but the
+  // gateway returned 502/503) cannot duplicate rows. The sessions table has no
+  // UNIQUE constraint on id, so this anti-join is the multi-row equivalent of
+  // buildDirectSessionInsertSql's `WHERE NOT EXISTS` guard on the single-row
+  // capture path. Verified lag-safe against the real backend.
   return (
-    `INSERT INTO "${table}" ` +
-    `(id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ${values}`
+    `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+    `SELECT v.id, v.path, v.filename, v.message, v.author, v.size_bytes, v.project, v.description, v.agent, v.plugin_version, v.creation_date, v.last_update_date ` +
+    `FROM (VALUES ${values}) AS v(id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+    `WHERE NOT EXISTS (SELECT 1 FROM "${table}" AS t WHERE t.id = v.id)`
   );
 }
 
